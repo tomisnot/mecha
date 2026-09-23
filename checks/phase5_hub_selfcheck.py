@@ -39,7 +39,8 @@ sys.path.insert(0, str(ROOT))
 
 EXPECTED_TOOLS = {"set_config", "read_config", "query_params", "estimate_run",
                   "preview_run", "run_sim", "query_levels",
-                  "submit_job", "read_job", "cancel_job", "run_actions"}
+                  "submit_job", "read_job", "cancel_job", "run_actions",
+                  "set_drive"}
 
 
 def _ok(msg: str) -> None:

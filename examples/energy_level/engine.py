@@ -201,6 +201,72 @@ class ElEngine(Engine):
     def preview(self, snap: Mapping[str, object]) -> Mapping[str, object]:
         return dict(self._on_engine(self._protocol.preview, self._cache, dict(snap)))
 
+    # ---- 驱动手感（②b：set_drive 的物理换算，全程引擎线程，cache 亲和）----
+
+    def drive_wave(self, snap: Mapping[str, object], **kw: object) -> Mapping:
+        """把"按 Rabi/光强设一个驱动波"翻译成一条 wave_list dict（不写、只算）。
+
+        换算要碰 ARC cache（dme），故汇流引擎线程。工具层拿到 dict 后经
+        `gate.set` 写回单键——门不旁路（ADR 2026-09-23-EL驱动手感）。
+        """
+        return self._on_engine(self._drive_wave, dict(snap), **kw)
+
+    def _drive_wave(self, snap: dict, *, src, tgt, pol="π",
+                    rabi_mhz=None, intensity_mwcm2=None, pulse="",
+                    detuning_mhz=0.0, duration_ns=None, edge_ns=None,
+                    name="drive", offset_ns=0.0) -> dict:
+        # 延迟 import（同 import_el：路径注入后才碰 EL 领域层，库不猜路径）
+        from src.core import atomic_levels as AL
+        from src.core import static_atom as SA
+        p = self._protocol
+        if (rabi_mhz is None) == (intensity_mwcm2 is None):
+            raise InvalidSpec("rabi_mhz 与 intensity_mwcm2 恰给其一",
+                              kind="bad_drive",
+                              hint="按 Rabi 频率给 rabi_mhz，或按光强给 intensity_mwcm2")
+        polq = {"π": 0, "σ+": 1, "σ-": -1}
+        if pol not in polq:
+            raise InvalidSpec(f"pol={pol!r} 不支持按 Rabi 换算",
+                              kind="bad_drive",
+                              hint="π/σ+/σ- 可给 rabi_mhz；椭圆偏请直给 intensity_mwcm2")
+        groups = p._runspec.groups_from_params(snap)
+        if not groups:
+            raise InvalidSpec("基组为空，无法定位跃迁", kind="bad_drive",
+                              hint="先 set_config groups.list 再 set_drive")
+        states = p._runspec.build_states(self._cache, groups,
+                                         snap.get("field.B_gauss"),
+                                         snap.get("field.E_vpcm"))
+        ia, ib = AL.find_state_index(states, src), AL.find_state_index(states, tgt)
+        if ia < 0 or ib < 0:
+            raise InvalidSpec("src/tgt 身份键不在当前基组", kind="bad_drive",
+                              hint="身份键取自 query_levels，别猜索引")
+        a, b = states[ia], states[ib]
+        d = abs(SA.dipole_amplitude(self._cache, a, b, polq[pol]))
+        if rabi_mhz is not None:
+            if d <= 0:
+                raise InvalidSpec(f"{a['label']}→{b['label']} {pol} 偶极为零（禁戒跃迁）",
+                                  kind="bad_drive", hint="换偏振或态；禁戒跃迁无 Rabi")
+            inten = SA.intensity_mwcm2_from_rabi(d, float(rabi_mhz), 1.0)
+            om = float(rabi_mhz)
+        else:
+            inten = float(intensity_mwcm2)
+            om = SA.rabi_mhz(d, SA.field_e0_sq(inten), 1.0)
+        if pulse in ("pi", "pi2"):
+            if om <= 0:
+                raise InvalidSpec("脉冲时长需非零 Rabi", kind="bad_drive",
+                                  hint="给 rabi_mhz，或改用 duration_ns")
+            dur = (500.0 if pulse == "pi" else 250.0) / om
+        elif duration_ns is not None:
+            dur = float(duration_ns)
+        else:
+            raise InvalidSpec("需 pulse(pi/pi2) 或 duration_ns 定时长",
+                              kind="bad_drive",
+                              hint="π/π2 脉冲用 pulse；任意时长用 duration_ns")
+        edge = float(edge_ns) if edge_ns is not None else round(dur * 0.1, 6)
+        freq = abs(float(b["E_mhz"]) - float(a["E_mhz"])) + float(detuning_mhz)
+        return {"name": name or "drive", "freq_mhz": freq, "intensity": inten,
+                "pol": pol, "offset_ns": float(offset_ns), "elliptical": None,
+                "env": ("square", 0.0, edge, 1.0, dur)}
+
 
 def make_validator(engine: ElEngine):
     """Gate 的 validate：键可写性 + 类型/枚举/值域/wave_list，报错即教学（L4）。"""

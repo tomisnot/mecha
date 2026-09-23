@@ -36,7 +36,14 @@ from .engine import ElEngine
 #: run_actions 声明的只读查询名（**单一来源**：description 由它生成、Surface
 #: QUERY 注册由它驱动、判据按它逐个验真——审查②a：声明与能力面不许两套账）。
 #: CodeAct 内置 op（estimate/summary/run/schema）不在此列，见 providers/codeact。
-DOMAIN_QUERY_OPS = ("read_config", "query_params", "preview_run", "query_levels")
+#: get_waves 是纯查询项（②b：读不占顶层工具，走 Surface QUERY），注册时走独立
+#: 函数而非复用工具 execute。
+DOMAIN_QUERY_OPS = ("read_config", "query_params", "preview_run", "query_levels",
+                    "get_waves")
+
+#: set_drive 的 atom 参数 → 写回的配置键（②b，ADR 2026-09-23-EL驱动手感）。
+_WAVE_KEY = {"single": "dynamic.waves_single",
+             "A": "dynamic.waves_A", "B": "dynamic.waves_B"}
 
 
 def build_tool_registry(engine: ElEngine, gate: Gate, surface: Surface,
@@ -198,11 +205,53 @@ def build_tool_registry(engine: ElEngine, gate: Gate, surface: Surface,
         banned_words=("线程", "interrupt"),
     ))
 
+    # ---- set_drive（②b：驱动手感，ADR 2026-09-23-EL驱动手感）----
+    # 换算在 ElEngine.drive_wave（引擎线程，cache 亲和）；这里只"读现有波 →
+    # 追加/替换 → 经 gate.set 写回单键"——门不旁路，与其余写工具同一条路。
+    reg.register(define_tool(
+        name="set_drive",
+        description=(
+            "给一对量子态之间加一个驱动场（比手搓波形清单省事）。src/tgt 用 "
+            "query_levels 返回的身份键。强度二选一：rabi_mhz（拉比频率，物理"
+            "自然语言，会自动换算成光强）或 intensity_mwcm2（直接给光强）。"
+            "时长用 pulse='pi'/'pi2'（按拉比频率自动定时长）或 duration_ns 显式"
+            "给。偏振 pol 取 π/σ+/σ-。默认追加到现有驱动清单，mode='replace' "
+            "则整组替换。两体演化用 atom='A'/'B' 分别设两侧驱动。设完可 run_sim 演化。"
+        ),
+        parameters={
+            "src": {"description": "源态身份键（query_levels 的 key）"},
+            "tgt": {"description": "目标态身份键（query_levels 的 key）"},
+            "rabi_mhz": {"type": "number", "description": "拉比频率 MHz（与 intensity_mwcm2 二选一）"},
+            "intensity_mwcm2": {"type": "number", "description": "光强 mW/cm²（与 rabi_mhz 二选一）"},
+            "pol": {"type": "string", "description": "偏振：π / σ+ / σ-（默认 π）"},
+            "pulse": {"type": "string", "description": "脉冲形状 pi / pi2（自动定时长）；省略则用 duration_ns"},
+            "duration_ns": {"type": "number", "description": "脉冲时长 ns（pulse 省略时必填）"},
+            "detuning_mhz": {"type": "number", "description": "相对共振的失谐 MHz（默认 0）"},
+            "mode": {"type": "string", "description": "append（默认追加）/ replace（整组替换）"},
+            "atom": {"type": "string", "description": "单体 single（默认）；两体 A / B"},
+        },
+        output_schema={"type": "object", "required": ["ok", "key", "wave"]},
+        execute=lambda src, tgt, rabi_mhz=None, intensity_mwcm2=None,
+        pol="π", pulse="", duration_ns=None, detuning_mhz=0.0,
+        mode="append", atom="single": _set_drive(
+            engine, gate, channel, src, tgt, pol=pol, rabi_mhz=rabi_mhz,
+            intensity_mwcm2=intensity_mwcm2, pulse=pulse,
+            duration_ns=duration_ns, detuning_mhz=detuning_mhz, mode=mode,
+            atom=atom),
+        banned_words=("gate", "dipole", "dme", "serialize", "wave_list 结构"),
+    ))
+
     # ---- run_actions（CodeAct 编排，审查 §1.2②：机制已建、消费方接上）----
     # 只读查询 op 的真身 = Surface 的 QUERY 注册项（审查②a：description 里
     # "或已注册的只读查询名"必须为真）。注册驱动自 DOMAIN_QUERY_OPS 单一来源，
     # 分派直接复用上面各工具已注册的 execute（一份实现两处用，不造第二真值）。
+    # get_waves 是纯查询项（②b：读不占顶层工具），无对应工具，注册独立闭包。
     for _qn in DOMAIN_QUERY_OPS:
+        if _qn == "get_waves":
+            surface.register(EntryKind.QUERY, _qn,
+                             lambda atom="single": _get_waves(gate, atom),
+                             called_by="framework:CodeAct.run_actions")
+            continue
         _tool = reg.get(_qn)
         surface.register(EntryKind.QUERY, _qn, _tool.execute,
                          called_by="framework:CodeAct.run_actions")
@@ -302,3 +351,47 @@ def _run_sim(surface: Surface, gate: Gate, cancel_after_sec):
         if timer is not None:
             timer.cancel()
     return result
+
+
+def _set_drive(engine: ElEngine, gate: Gate, channel: Channel, src, tgt, **kw):
+    """set_drive：换算在引擎线程（cache 亲和），写回经 gate（门不旁路）。
+
+    atom 决定写哪个键；append 读现有波再追加、replace 整组替换。换算失败
+    （禁戒跃迁 / 身份键不在基组 / 强度时长没给全）抛 InvalidSpec，工具层
+    如实回错（L4 可教学）。
+    """
+    atom = kw.pop("atom", "single")
+    mode = kw.pop("mode", "append")
+    key = _WAVE_KEY.get(atom)
+    if key is None:
+        raise MechaError(f"atom={atom!r} 非法", kind="bad_drive",
+                         hint="atom 取 single / A / B")
+    wave = engine.drive_wave(gate.snapshot, src=src, tgt=tgt, **kw)
+    cur = list(gate.snapshot.get(key) or [])
+    waves = ([dict(w) for w in cur] if mode == "append" else []) + [wave]
+    gate.set(channel, key, waves, reason="ai set_drive",
+             call_id=CURRENT_CALL_ID.get())
+    return {"ok": True, "key": key, "wave": wave, "n_waves": len(waves)}
+
+
+def _get_waves(gate: Gate, atom: str = "single"):
+    """get_waves：读某原子侧的驱动波摘要（不内联大数组）。
+
+    纯读快照里的 wave_list，逐波回 name/频率/光强/偏振/包络形状/时长。要完整
+    演化数据走 run_sim 回执，要原始波形对象是 GUI 的事——查询面只给可概览的摘要。
+    """
+    key = _WAVE_KEY.get(atom)
+    if key is None:
+        raise MechaError(f"atom={atom!r} 非法", kind="bad_drive",
+                         hint="atom 取 single / A / B")
+    out = []
+    for w in (gate.snapshot.get(key) or []):
+        env = w.get("env")
+        shape = {"kind": env[0], "duration_ns": (env[4] if len(env) > 4 else None)} \
+            if isinstance(env, (list, tuple)) and env else {"kind": w.get("type")}
+        out.append({"name": w.get("name"),
+                    "freq_mhz": w.get("freq_mhz"),
+                    "intensity_mwcm2": w.get("intensity", w.get("intensity_mwcm2")),
+                    "pol": w.get("pol"), "offset_ns": w.get("offset_ns"),
+                    "envelope": shape})
+    return {"ok": True, "atom": atom, "key": key, "waves": out}

@@ -84,7 +84,8 @@ def main() -> int:
     names = [s["name"] for s in tools.schemas()]
     expect = {"set_config", "read_config", "query_params", "estimate_run",
               "preview_run", "run_sim", "query_levels",
-              "submit_job", "read_job", "cancel_job", "run_actions"}
+              "submit_job", "read_job", "cancel_job", "run_actions",
+              "set_drive"}
     if set(names) == expect:
         _ok(f"工具注册齐且过命名守卫：{sorted(names)}")
     else:
@@ -211,6 +212,27 @@ def main() -> int:
             f"，top 布居 {list(r['value'].get('final_top_pop', {}))[:2]}")
     else:
         _fail(out, f"run_sim 回执缺 ok/method：{r}")
+
+    # ---- 8b. ②b set_drive / get_waves：驱动手感端到端 ----
+    # 用 intensity+duration 路径（不依赖具体 dme 符号，稳定）；写回单键、读回摘要。
+    rl = tools.execute("query_levels", {})
+    kk = [s["key"] for s in rl["value"]["states"][:2]]
+    r = tools.execute("set_drive", {"src": kk[0], "tgt": kk[1],
+                                    "intensity_mwcm2": 1.0, "pol": "σ+",
+                                    "duration_ns": 10.0})
+    if r["is_error"]:
+        _fail(out, f"set_drive 被拒：{r['error']['message']}")
+    elif r["value"]["key"] == "dynamic.waves_single" and r["value"]["wave"]["intensity"] == 1.0:
+        rw = tools.execute("run_actions", {"actions": [{"op": "get_waves"}]})
+        waves = (rw["value"]["outputs"][0].get("waves")
+                 if not rw["is_error"] and rw["value"]["ok"] else [])
+        if waves and waves[0]["intensity_mwcm2"] == 1.0:
+            _ok(f"set_drive 写波 + get_waves 读回闭环（{len(waves)} 波，"
+                f"freq={waves[0]['freq_mhz']:.1f}MHz）")
+        else:
+            _fail(out, f"get_waves 未读回刚写的波：{rw}")
+    else:
+        _fail(out, f"set_drive 回执不符：{r}")
 
     # ---- 9. History 可归因：所有写都带 actor=ai + 有 call 记录 ----
     evs = history.events()
