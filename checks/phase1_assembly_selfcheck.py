@@ -110,6 +110,27 @@ def check_gate_authority(out: list[str]) -> None:
     else:
         _fail(out, "human 合法切模式未生效")
 
+    # 标签通道：side 定写权、actor 进史做归因（EL 消费方依赖）
+    _, hist2, gate2 = _make_gate(Mode.HUMAN)
+    gui = Channel("gui", "human")           # 标签 gui，side human
+    ev = gate2.set(gui, "power", 5, "r")
+    if ev.actor == "gui" and gate2.snapshot.get("power") == 5:
+        _ok("Channel('gui','human')：写权看 side、史记 actor=gui（来源归因保留）")
+    else:
+        _fail(out, f"标签通道归因不符：{ev}")
+    # ai 侧标签不得借 human 闸：side=ai 在 HUMAN 模式被拒
+    try:
+        gate2.set(Channel("mcp", "ai"), "power", 9, "r")
+        _fail(out, "ai 侧标签竟在 HUMAN 模式写成功")
+    except GateDenied:
+        _ok("标签不扩权：Channel('mcp','ai') 在 HUMAN 模式仍被拒")
+    # 未知 side 拒
+    try:
+        Channel("gui", "admin")
+        _fail(out, "Channel 竟接受未知 side")
+    except GateDenied:
+        _ok("未知 side 的通道构造被拒")
+
 
 def check_gate_executor_not_wrapper(out: list[str]) -> None:
     """门在执行器上：绕过 set 的直写无入口；validate 失败快照不动。"""

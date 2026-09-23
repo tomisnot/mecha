@@ -48,6 +48,31 @@ def import_el(el_root: str | Path):
     return protocol
 
 
+class CacheProxy:
+    """ARC cache 的线程亲和代理：任意线程的属性调用都汇流到引擎线程执行。
+
+    单进程"人机同一道门"必需：GUI 代码把 cache 当普通对象用（`cache.E_mhz(...)`、
+    传给 build_states），但 ARC 的 SQLite 连接认建它的线程（EL B-1①）。当 MCP
+    服务器与 GUI 同进程、各自在 anyio/Qt 线程上碰同一个 cache 时，代理把每个方法
+    调用 submit 到引擎池线程 ⇒ 连接永不被跨线程触碰。引擎无池（own_thread=False）
+    时直通原对象（调用方自己保证亲和）。
+    """
+
+    __slots__ = ("_cache", "_route")
+
+    def __init__(self, cache, route) -> None:
+        object.__setattr__(self, "_cache", cache)
+        object.__setattr__(self, "_route", route)
+
+    def __getattr__(self, name):
+        attr = getattr(self._cache, name)
+        if callable(attr):
+            def _routed(*args, **kwargs):
+                return self._route(attr, *args, **kwargs)
+            return _routed
+        return attr
+
+
 class ElEngine(Engine):
     """4 必实现 + 领域查询口（list_levels/preview/check 供工具层用）。
 

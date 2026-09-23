@@ -29,6 +29,7 @@ CHECKS = [
     "checks/vocabulary_selfcheck.py",
     "checks/phase5_el_selfcheck.py",
     "checks/phase5_hub_selfcheck.py",
+    "checks/phase5_bridge_selfcheck.py",
     "scripts/gen_capability_map.py --check",
 ]
 

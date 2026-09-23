@@ -44,20 +44,30 @@ def accept_all(key: str, value: object) -> None:
 
 @dataclass(frozen=True)
 class Channel:
-    """一条操作者通道。actor 在构造时钉死，frozen ⇒ 请求内容改不了它。
+    """一条操作者通道。**side**（human/ai）定写权，**actor**（标签）进史做归因。
 
-    只接受已知操作者类别；宿主装配时创建 Channel('human') / Channel('ai')。
+    side 在构造时钉死，frozen ⇒ 请求内容改不了它（硬纪律 4）。actor 默认等于
+    side；宿主可给更细的标签（'gui'/'mcp'/'codeact'）——消费方（如 GUI 面板）
+    按标签跳过自刷新、做来源高亮。标签不扩写权面：ai 侧标签拿不到 human 的闸。
     """
 
     actor: str
+    side: str = ""
 
     def __post_init__(self) -> None:
-        if self.actor not in ("human", "ai"):
+        side = self.side or self.actor
+        if side not in ("human", "ai"):
             raise GateDenied(
-                f"未知通道 actor={self.actor!r}",
+                f"未知通道 side={side!r}（actor={self.actor!r}）",
                 kind="bad_channel",
-                hint="actor 由通道类型决定，只能是 'human' 或 'ai'（宿主装配时钉死）",
+                hint="side 只能是 'human' 或 'ai'（宿主装配时钉死）；"
+                     "细标签放 actor（如 Channel('gui','human')）",
             )
+        if not self.actor or not self.actor.strip():
+            raise GateDenied("通道标签不能为空", kind="bad_channel",
+                             hint="Channel('gui','human')：标签非空")
+            # frozen dataclass：用 object.__setattr__ 填默认 side
+        object.__setattr__(self, "side", side)
 
 
 class Gate:
@@ -94,8 +104,8 @@ class Gate:
         ``call_id`` 是当次操作的调用标识（AI 侧来自 dsh 的 tool callId，人类
         侧来自 GUI），写进 History 供与操作者行为史双向互引（总纲 §5.2②）。
         """
-        # 1) authority.gate —— actor 由通道决定，不看请求内容
-        self._authority.gate(channel.actor)
+        # 1) authority.gate —— 写权看 side（human/ai），不看请求内容；actor 标签不扩权
+        self._authority.gate(channel.side)
         # 2) validate —— 在落地之前，失败则快照一字节不动
         self._validate(key, value)
         # 3) 落到执行器 —— 快照是 Gate 私有，只有这里能改
@@ -123,7 +133,7 @@ class Gate:
         History 里可识别"这一批本该一起"。与 set 的区别：set 是单键四步事务；
         set_batch 是"批量校验阶段 + 批量落地阶段"两段，校验阶段不碰快照。
         """
-        self._authority.gate(channel.actor)
+        self._authority.gate(channel.side)
         # 阶段一：全校验（不碰快照）
         for key, value in items.items():
             self._validate(key, value)

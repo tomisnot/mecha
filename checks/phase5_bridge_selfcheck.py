@@ -189,6 +189,57 @@ def main() -> int:
     else:
         _fail(out, "v2 journal 未落盘")
 
+    # 9. 同一道门（无 Qt 半）：for_shared + serve_mcp ⇒ GUI 线程与 MCP 线程共一 Gate
+    tmp2 = Path(tempfile.mkdtemp(prefix="mecha-shared-"))
+    br2 = V2Bridge.for_shared(el_root=EL_ROOT, data_root=tmp2)
+    # CacheProxy：主线程直接碰 cache（GUI 的用法）经代理汇流到引擎线程
+    g0 = {"n": 60, "l": 0, "j": 0.5}
+    e0 = br2.cache.E_mhz(g0["n"], g0["l"], g0["j"])
+    if isinstance(e0, float):
+        _ok(f"CacheProxy：主线程 cache.E_mhz 经引擎线程汇流成功（{e0:.1f} MHz）")
+    else:
+        _fail(out, f"CacheProxy 直通失败：{e0!r}")
+    srv_thread, server, port = br2.serve_mcp(port_file=tmp2 / ".mcp-port")
+    import asyncio
+
+    async def ai_side():
+        from mcp import ClientSession
+        from mcp.client.streamable_http import streamable_http_client
+        # 等服务器线程真正 bind（port 文件先写、bind 后到）
+        for _try in range(40):
+            try:
+                async with streamable_http_client(f"http://127.0.0.1:{port}/mcp") as st:
+                    async with ClientSession(st[0], st[1]) as s:
+                        await s.initialize()
+                        br2.switch_mode(Mode.AI, actor="human")   # 人开闸，AI 才能写
+                        return await s.call_tool(
+                            "set_config", {"key": "field.B_gauss", "value": 42.0})
+            except Exception:                                     # noqa: BLE001
+                await asyncio.sleep(0.5)
+        raise RuntimeError("连不上共享 MCP 服务器")
+    try:
+        r = asyncio.run(asyncio.wait_for(ai_side(), timeout=90))
+        ok = not getattr(r, "is_error", False)
+    except Exception as e:                                # noqa: BLE001
+        ok = False
+        _fail(out, f"MCP 往返异常：{e}")
+    if ok and br2.read("field.B_gauss") == 42.0:
+        _ok("同一道门：AI 经 MCP 线程写 42.0，GUI 线程读同一快照即见（一份真值）")
+    else:
+        _fail(out, f"同门读写不符：ok={ok} read={br2.read('field.B_gauss')}")
+    br2.switch_mode(Mode.HUMAN, actor="human")
+    br2.write("field.B_gauss", 7.0, reason="人再改", actor="gui")
+    jr2 = tmp2 / ".mecha-v2" / "journal.jsonl"
+    actors = []
+    for line in jr2.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            actors.append(__import__("json").loads(line).get("actor"))
+    if "ai" in actors and "gui" in actors:
+        _ok("journal 同一条史里既有 ai 又有 gui 事件（人机同史，互引可查）")
+    else:
+        _fail(out, f"journal actor 不全：{actors}")
+    server_task = None  # daemon 线程随进程走；此处仅确认不炸
+
     if out:
         print(f"phase5_bridge_selfcheck: FAIL（{len(out)} 条）")
         return 1

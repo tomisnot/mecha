@@ -47,6 +47,14 @@ _ACTOR_CHANNEL: dict[str, str] = {
 }
 
 
+def _build_gui_tools(engine, gate, authority, ai):
+    """GUI 进程内工具面（复用 tools.build_tool_registry，Surface 现建）。"""
+    from examples.energy_level.tools import build_tool_registry
+    from mecha.surface import Surface
+    surface = Surface(engine)
+    return build_tool_registry(engine, gate, surface, authority, ai)
+
+
 class _SessionShim:
     """兼容 v1 的 bridge.session.set（仅启动种子用）。"""
 
@@ -94,6 +102,50 @@ class V2Bridge:
         return cls(gate, history, authority, engine=engine, cache=engine._cache,
                    artifact_root=layout.data_dir / "artifacts")
 
+    @classmethod
+    def for_shared(cls, *, el_root: str | Path, data_root: str | Path,
+                   data_dir_name: str = ".mecha-v2",
+                   mode: Mode = Mode.HUMAN) -> "V2Bridge":
+        """单进程"人机同一道门"装配：GUI 与（后台线程的）MCP 服务器共享一个 Gate。
+
+        引擎用 own_thread=True（cache 建在专属池线程），GUI 拿到的 ``cache`` 是
+        CacheProxy —— GUI 主线程的直接 ``cache.E_mhz(...)`` 与 MCP handler（anyio
+        线程）的 protocol 调用都汇流到同一池线程，SQLite 连接永不被跨线程触碰
+        （EL B-1①）。这是"同一道门"在真项目里的落地形态。
+        """
+        from examples.energy_level.engine import (ElEngine, CacheProxy,
+                                                   make_validator)
+        from mecha.data_layout import resolve_data_dir
+        engine = ElEngine(el_root, own_thread=True)
+        layout = resolve_data_dir(Path(data_root), data_dir_name)
+        history, _sink = make_jsonl_history(layout)
+        authority = Authority(mode)
+        gate = Gate(authority, history, validate=make_validator(engine))
+        return cls(gate, history, authority, engine=engine,
+                   cache=CacheProxy(engine._cache, engine._on_engine),
+                   artifact_root=layout.data_dir / "artifacts")
+
+    def serve_mcp(self, *, host: str = "127.0.0.1", port: int = 0,
+                  port_file: str | Path | None = None):
+        """在本进程后台线程起 MCP 服务器（AI 连它，写经**同一个** Gate）。
+
+        返回 (thread, server, actual_port)。GUI 与服务器共享 self._gate ⇒ 人机同门。
+        """
+        import threading
+        from examples.energy_level.hub import to_mcp, _free_port
+        ai = Channel("ai")
+        tools = _build_gui_tools(self._engine, self._gate, self._authority, ai)
+        server = to_mcp({"tools": tools, "authority": self._authority})
+        actual = port or _free_port(host)
+        t = threading.Thread(
+            target=lambda: server.run(transport="streamable-http",
+                                      host=host, port=actual),
+            daemon=True, name="mecha-mcp")
+        t.start()
+        if port_file:
+            Path(port_file).write_text(str(actual), encoding="utf-8")
+        return t, server, actual
+
     # ---- 写（经门）----
 
     def write(self, key, value, *, reason="", actor="gui", call_id=""):
@@ -117,14 +169,16 @@ class V2Bridge:
 
     @staticmethod
     def _channel_for(actor: str) -> Channel:
-        side = _ACTOR_CHANNEL.get(str(actor).split(":")[0])
+        label = str(actor).split(":")[0]
+        side = _ACTOR_CHANNEL.get(label)
         if side is None:
             raise GateDenied(
                 f"未知 actor {actor!r}", kind="unknown_actor",
                 hint="actor 必须映射到 human/ai 通道",
                 suggest=f"已知 actor：{sorted(_ACTOR_CHANNEL)}",
             )
-        return Channel(side)
+        # 标签进史做归因（gui/mcp/…），side 定写权（human/ai）
+        return Channel(label, side)
 
     # ---- 读 ----
 
