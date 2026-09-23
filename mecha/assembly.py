@@ -20,7 +20,7 @@ from pathlib import Path
 from .authority import Authority
 from .data_layout import DataLayout, resolve_data_dir
 from .format_version import MigrationChain
-from .gate import Channel, Gate
+from .gate import Channel, Gate, Validator
 from .history import History
 from .monitor import Monitor, Summarizer
 from .providers.approval import LocalApproval
@@ -86,16 +86,20 @@ def build_roles(*, engine_name: str = "unconfigured", project: str = "mecha") ->
 
 
 def assemble(*, root: Path, data_dir_name: str | None, engine: Engine,
-             summarizer: Summarizer, project: str = "mecha",
+             summarizer: Summarizer, validate: Validator,
+             project: str = "mecha",
              migration: MigrationChain | None = None,
              approval_decider=None) -> Software:
-    """完整装配。data_dir_name 不注入 → 当场报错（D-6 的通道在此接上）。"""
+    """完整装配。data_dir_name 不注入 → 当场报错（D-6 的通道在此接上）。
+
+    validate 必填透传给 Gate（审查 P5-2：不校验请显式传 accept_all）。
+    """
     layout: DataLayout = resolve_data_dir(root, data_dir_name)
     roles = build_roles(engine_name=type(engine).__name__, project=project)
     sink = JsonlLogSink(layout, chain=migration)
     history = History(sink)
     authority = Authority()
-    gate = Gate(authority, history)
+    gate = Gate(authority, history, validate=validate)
     surface = Surface(engine, roles=roles)
     monitor = Monitor(history.events, summarizer)
     jobs = JobRegistry()

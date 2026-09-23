@@ -33,6 +33,7 @@ sys.path.insert(0, str(ROOT))
 from mecha.assembly import assemble  # noqa: E402
 from mecha.authority import Mode  # noqa: E402
 from mecha.errors import GateDenied, MechaError  # noqa: E402
+from mecha.gate import accept_all  # noqa: E402
 from mecha.monitor import Claim  # noqa: E402
 from mecha.surface import Engine, ExecutionContext  # noqa: E402
 
@@ -72,7 +73,7 @@ def _summarizer(events):
 
 def build(root: Path):
     return assemble(root=root, data_dir_name="projdata", engine=ToyEngine(),
-                    summarizer=_summarizer, project="toyproj")
+                    summarizer=_summarizer, validate=accept_all, project="toyproj")
 
 
 def check_hole1_no_bypass_write(out: list[str]) -> None:

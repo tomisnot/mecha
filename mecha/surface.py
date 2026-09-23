@@ -164,7 +164,9 @@ class Surface:
     # ---- ops 管道（框架真会调的 4 个方法 + 校验）----
 
     def query(self, name: str, **args: object) -> object:
-        """只读查询分派：未声明的查询动词默认可读（消 D-4 的 Surface 半边）。"""
+        """只读查询分派。查询**不经写权门**（这是 D-4 的解法：不存在"只读动词
+        被判不可逆"）；未注册的查询名报 ``UnknownOp`` 并带 hint——先 register 再调。
+        """
         entry = self._entries.get((EntryKind.QUERY, name))
         if entry is None:
             raise UnknownOp(

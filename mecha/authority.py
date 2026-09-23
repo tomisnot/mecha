@@ -10,7 +10,9 @@ dsh 的 approval **刻意窄**——one-shot only，无 allow-always / 无规则
 ## Known Limitations and Deferred Work
 
 - mode 是进程内状态，不落 History（它是操作者协调状态，不是域状态）。崩溃后
-  回到出厂 mode；是否需要持久化等第二个项目表态（n=1 推迟）。
+  回到出厂 mode；后果（审查 P5-3）：AI 写了一半崩溃，重启后人类看到的是
+  LOCKED 而不是"刚才 AI 在写"——丢失的只是协调态，域状态史本身完整可查。
+  是否需要持久化等第二个项目表态（n=1 推迟）。
 - 不实现"超时自动降级"：需要时经 Approval Provider 的 one-shot 重取，而非
   本模块内置计时器。
 """

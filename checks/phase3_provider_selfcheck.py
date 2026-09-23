@@ -35,7 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from mecha.authority import Authority, Mode
 from mecha.data_layout import resolve_data_dir
 from mecha.errors import MechaError
-from mecha.gate import Channel, Gate
+from mecha.gate import Channel, Gate, accept_all
 from mecha.history import History
 from mecha.providers.approval import LocalApproval
 from mecha.providers.codeact import Action, CodeAct
@@ -247,7 +247,7 @@ def check_codeact_logs_each_subcall(out: list[str]) -> None:
         layout = resolve_data_dir(Path(td), "d")
         hist = History()
         auth = Authority(Mode.AI)
-        gate = Gate(auth, hist)
+        gate = Gate(auth, hist, validate=accept_all)
         s = Surface(ToyEngine())
         s.register(EntryKind.QUERY, "echo", lambda word="": f"E:{word}", called_by="framework")
         act = CodeAct(s, hist, actor_provider=lambda: "ai")

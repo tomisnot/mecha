@@ -4,7 +4,8 @@
 2. 注册项 register → disposer 可撤销（dsh AGENTS.md:106 的可逆副作用）。
 3. 隐式契约键显式化：schema 未声明 run_output_required 即红；run 回执缺键即红
    （消 D-15）。
-4. 未声明的只读查询动词**默认可读**（消 D-4：注册即可见，没有 op 名表判级）。
+4. 只读查询**不经写权门**且**注册即可读**（消 D-4：没有 op 名表判级；
+   未注册名报 UnknownOp 带 hint，不是"被判 L3 禁止"）。
 5. 不许误报对偶（L7）：合规引擎全绿。
 
 用法：python checks/phase2_surface_selfcheck.py

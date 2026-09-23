@@ -12,9 +12,12 @@
 
 ## Known Limitations and Deferred Work
 
-- ``validate`` 是注入的 ``Callable[[key, value], None]``（项目声明键的合法值）。
-  不给则视为"任何值都合法"——键的 schema 校验归 Surface（Phase 2），Gate 只管
-  写权与落地顺序。
+- ``validate`` 是**必填**注入（``Callable[[key, value], None]``，项目声明键的
+  合法值）。真要"任何值都合法"必须显式传 ``accept_all``——库不静默放行
+  （审查 P5-2：与"库不猜"同纪律；装配点漏传校验器是静默坏事的温床）。
+- 无 ``set_many``：v2 实测零调用方，按"死契约删除"裁决（ADR
+  2026-09-23-set-many-裁决）。存档恢复等批量场景接线时，带真实调用方重写
+  原子性 ADR，并继承 v1 教训（20 份旧存档靠"先全校验再全落地"救过）。
 - 不内置 one-shot 审批：需要"每次写都问人"时，把 approval 包在 validate 里
   （validate 抛 GateDenied 即拒绝），而非在 Gate 里加审批分支（保持门单一职责）。
 - 物理演化（run）不在本模块：那是 Surface 的另一条 executor（洞 2）。Gate 只管
@@ -27,10 +30,15 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from .authority import Authority
-from .errors import GateDenied
+from .errors import GateDenied, MechaError
 from .history import Event, History
 
 Validator = Callable[[str, object], None]
+
+
+def accept_all(key: str, value: object) -> None:
+    """显式"任何值都合法"的校验器哨兵（不传 validate 会报错，逼你表态）。"""
+    return None
 
 
 @dataclass(frozen=True)
@@ -59,8 +67,15 @@ class Gate:
         authority: Authority,
         history: History,
         *,
-        validate: Validator | None = None,
+        validate: Validator,
     ) -> None:
+        if validate is None:
+            raise MechaError(
+                "Gate 必须注入 validate；不校验请显式传 accept_all",
+                kind="missing_validator",
+                hint="隐式放行一切值与『库不猜』同纪律相反（审查 P5-2）",
+                suggest="Gate(authority, history, validate=accept_all)",
+            )
         self._authority = authority
         self._history = history
         self._validate = validate
@@ -81,15 +96,8 @@ class Gate:
         # 1) authority.gate —— actor 由通道决定，不看请求内容
         self._authority.gate(channel.actor)
         # 2) validate —— 在落地之前，失败则快照一字节不动
-        if self._validate is not None:
-            self._validate(key, value)
+        self._validate(key, value)
         # 3) 落到执行器 —— 快照是 Gate 私有，只有这里能改
         self._snapshot[key] = value
         # 4) History.append —— 落地之后才记，带当次 call_id 供互引
         return self._history.append(key, value, channel.actor, reason, call_id)
-
-    def set_many(self, channel: Channel, items: dict[str, object], reason: str,
-                 call_id: str = "") -> list[Event]:
-        """逐键各发一条 set（不产生聚合 kind）。任一键失败前，已落地的键不回滚
-        ——这是刻意的：每条 set 是独立四步事务。需要原子性请合成单键值。"""
-        return [self.set(channel, k, v, reason, call_id) for k, v in items.items()]

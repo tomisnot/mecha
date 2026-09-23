@@ -34,7 +34,7 @@ from mecha.authority import Authority, Mode
 from mecha.data_layout import resolve_data_dir
 from mecha.errors import GateDenied, MechaError
 from mecha.format_version import MigrationChain, FORMAT_VERSION
-from mecha.gate import Channel, Gate
+from mecha.gate import Channel, Gate, accept_all
 from mecha.history import Event, History
 from mecha.monitor import Claim, Monitor
 
@@ -55,7 +55,7 @@ class InMemorySink:
         return self._records[-1]["seq"] if self._records else 0
 
 
-def _make_gate(mode: Mode = Mode.AI, validate=None, sink=None):
+def _make_gate(mode: Mode = Mode.AI, validate=accept_all, sink=None):
     auth = Authority(mode=mode)
     hist = History(sink)
     gate = Gate(auth, hist, validate=validate)
@@ -160,7 +160,7 @@ def check_history_append_only_resume(out: list[str]) -> None:
     _, hist, gate = _make_gate(Mode.AI, sink=sink)
     gate.set(Channel("ai"), "a", 1, "r")
     # 用同一 sink 重建：模拟进程重启（dsh 消失后独立可用）
-    gate2 = Gate(Authority(Mode.AI), History(sink))
+    gate2 = Gate(Authority(Mode.AI), History(sink), validate=accept_all)
     rebuilt = gate2.snapshot
     if rebuilt == {"a": 1}:
         _ok("从 sink 重建快照一致（dsh 消失后独立可用）")
@@ -206,6 +206,36 @@ def check_monitor_reconcile(out: list[str]) -> None:
         _ok("概括声称原始没有的键 → 存疑")
     else:
         _fail(out, "幽灵键未被抓到")
+
+    # 审查 P3-b：人话键名 + 显式 target 指向原始键 ⇒ 可对账
+    def plain_ok(events):
+        return {"功率": Claim(100, target="power")}
+    v4 = Monitor(lambda: hist.events(), plain_ok).read()
+    if not v4.disputed:
+        _ok("人话键名 Claim(target=原始键) 与原始一致 → 可对账不存疑")
+    else:
+        _fail(out, f"target 对账失败：{v4.dispute_reason}")
+
+    # 能抓坏：人话键名 + target 指向的原始值不符 → 原始赢
+    def plain_lie(events):
+        return {"功率": Claim(7, target="power")}
+    v5 = Monitor(lambda: hist.events(), plain_lie).read()
+    if v5.disputed and "power" in v5.dispute_reason:
+        _ok("人话概括谎报 target 值 → 存疑且归因到原始键")
+    else:
+        _fail(out, f"target 谎报未被抓到：{v5}")
+
+
+def check_validate_required(out: list[str]) -> None:
+    """审查 P5-2：validate 必填，缺失当场拒（不静默放行一切值）。"""
+    try:
+        Gate(Authority(Mode.AI), History(), validate=None)
+        _fail(out, "缺 validate 的 Gate 竟构造成功（静默放行）")
+    except MechaError as e:
+        if e.kind == "missing_validator":
+            _ok("validate 必填：缺失当场拒，显式 accept_all 才放行（P5-2）")
+        else:
+            _fail(out, f"缺 validate 报错 kind 不对：{e.kind}")
 
 
 def check_format_migration(out: list[str]) -> None:
@@ -276,6 +306,7 @@ def main() -> int:
     check_call_id_crossref(out)
     check_history_append_only_resume(out)
     check_monitor_reconcile(out)
+    check_validate_required(out)
     check_format_migration(out)
     check_data_layout(out)
     if out:

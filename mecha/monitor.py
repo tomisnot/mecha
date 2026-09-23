@@ -14,9 +14,12 @@
 - 概括函数是注入的纯函数（``Callable[[list[Event]], Mapping[str, object]]``）；
   本模块不内置任何领域概括（那是项目 Provider 的事）。
 - 不提供 UI：Monitor 是后端读面（v1 cockpit/backend.py 方向），GUI 归项目。
-- 对账口径：概括里凡是 ``Claim``（对某键值的复述），其键必须存在于原始折叠，
-  且值必须相等；否则原始赢、整份读数标存疑。概括里的自由描述文本不比对
-  （机械不可判其属实性，人审）。
+- 对账口径：概括里凡是 ``Claim``（对某键值的复述），其值与原始折叠比对；
+  ``Claim(value, target=原始键)`` 可显式指向原始键（人话概括也可对账，审查
+  P3-b），省略 target 则用概括键名本身。target 不存在或值不等 ⇒ 原始赢、
+  整份读数存疑。自由描述文本不比对（机械不可判其属实性，人审）。
+- 不做"键名等价推断"（b_field ≡ field.B_gauss 靠猜是假绿的温床）；要人话
+  键名可对账，必须显式写 Claim(target=...)。
 """
 
 from __future__ import annotations
@@ -31,9 +34,14 @@ Summarizer = Callable[[list[Event]], Mapping[str, object]]
 
 @dataclass(frozen=True)
 class Claim:
-    """概括层对某个键值的复述——可被原始层证伪的最小单位。"""
+    """概括层对某个键值的复述——可被原始层证伪的最小单位。
+
+    ``target`` 指定它复述的**原始键名**（人话概括用，审查 P3-b）；省略则用
+    概括字典里的键名本身。
+    """
 
     value: object
+    target: str = ""
 
 
 @dataclass(frozen=True)
@@ -61,10 +69,11 @@ class Monitor:
         summary = dict(self._summarize(events))
         for k, v in summary.items():
             if isinstance(v, Claim):
-                if k not in raw:
+                target = v.target or k
+                if target not in raw:
                     return MonitorView(summary, raw, True,
-                                       f"概括声称键 {k!r}，原始史里没有")
-                if v.value != raw[k]:
+                                       f"概括声称键 {target!r}，原始史里没有")
+                if v.value != raw[target]:
                     return MonitorView(summary, raw, True,
-                                       f"键 {k!r} 概括={v.value!r} 与原始={raw[k]!r} 不一致")
+                                       f"键 {target!r} 概括={v.value!r} 与原始={raw[target]!r} 不一致")
         return MonitorView(summary, raw, False)
