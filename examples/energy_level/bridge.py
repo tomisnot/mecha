@@ -28,19 +28,12 @@ import threading
 from pathlib import Path
 
 from mecha.authority import Authority, Mode
-from mecha.data_layout import DataLayout
 from mecha.errors import GateDenied, MechaError, UnknownKey
 from mecha.gate import Channel, Gate
 from mecha.history import Event, History, fold
 from mecha.monitor import Claim, Monitor
 from mecha.providers.jobs import JobRegistry
-from mecha.providers.log_local import JsonlLogSink
 
-
-def make_jsonl_history(layout: DataLayout):
-    """建一份从磁盘 journal 续写的 History（Hub/GUI 各自进程独立续）。"""
-    sink = JsonlLogSink(layout)
-    return History(sink), sink
 
 # actor 字符串 → 通道。宿主词表在这层，不在库。
 _ACTOR_CHANNEL: dict[str, str] = {
@@ -113,7 +106,9 @@ class V2Bridge:
 
     def __init__(self, gate: Gate, history: History, authority: Authority,
                  *, engine=None, cache=None, artifact_root: Path | None = None,
-                 summarizer=el_summarizer) -> None:
+                 summarizer=el_summarizer,
+                 monitor: Monitor | None = None,
+                 jobs: JobRegistry | None = None) -> None:
         self._gate = gate
         self._history = history
         self._authority = authority
@@ -125,9 +120,29 @@ class V2Bridge:
         self.session = _SessionShim(self)
         self.ops = ElOps(self) if engine is not None else None
         # Monitor（第一交付物的后端读面，总纲 §5.2④）：只读，无写回。
-        self.monitor = Monitor(history.events, summarizer)
+        # for_* 路径注入 assemble() 建好的那份（D-33：唯一具名装配点）；
+        # 直接构造（测试注入）缺省自建。
+        self.monitor = monitor or Monitor(history.events, summarizer)
         # 单一 Job 注册表（本进程唯一，消 D-21）：GUI 与 MCP 线程共用它。
-        self.jobs = JobRegistry()
+        self.jobs = jobs or JobRegistry()
+
+    @classmethod
+    def _assembled(cls, *, el_root: str | Path, data_root: str | Path,
+                   data_dir_name: str, mode: Mode, engine, cache):
+        """经 mecha.assembly.assemble() 具名装配点建栈（D-33）。
+
+        真实部署路径与 ToyEngine 端到端判据走**同一个** assemble——装配漂移
+        在真引擎上就会红，不再存在"判据用替身、真路径手搭"的双装配。
+        """
+        from mecha.assembly import assemble
+        from examples.energy_level.engine import make_validator
+        sw = assemble(root=Path(data_root), data_dir_name=data_dir_name,
+                      engine=engine, summarizer=el_summarizer,
+                      validate=make_validator(engine), mode=mode,
+                      project="energy-level")
+        return cls(sw.gate, sw.history, sw.authority, engine=engine, cache=cache,
+                   artifact_root=sw.layout.data_dir / "artifacts",
+                   monitor=sw.monitor, jobs=sw.jobs)
 
     @classmethod
     def for_gui(cls, *, el_root: str | Path, data_root: str | Path,
@@ -137,15 +152,11 @@ class V2Bridge:
         调用方（app_entry）在主线程构造它 ⇒ cache 的 SQLite 亲和落在主线程，
         与 v1 的 AppBridge 同构（prepare 主线程、execute worker）。
         """
-        from examples.energy_level.engine import ElEngine, make_validator
-        from mecha.data_layout import resolve_data_dir
+        from examples.energy_level.engine import ElEngine
         engine = ElEngine(el_root, own_thread=False)
-        layout = resolve_data_dir(Path(data_root), data_dir_name)
-        history, _sink = make_jsonl_history(layout)
-        authority = Authority(mode)
-        gate = Gate(authority, history, validate=make_validator(engine))
-        return cls(gate, history, authority, engine=engine, cache=engine._cache,
-                   artifact_root=layout.data_dir / "artifacts")
+        return cls._assembled(el_root=el_root, data_root=data_root,
+                              data_dir_name=data_dir_name, mode=mode,
+                              engine=engine, cache=engine._cache)
 
     @classmethod
     def for_shared(cls, *, el_root: str | Path, data_root: str | Path,
@@ -158,17 +169,12 @@ class V2Bridge:
         线程）的 protocol 调用都汇流到同一池线程，SQLite 连接永不被跨线程触碰
         （EL B-1①）。这是"同一道门"在真项目里的落地形态。
         """
-        from examples.energy_level.engine import (ElEngine, CacheProxy,
-                                                   make_validator)
-        from mecha.data_layout import resolve_data_dir
+        from examples.energy_level.engine import ElEngine, CacheProxy
         engine = ElEngine(el_root, own_thread=True)
-        layout = resolve_data_dir(Path(data_root), data_dir_name)
-        history, _sink = make_jsonl_history(layout)
-        authority = Authority(mode)
-        gate = Gate(authority, history, validate=make_validator(engine))
-        return cls(gate, history, authority, engine=engine,
-                   cache=CacheProxy(engine._cache, engine._on_engine),
-                   artifact_root=layout.data_dir / "artifacts")
+        return cls._assembled(el_root=el_root, data_root=data_root,
+                              data_dir_name=data_dir_name, mode=mode,
+                              engine=engine,
+                              cache=CacheProxy(engine._cache, engine._on_engine))
 
     def serve_mcp(self, *, host: str = "127.0.0.1", port: int = 0,
                   port_file: str | Path | None = None):

@@ -17,7 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from .authority import Authority
+from .authority import Authority, DEFAULT_MODE, Mode
 from .data_layout import DataLayout, resolve_data_dir
 from .format_version import MigrationChain
 from .gate import Channel, Gate, Validator
@@ -50,6 +50,9 @@ class Software:
     channels: dict[str, Channel]
     #: 出厂 LOCKED（nothing ships enabled 用在写权上）；人类通道经 switch_mode 开闸
     authority: Authority
+    #: 数据目录布局（宿主派生 artifact_root 等子路径用；D-33：真实路径经
+    #: assemble 后不再自己 resolve_data_dir）
+    layout: DataLayout
 
     def close(self) -> None:
         """关停实例：释放 History 的写租约（宿主关停/租约交接用）。幂等。"""
@@ -105,17 +108,19 @@ def build_roles(*, engine_name: str = "unconfigured", project: str = "mecha") ->
 def assemble(*, root: Path, data_dir_name: str | None, engine: Engine,
              summarizer: Summarizer, validate: Validator,
              project: str = "mecha",
+             mode: Mode = DEFAULT_MODE,
              migration: MigrationChain | None = None,
              approval_decider=None) -> Software:
-    """完整装配。data_dir_name 不注入 → 当场报错（D-6 的通道在此接上）。
+    """完整装配（唯一具名装配点，L6/D-33：真实部署路径也走这里）。
 
     validate 必填透传给 Gate（审查 P5-2：不校验请显式传 accept_all）。
+    mode 默认出厂 LOCKED（nothing ships enabled）；GUI 类宿主显式传 HUMAN。
     """
     layout: DataLayout = resolve_data_dir(root, data_dir_name)
     roles = build_roles(engine_name=type(engine).__name__, project=project)
     sink = JsonlLogSink(layout, chain=migration)
     history = History(sink)
-    authority = Authority()
+    authority = Authority(mode)
     gate = Gate(authority, history, validate=validate)
     surface = Surface(engine, roles=roles)
     monitor = Monitor(history.events, summarizer)
@@ -128,4 +133,4 @@ def assemble(*, root: Path, data_dir_name: str | None, engine: Engine,
     return Software(gate=gate, history=history, surface=surface, monitor=monitor,
                     jobs=jobs, spill=spill, approval=approval, tools=tools,
                     visibility=visibility, roles=roles, channels=channels,
-                    authority=authority)
+                    authority=authority, layout=layout)

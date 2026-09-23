@@ -13,7 +13,8 @@
   本文件的 `to_mcp`（工具→MCPServer 转换器）被 serve_mcp 复用；独立进程
   模式只服务并存部署。
 
-- 7 个工具（tools.build_tool_registry）注册进 mcp 2.x MCPServer，写经 v2 Gate。
+- 工具面（tools.build_tool_registry 注册的全部工具，清单见其 schemas()）注册进
+  mcp 2.x MCPServer，写经 v2 Gate。
 - streamable-http 传输：dsh 插件 re0-mecha 读 .mcp-port → 连 http://host:port/mcp。
 - 工具入参 schema 直接投影 v2 声明（parameters 字段覆写——闭包 **kwargs 推不出
   参数，不覆写就等于把 Phase 4 的 schema 成果在 MCP 层丢掉）。
@@ -46,12 +47,8 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from mecha.authority import Authority, Mode  # noqa: E402
+from mecha.authority import Mode  # noqa: E402
 from mecha.data_layout import resolve_data_dir  # noqa: E402
-from mecha.gate import Channel, Gate  # noqa: E402
-from mecha.history import History  # noqa: E402
-from mecha.providers.jobs import JobRegistry  # noqa: E402
-from mecha.surface import Surface  # noqa: E402
 from mecha.tools import CURRENT_CALL_ID  # noqa: E402
 
 # 模块级导入：`from __future__ import annotations` 下注解是字符串，mcp 的
@@ -60,23 +57,24 @@ from mcp.server.mcpserver import Context  # noqa: E402
 
 from examples.energy_level.engine import ElEngine, make_validator  # noqa: E402
 from examples.energy_level.tools import build_tool_registry  # noqa: E402
-from examples.energy_level.bridge import make_jsonl_history  # noqa: E402
 
 
 def build_stack(el_root: str | Path, data_root: str | Path,
                 data_dir_name: str = ".mecha-v2") -> dict:
-    """装配 Hub 侧的 v2 栈（engine + gate + surface + jobs + tools）。"""
+    """装配 Hub 侧的 v2 栈——**经 mecha.assembly.assemble() 具名装配点**
+    （D-33：真实路径与判据同走 assemble，装配漂移在真引擎上即红）。"""
+    from mecha.assembly import assemble
+    from examples.energy_level.bridge import el_summarizer
     engine = ElEngine(el_root)
-    layout = resolve_data_dir(Path(data_root), data_dir_name)
-    history, _sink = make_jsonl_history(layout)
-    authority = Authority(Mode.LOCKED)     # 出厂收紧；人类开闸
-    gate = Gate(authority, history, validate=make_validator(engine))
-    surface = Surface(engine)
-    ai = Channel("ai")
-    jobs = JobRegistry()                   # 本进程唯一注册表（消 D-21）
-    tools = build_tool_registry(engine, gate, surface, authority, ai, jobs)
-    return {"engine": engine, "history": history, "authority": authority,
-            "gate": gate, "surface": surface, "ai": ai, "jobs": jobs,
+    sw = assemble(root=Path(data_root), data_dir_name=data_dir_name,
+                  engine=engine, summarizer=el_summarizer,
+                  validate=make_validator(engine), mode=Mode.LOCKED,
+                  project="energy-level")
+    ai = sw.channels["ai"]
+    tools = build_tool_registry(engine, sw.gate, sw.surface, sw.authority, ai,
+                                sw.jobs)
+    return {"engine": engine, "history": sw.history, "authority": sw.authority,
+            "gate": sw.gate, "surface": sw.surface, "ai": ai, "jobs": sw.jobs,
             "tools": tools}
 
 
@@ -163,8 +161,8 @@ def main(argv=None) -> int:
                     help="EL 项目根（含 src/core/protocol.py）")
     ap.add_argument("--data-root", default="", help="数据目录父（默认=EL 根）")
     ap.add_argument("--data-dir", default=".mecha-v2-hub",
-                    help="数据目录名（注入；与 GUI 的 .mecha-v2 分开，"
-                         "并存期两进程各有权威 journal，经 follow_journal 单向同步）")
+                    help="数据目录名（注入；与 GUI 的 .mecha-v2 分开——并存部署"
+                         "各写各的 journal，不汇流；写租约各保各目录单写者）")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=0, help="0=自动选空闲端口")
     ap.add_argument("--port-file", default="",

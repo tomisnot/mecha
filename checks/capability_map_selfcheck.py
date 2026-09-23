@@ -135,10 +135,14 @@ DEFERRED_PROVIDERS = frozenset({
 #: 有真实消费者的 provider → (实现符号, 自身模块路径子串)。
 #: 守卫 grep 该符号在 mecha/ 或 examples/ 下、排除 checks/ 与 assembly.py
 #: 与自身模块后的引用，独立于 consumer 标签证明"真有人用"（审查 D-29）。
+#: provider.log.local 的证据符号是 `assemble`：D-33 后 sink 只经具名装配点
+#: 注入 History（依赖倒置，消费者不 import Provider 类）——真实路径
+#: （bridge/hub）import assemble 即证明整条 log 链被真消费；若谁退回手搭
+#: 装配，该 import 消失、守卫当场红（D-33 的机械防回归）。
 CONSUMER_SYMBOLS = {
     "provider.jobs.local": ("JobRegistry", ("providers/jobs.py",)),
     "provider.codeact": ("CodeAct", ("providers/codeact.py",)),
-    "provider.log.local": ("JsonlLogSink", ("providers/log_local.py",)),
+    "provider.log.local": ("assemble", ("mecha/assembly.py",)),
 }
 
 
