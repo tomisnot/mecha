@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mecha"
+version = "0.2.0"
+description = "这台软件的操作者无关层：写入门 / 域状态史 / 能力面 / 人类监控面"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+# dsh 宿主接线（Phase 5 第 2 步）才需要；库本体零依赖是纪律（独立于 dsh）。
+
+[tool.setuptools.packages.find]
+include = ["mecha*"]
+
+# D-24 教训：package-data 必须显式声明并真出包验证，读代码永远看不出来。
+# 当前 mecha/ 无随包资产；将来出厂 UI/资产进 cockpit 时在此声明并跑 pip wheel 验。
