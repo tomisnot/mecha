@@ -57,6 +57,10 @@ description 只含任务概念（L4），不含"choke point/读回面"等实现�
 GUI 写路径迁到 v2 Gate（"人类与硅基过同一道门"在真项目里成立的那一步）。
 两步都是 EL 仓改动，需用户授权。
 
+**回登（2026-09-23，用户已授权后）**：两步均已落地——①并存部署由 `hub.py`
+独立进程覆盖；②GUI 写路径已迁 v2 Gate（EL 仓 `RE0_V2=1` 走 `src/v2_bind.py`，
+见 ADR `phase5-el接线`）。本 note 的"剩余范围"已兑现。
+
 放弃：现在就动 EL 仓（等授权；且并存部署先验证再迁移，风险最低）。
 
 ## Alternatives considered
