@@ -58,23 +58,51 @@ class _SessionShim:
 
 
 class V2Bridge:
-    """GUI 适配器：把 AppBridge 接口翻译成 v2 Gate/History/Authority 操作。"""
+    """GUI 适配器：把 AppBridge 接口翻译成 v2 Gate/History/Authority 操作。
+
+    构造走 ``for_gui``（装配全栈 + cache/ops 接线）；直接构造仅供测试注入。
+    """
 
     def __init__(self, gate: Gate, history: History, authority: Authority,
-                 *, cache=None) -> None:
+                 *, engine=None, cache=None, artifact_root: Path | None = None) -> None:
         self._gate = gate
         self._history = history
         self._authority = authority
+        self._engine = engine
         self._lock = threading.Lock()
-        self.cache = cache
+        self.cache = cache if cache is not None else (engine._cache if engine else None)
+        self._artifact_root = artifact_root or (
+            Path(".mecha-v2/artifacts") if engine else Path(".mecha-v2/artifacts"))
         self.session = _SessionShim(self)
+        self.ops = ElOps(self) if engine is not None else None
+
+    @classmethod
+    def for_gui(cls, *, el_root: str | Path, data_root: str | Path,
+                data_dir_name: str = ".mecha-v2", mode: Mode = Mode.HUMAN) -> "V2Bridge":
+        """GUI 进程内装配：v2 引擎（cache 建在主线程，own_thread=False）+ Gate。
+
+        调用方（app_entry）在主线程构造它 ⇒ cache 的 SQLite 亲和落在主线程，
+        与 v1 的 AppBridge 同构（prepare 主线程、execute worker）。
+        """
+        from examples.energy_level.engine import ElEngine, make_validator
+        from mecha.data_layout import resolve_data_dir
+        engine = ElEngine(el_root, own_thread=False)
+        layout = resolve_data_dir(Path(data_root), data_dir_name)
+        history, _sink = make_jsonl_history(layout)
+        authority = Authority(mode)
+        gate = Gate(authority, history, validate=make_validator(engine))
+        return cls(gate, history, authority, engine=engine, cache=engine._cache,
+                   artifact_root=layout.data_dir / "artifacts")
 
     # ---- 写（经门）----
 
     def write(self, key, value, *, reason="", actor="gui", call_id=""):
         chan = self._channel_for(actor)
         with self._lock:
-            return self._gate.set(chan, key, value, reason=reason, call_id=call_id)
+            ev = self._gate.set(chan, key, value, reason=reason, call_id=call_id)
+        # v1 AppBridge.write 的回执形状（GUI 多数忽略，这里如实提供）
+        return {"ok": True, "resolved": ev.value, "readback": self.read(key),
+                "seq": ev.seq}
 
     def write_many(self, items, *, reason="", actor="gui", call_id=""):
         """原子批量写（GUI 运行前同步配置用）。任一键非法 ⇒ 一个都不写。"""
@@ -150,3 +178,95 @@ class V2Bridge:
         with self._lock:
             self._gate.set_batch(chan, data, reason=reason)   # 原子：坏一键全不写
         return len(data)
+
+    # ---- v1 AppBridge 兼容面（GUI 消费配置所需的其余口）----
+
+    def effective(self) -> dict:
+        """当前域快照（v1 同名口的语义：GUI 读配置现值都走这里）。"""
+        return self._gate.snapshot
+
+    def params(self, *, include_internal: bool = False, page_size: int = 60) -> dict:
+        """参数表（v1 list_params 的形状：{params, count}）。
+
+        tier='internal' 的引擎常量默认不露面（渐进披露，M2/D-B）；GUI 检视器
+        用 include_internal=True + 大 page_size 拉全量。
+        """
+        schema = self._engine.schema()
+        rows: list[dict] = []
+        for fam in ("config", "solve"):
+            for key, rec in dict(schema[fam]).items():     # type: ignore[arg-type]
+                rows.append({**rec, "name": key, "family": fam})
+        if include_internal:
+            for key, rec in dict(schema["engine"]).items():  # type: ignore[arg-type]
+                rows.append({**rec, "name": f"engine.{key}", "family": "engine"})
+        rows.sort(key=lambda r: r["name"])
+        return {"params": rows[:page_size], "count": len(rows)}
+
+    def describe(self, key: str) -> dict:
+        """单键参数记录（v1 同名口；未入册抛 UnknownKey）。"""
+        bare = key[len("engine."):] if key.startswith("engine.") else key
+        schema = self._engine.schema()
+        for fam in ("config", "solve"):
+            rec = dict(schema[fam]).get(key)               # type: ignore[call-overload]
+            if rec:
+                return {**rec, "name": key, "family": fam}
+        rec = dict(schema["engine"]).get(bare)             # type: ignore[call-overload]
+        if rec:
+            return {**rec, "name": f"engine.{bare}", "family": "engine"}
+        raise MechaError(f"键 {key!r} 未入册", kind="unknown_key",
+                         hint="参数表见 params()；拼错键名会被拒（fail loud）")
+
+
+class ElOps:
+    """v1 Ops 兼容的计算门面（GUI 运行路径：prepare/execute/load_artifact/root）。
+
+    线程模型照 v1 的定论（B-1①）：**prepare 必须建 cache 的主线程**（ARC
+    SQLite 认线程，GUI 主线程就是主线程）；**execute 可进 worker 线程**
+    （evolve_run 纯数值不碰 cache）。artifact 落盘格式与 v1 同（GUI 的
+    load_artifact 取 (run, arrays, manifest) 元组第 1 项）。
+    """
+
+    def __init__(self, bridge: "V2Bridge") -> None:
+        self._b = bridge
+        self.root = bridge._artifact_root
+
+    def prepare(self, *, actor: str = "gui", reason: str = "",
+                diag: bool = False, pump=None, vdd: bool = True) -> dict:
+        p = self._b._engine._protocol
+        snap = self._b.effective()
+        run = p.build_run(self._b.cache, snap, pump=pump, vdd=vdd, diag=diag)
+        problems = p.check_run(run)
+        return {"run": run, "problems": problems, "actor": actor, "reason": reason}
+
+    def execute(self, prepared: dict, *, actor: str = "gui", reason: str = "",
+                progress_arr=None, land_artifact: bool = True) -> dict:
+        p = self._b._engine._protocol
+        run = prepared["run"]
+        res = p.evolve_run(run, progress_arr=progress_arr, cache=self._b.cache)
+        summary = dict(p.result_summary(run, res))
+        summary["problems"] = list(prepared.get("problems") or [])
+        aid = ""
+        if land_artifact and res is not None:
+            aid = self._land(run, res)
+            summary["artifact_id"] = aid
+        return {"summary": summary, "artifact_id": aid, "ok": bool(summary.get("ok"))}
+
+    def _land(self, run: dict, res: dict) -> str:
+        import pickle
+        import uuid
+        self.root.mkdir(parents=True, exist_ok=True)
+        aid = uuid.uuid4().hex[:12]
+        arrays = {k: v for k, v in res.items()
+                  if k in ("pops", "t", "loss", "pops_2d", "states_2d",
+                           "loss_A", "loss_B", "om_mhz", "diag")}
+        with (self.root / f"{aid}.pkl").open("wb") as f:
+            pickle.dump((run.get("labels"), arrays), f, protocol=4)
+        return aid
+
+    def load_artifact(self, aid: str):
+        import pickle
+        path = self.root / f"{aid}.pkl"
+        if not path.exists():
+            return None
+        with path.open("rb") as f:
+            return pickle.load(f)

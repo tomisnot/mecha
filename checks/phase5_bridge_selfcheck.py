@@ -1,0 +1,200 @@
+"""Phase 5 第 2 步判据（无头半）：V2Bridge 满足 GUI 的消费契约。
+
+GUI（Qt）本体在 CI 里跑不了，但 GUI 对 bridge 的**调用面**是可测的契约——
+本判据按 EL 消费方实际调用的形状逐项验（read/write/write_many/subscribe/
+can_write/mode/switch_mode/effective/params/describe/save/load + ops 计算面
+prepare/execute/load_artifact）：
+
+1. 写经门 + 回执形状 {ok,resolved,readback}（v1 兼容）。
+2. 订阅实时刷新：AI 通道写 → gui 侧回调收到 {kind,actor,target}（面板刷新依据）。
+3. 写权互斥：ai 模式下 gui 写被拒（can_write=False + write 抛 GateDenied）；
+   切回 human 放行。AI 不能自己解锁。
+4. write_many 原子：一批里埋一个坏键 ⇒ 一个都不落地（v1 存档教训）。
+5. save/load 往返：扁平快照；load 原子恢复。
+6. params 渐进披露：默认不露 internal；include_internal 拉全量；describe 单键。
+7. ops 计算面（主线程，own_thread=False）：prepare→execute→artifact 取回数组，
+   与 GUI 绘图消费的形状一致（res['pops']/res['t']）。
+
+缺 EL 即红。Qt 相关的活体部分（真开窗口点按钮）需用户本地验收（README 步骤）。
+
+用法：python checks/phase5_bridge_selfcheck.py
+退出码：0 全绿；1 有失败。
+
+## Known Limitations and Deferred Work
+
+- 不测 Qt 信号槽/控件刷新本身（无头环境起不了 QApplication）；测的是它依赖的
+  bridge 契约。活体 GUI 验收清单在 EL 仓 src/v2_bind.py 顶部注释。
+- execute 用最小配置（单体 mixed 小网格，~2s）；两体/多体路径归活体验收。
+"""
+
+from __future__ import annotations
+
+import sys
+import tempfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+EL_ROOT = Path(r"D:\学\BaiduSyncdisk\编程\code\python\Energy Level")
+
+from mecha.authority import Mode  # noqa: E402
+from mecha.errors import GateDenied, MechaError  # noqa: E402
+
+from examples.energy_level.bridge import V2Bridge  # noqa: E402
+
+SKEL = {
+    "groups.list": [{"n": 60, "l": 0, "j": 0.5}, {"n": 60, "l": 1, "j": 1.5}],
+    "field.B_gauss": 1.0, "field.E_vpcm": 0.0,
+    "dynamic.mode": 0, "dynamic.method": "mixed",
+    "dynamic.t_max": 5.0, "dynamic.npts": 50,
+    "dynamic.decay_index": 0,
+}
+
+
+def _ok(msg: str) -> None:
+    print(f"  ✓ {msg}")
+
+
+def _fail(out: list[str], msg: str) -> None:
+    print(f"  ✗ {msg}")
+    out.append(msg)
+
+
+def main() -> int:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    out: list[str] = []
+    print("Phase 5 第 2 步判据（无头：GUI 消费契约）：")
+    if not (EL_ROOT / "src" / "core" / "protocol.py").exists():
+        print(f"  ✗ EL 根不存在：{EL_ROOT}（缺 EL 即红）")
+        return 1
+
+    tmp = Path(tempfile.mkdtemp(prefix="mecha-bridge-"))
+    br = V2Bridge.for_gui(el_root=EL_ROOT, data_root=tmp)
+
+    # 1. 写经门 + 回执形状
+    rec = br.write("field.B_gauss", 21.7, reason="人调磁场")
+    if rec["ok"] and rec["resolved"] == 21.7 and rec["readback"] == 21.7:
+        _ok("write 经门成功 + 回执 {ok,resolved,readback}（v1 形状）")
+    else:
+        _fail(out, f"write 回执不符：{rec}")
+
+    # 2. 订阅：AI 写 → gui 回调收到事件（面板实时刷新的依据）
+    seen: list[dict] = []
+    unsub = br.subscribe(lambda ev: seen.append(ev))
+    br.switch_mode(Mode.AI, actor="human")
+    br.write("field.E_vpcm", 3.0, reason="AI 调场", actor="ai")
+    if seen and seen[-1]["kind"] == "set" and seen[-1]["actor"] == "ai" \
+            and seen[-1]["target"] == "field.E_vpcm":
+        _ok("subscribe 收到 ai 写事件（GUI 实时刷新 + 归因可用）")
+    else:
+        _fail(out, f"订阅事件不符：{seen}")
+    unsub()
+
+    # 3. 写权互斥：AI 模式下 gui 写被拒
+    if br.can_write("gui") is False:
+        _ok("AI 模式 can_write(gui)=False（据此设控件只读）")
+    else:
+        _fail(out, "AI 模式下 gui 竟可写")
+    try:
+        br.write("field.B_gauss", 99.0, reason="GUI 越权", actor="gui")
+        _fail(out, "越权写竟落地")
+    except GateDenied:
+        if br.read("field.B_gauss") == 21.7:
+            _ok("GUI 越权写被拒且值未动（写权互斥）")
+        else:
+            _fail(out, "被拒但值变了")
+    try:
+        br.switch_mode(Mode.HUMAN, actor="ai")
+        _fail(out, "AI 通道竟能切模式（自解锁）")
+    except GateDenied:
+        _ok("AI 不能给自己解锁（switch_mode 拒非 human）")
+    br.switch_mode(Mode.HUMAN, actor="human")
+    if br.can_write("gui"):
+        _ok("人类夺回：can_write(gui) 恢复 True")
+    else:
+        _fail(out, "切回 human 后 gui 仍不可写")
+
+    # 4. write_many 原子：坏一键全不写
+    before = br.effective()
+    try:
+        br.write_many({"field.B_gauss": 5.0, "dynamic.nope": 1},
+                      reason="批量含坏键", actor="gui")
+        _fail(out, "含坏键的批量竟通过")
+    except MechaError:
+        after = br.effective()
+        if after.get("field.B_gauss") != 5.0:
+            _ok("write_many 原子：坏一键 ⇒ 好键也没落地（无半拉子）")
+        else:
+            _fail(out, "批量失败但部分落地（原子性破了）")
+
+    # 5. save/load 往返
+    p = tmp / "state.json"
+    br.save(p, reason="存档")
+    br.write("field.B_gauss", 0.1, reason="改乱")
+    br.load(p, reason="恢复")
+    if br.read("field.B_gauss") == 21.7:
+        _ok("save→改乱→load 往返恢复（原子批量）")
+    else:
+        _fail(out, f"load 未恢复：{br.read('field.B_gauss')}")
+
+    # 6. params 渐进披露 + describe
+    lp_def = br.params()
+    lp_all = br.params(include_internal=True, page_size=100000)
+    if lp_all["count"] > lp_def["count"]:
+        _ok("params 默认藏 internal，include_internal 拉全量（M2/D-B 形状）")
+    else:
+        _fail(out, f"渐进披露不符：{lp_def['count']} vs {lp_all['count']}")
+    d = br.describe("field.B_gauss")
+    if d.get("name") == "field.B_gauss":
+        _ok("describe 单键可查")
+    else:
+        _fail(out, f"describe 不符：{d}")
+    try:
+        br.describe("no.such_key")
+        _fail(out, "describe 未入册键竟通过")
+    except MechaError as e:
+        if e.kind == "unknown_key":
+            _ok("describe 未入册键报错（fail loud）")
+
+    # 7. ops 计算面（主线程）：prepare → execute → artifact 取回
+    br.write_many(SKEL, reason="骨架", actor="gui")
+    lv = br._engine.list_levels(br.effective())
+    key0 = lv["states"][0]["key"]
+    br.write("dynamic.psi_single", key0, reason="初态", actor="gui")
+    prepared = br.ops.prepare(actor="gui", reason="GUI 运行演化")
+    if isinstance(prepared.get("run"), dict) and "problems" in prepared:
+        _ok("ops.prepare 回 {run,problems}（v1 handle 形状）")
+    else:
+        _fail(out, f"prepare 形状不符：{list(prepared)}")
+        return 1 if out else 0
+    res = br.ops.execute(prepared, actor="gui", reason="GUI 运行演化")
+    aid = res.get("artifact_id")
+    loaded = br.ops.load_artifact(aid) if aid else None
+    if res["ok"] and loaded is not None:
+        _labels, arrays = loaded
+        if "pops" in arrays and "t" in arrays:
+            _ok(f"ops.execute→artifact 取回 pops/t（GUI 绘图消费形状一致，"
+                f"pops.shape={arrays['pops'].shape}）")
+        else:
+            _fail(out, f"artifact 缺绘图数组：{list(arrays)}")
+    else:
+        _fail(out, f"计算面往返失败：ok={res.get('ok')} aid={aid}")
+
+    # 8. journal 独立落盘（GUI 侧 v2 权威史，不依附 dsh）
+    jr = tmp / ".mecha-v2" / "journal.jsonl"
+    if jr.exists() and jr.read_text(encoding="utf-8").strip():
+        _ok("GUI 侧 v2 journal 独立落盘（人机同史的地基）")
+    else:
+        _fail(out, "v2 journal 未落盘")
+
+    if out:
+        print(f"phase5_bridge_selfcheck: FAIL（{len(out)} 条）")
+        return 1
+    print("phase5_bridge_selfcheck: PASS")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

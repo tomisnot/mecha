@@ -51,21 +51,35 @@ def import_el(el_root: str | Path):
 class ElEngine(Engine):
     """4 必实现 + 领域查询口（list_levels/preview/check 供工具层用）。
 
-    **线程亲和实现**：ARC cache 是 SQLite（认建它的线程，EL 的 B-1① 约束）。
-    本类持一条专属引擎线程（单 worker executor），所有碰 cache 的 protocol
-    调用都 submit 到它；调用方线程（GUI worker / MCP anyio worker）随便换。
+    **线程亲和**（ARC cache 是 SQLite，认建它的线程，EL 的 B-1① 约束）两种模式：
+
+    - ``own_thread=True``（Hub 默认）：cache 建在专属引擎线程上，所有 protocol
+      调用经单 worker executor 汇流到它——调用方线程（MCP anyio worker）随便换。
+    - ``own_thread=False``（GUI 内嵌）：cache 建在**构造线程**（GUI 主线程），
+      不建池、调用就地执行；调用方自己保证亲和（GUI 的 cache 直用与 build_run
+      在主线程，evolve 在 worker——与 v1 的 prepare/execute 分线程契约同构）。
     """
 
-    def __init__(self, el_root: str | Path, *, atom: str = "Rubidium87") -> None:
+    def __init__(self, el_root: str | Path, *, atom: str = "Rubidium87",
+                 own_thread: bool = True) -> None:
         self._atom = atom
-        self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="el-engine")
-        # cache 与 schema 都在引擎线程上建（SQLite 亲和 + 一次性物化）
-        self._protocol = self._pool.submit(import_el, el_root).result()
-        self._cache = self._pool.submit(self._protocol.make_cache, atom).result()
-        self._schema = self._pool.submit(self._build_schema).result()
+        self._own_thread = own_thread
+        if own_thread:
+            self._pool = ThreadPoolExecutor(max_workers=1,
+                                            thread_name_prefix="el-engine")
+            self._protocol = self._pool.submit(import_el, el_root).result()
+            self._cache = self._pool.submit(self._protocol.make_cache, atom).result()
+            self._schema = self._pool.submit(self._build_schema).result()
+        else:
+            self._pool = None
+            self._protocol = import_el(el_root)
+            self._cache = self._protocol.make_cache(atom)
+            self._schema = self._build_schema()
 
     def _on_engine(self, fn, *args, **kwargs):
-        """把一次 protocol 调用汇流到引擎线程并等结果。"""
+        """把一次 protocol 调用汇流到引擎线程（own_thread=False 时就地执行）。"""
+        if self._pool is None:
+            return fn(*args, **kwargs)
         return self._pool.submit(fn, *args, **kwargs).result()
 
     def _build_schema(self) -> Mapping[str, object]:
