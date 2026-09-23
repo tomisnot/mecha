@@ -31,7 +31,8 @@ from mecha.authority import Authority, Mode
 from mecha.data_layout import DataLayout
 from mecha.errors import GateDenied, MechaError
 from mecha.gate import Channel, Gate
-from mecha.history import Event, History
+from mecha.history import Event, History, fold
+from mecha.monitor import Claim, Monitor
 from mecha.providers.log_local import JsonlLogSink
 
 
@@ -45,6 +46,44 @@ _ACTOR_CHANNEL: dict[str, str] = {
     "gui": "human", "human": "human",
     "ai": "ai", "mcp": "ai", "codeact": "ai", "job": "ai",
 }
+
+_AI_LABELS = {"ai", "mcp", "codeact", "job"}
+
+
+def el_summarizer(events: list[Event]) -> dict:
+    """EL 领域的人话概括（Monitor 概括层，总纲 §5.2④）。
+
+    派生、可被原始层证伪（硬纪律 5）：复述键值的条目一律用
+    ``Claim(value, target=原始键)`` 显式指向原始键——人话键名也能对账
+    （审查 P3-b 的机制）。只复述**史里出现过**的键（target 不存在 ⇒
+    disputed，所以宁缺毋滥）。元信息（计数/最近一条）不是键值复述，
+    不进对账面。
+    """
+    if not events:
+        return {"状态": "尚无变更（出厂快照未动）"}
+    snap = fold(events)
+    n_ai = sum(1 for e in events if e.actor in _AI_LABELS)
+    n_human = sum(1 for e in events if e.actor in {"gui", "human"})
+    last = events[-1]
+    out: dict = {
+        "总变更": len(events),
+        "人写": n_human,
+        "AI 写": n_ai,
+        "最近一条": f"#{last.seq} [{last.actor}] {last.key} ← "
+                    f"{last.reason or '（无 reason）'}",
+    }
+    # 关键配置的人话复述（值与原始折叠比对；键不在史里就不复述）
+    _HUMAN_KEYS = [
+        ("磁场 (G)", "field.B_gauss"),
+        ("场强 (V/cm)", "field.E_vpcm"),
+        ("演化方法", "dynamic.method"),
+        ("演化时长 (ns)", "dynamic.t_max"),
+        ("采样点数", "dynamic.npts"),
+    ]
+    for label, target in _HUMAN_KEYS:
+        if target in snap:
+            out[label] = Claim(snap[target], target=target)
+    return out
 
 
 def _build_gui_tools(engine, gate, authority, ai):
@@ -72,7 +111,8 @@ class V2Bridge:
     """
 
     def __init__(self, gate: Gate, history: History, authority: Authority,
-                 *, engine=None, cache=None, artifact_root: Path | None = None) -> None:
+                 *, engine=None, cache=None, artifact_root: Path | None = None,
+                 summarizer=el_summarizer) -> None:
         self._gate = gate
         self._history = history
         self._authority = authority
@@ -83,6 +123,8 @@ class V2Bridge:
             Path(".mecha-v2/artifacts") if engine else Path(".mecha-v2/artifacts"))
         self.session = _SessionShim(self)
         self.ops = ElOps(self) if engine is not None else None
+        # Monitor（第一交付物的后端读面，总纲 §5.2④）：只读，无写回。
+        self.monitor = Monitor(history.events, summarizer)
 
     @classmethod
     def for_gui(cls, *, el_root: str | Path, data_root: str | Path,
@@ -184,6 +226,11 @@ class V2Bridge:
 
     def read(self, key):
         return self._gate.snapshot.get(key)
+
+    @property
+    def history(self) -> History:
+        """权威史只读访问口（监控面板原始层用；写不进——append 只在 Gate 内）。"""
+        return self._history
 
     @property
     def snapshot(self) -> dict:

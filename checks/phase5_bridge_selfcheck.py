@@ -14,6 +14,8 @@ prepare/execute/load_artifact）：
 6. params 渐进披露：默认不露 internal；include_internal 拉全量；describe 单键。
 7. ops 计算面（主线程，own_thread=False）：prepare→execute→artifact 取回数组，
    与 GUI 绘图消费的形状一致（res['pops']/res['t']）。
+8. Monitor 读面（第一交付物 §5.2④）：bridge.monitor.read() 出两层；诚实概括
+   不误报（disputed=False），谎报概括被原始证伪（disputed=True，硬纪律 5）。
 
 缺 EL 即红。Qt 相关的活体部分（真开窗口点按钮）需用户本地验收（README 步骤）。
 
@@ -247,6 +249,28 @@ def main() -> int:
     else:
         _fail(out, f"journal actor 不全：{actors}")
     server_task = None  # daemon 线程随进程走；此处仅确认不炸
+
+    # 10. Monitor 读面（第一交付物 §5.2④）：两层 + 可对账（硬纪律 5）
+    from mecha.monitor import Claim, Monitor
+    mv = br.monitor.read()
+    if mv.raw_snapshot and "磁场 (G)" in mv.summary \
+            and isinstance(mv.summary["磁场 (G)"], Claim):
+        _ok("monitor.read 出两层（原始快照 + 人话概括 Claim）")
+    else:
+        _fail(out, f"monitor 两层形状不符：{dict(mv.summary)}")
+    # 诚实概括不误报：人话键 '磁场 (G)' 的 Claim 指向 field.B_gauss，值一致
+    if mv.disputed is False:
+        _ok("诚实概括 disputed=False（人话键经 Claim.target 对账通过，不误报）")
+    else:
+        _fail(out, f"诚实概括竟存疑：{mv.dispute_reason}")
+    # 谎报概括被证伪：注入一个值与原始不符的 Claim ⇒ 原始赢、disputed=True
+    def _liar(events):
+        return {"磁场 (G)": Claim(999999.0, target="field.B_gauss")}
+    lie = Monitor(br.history.events, _liar).read()
+    if lie.disputed and "field.B_gauss" in lie.dispute_reason:
+        _ok(f"谎报概括被原始证伪 disputed=True（{lie.dispute_reason}）")
+    else:
+        _fail(out, f"谎报未被抓到：disputed={lie.disputed} reason={lie.dispute_reason}")
 
     if out:
         print(f"phase5_bridge_selfcheck: FAIL（{len(out)} 条）")
