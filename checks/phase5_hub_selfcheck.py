@@ -3,7 +3,8 @@
 起真 hub 子进程（独立进程 ⇒ import mecha = v2，绕开 v1 同名冲突），用真
 mcp 2.x streamable-http 客户端连上，验：
 
-1. list_tools：7 个工具全在，且 set_config 的 inputSchema 带 key/value 属性
+1. list_tools：EXPECTED_TOOLS 全在（清单见本文件常量），且 set_config 的
+   inputSchema 带 key/value 属性
    （Phase 4 的 schema 声明没在 MCP 层丢——**kwargs 闭包必须被覆写）。
 2. 写经门：set_config 成功回执 + Hub 侧 journal 落一条 actor=ai 事件（磁盘为证）。
 3. 教学错误：未知键 → 回执文本含 hint（L4 过线不降级）。

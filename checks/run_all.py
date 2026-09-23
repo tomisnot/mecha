@@ -27,6 +27,7 @@ CHECKS = [
     "checks/capability_map_selfcheck.py",
     "checks/assembly_endtoend_selfcheck.py",
     "checks/vocabulary_selfcheck.py",
+    "checks/l8_prose_count_selfcheck.py",
     "checks/phase5_el_selfcheck.py",
     "checks/phase5_hub_selfcheck.py",
     "checks/phase5_bridge_selfcheck.py",
