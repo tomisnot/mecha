@@ -24,9 +24,24 @@ seq**，破坏按 seq 寻址与 call_id 互引（总纲 §5.2②）。
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 from .errors import MechaError
+
+# 平台锁原语模块级导入（不在 release() 里惰性 import）：解释器关闭期
+# __del__ 会调 release()，那时 sys.meta_path 已 None，惰性 import 抛
+# ImportError 污染 stderr（审查第三轮撤回 §6 实测）。
+if os.name == "nt":
+    import msvcrt as _lock_mod
+    _LOCK = _lock_mod.LK_NBLCK
+    _UNLOCK = _lock_mod.LK_UNLCK
+    _IS_NT = True
+else:
+    import fcntl as _lock_mod
+    _LOCK = _lock_mod.LOCK_EX | _lock_mod.LOCK_NB
+    _UNLOCK = _lock_mod.LOCK_UN
+    _IS_NT = False
 
 #: 租约文件名（数据目录内）。运行时锁，非持久格式资产。
 LEASE_FILENAME = ".writer.lock"
@@ -69,12 +84,10 @@ class WriteLease:
     @staticmethod
     def _try_lock(fd: int) -> None:
         os.lseek(fd, 0, os.SEEK_SET)
-        if os.name == "nt":
-            import msvcrt
-            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)   # 非阻塞独占锁 1 字节
+        if _IS_NT:
+            _lock_mod.locking(fd, _LOCK, 1)          # 非阻塞独占锁 1 字节
         else:
-            import fcntl
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            _lock_mod.flock(fd, _LOCK)
 
     def release(self) -> None:
         if self._fd is None:
@@ -82,16 +95,16 @@ class WriteLease:
         fd, self._fd = self._fd, None
         try:
             os.lseek(fd, 0, os.SEEK_SET)
-            if os.name == "nt":
-                import msvcrt
-                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+            if _IS_NT:
+                _lock_mod.locking(fd, _UNLOCK, 1)
             else:
-                import fcntl
-                fcntl.flock(fd, fcntl.LOCK_UN)
+                _lock_mod.flock(fd, _UNLOCK)
         except OSError:
             pass
-        finally:
+        try:
             os.close(fd)
+        except OSError:
+            pass
 
     def __enter__(self) -> "WriteLease":
         return self
@@ -101,4 +114,12 @@ class WriteLease:
         return False
 
     def __del__(self) -> None:
-        self.release()
+        # 解释器关闭期（sys 已 None）不做事：此时任何 import/系统调用都可能
+        # 抛 ImportError/OSError 污染 stderr；锁随进程退出由 OS 回收，无需
+        # 显式解锁。
+        if sys is None:
+            return
+        try:
+            self.release()
+        except Exception:                            # noqa: BLE001
+            pass
