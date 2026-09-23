@@ -50,7 +50,7 @@ def build_tool_registry(engine: ElEngine, gate: Gate, surface: Surface,
             "改引擎内部常量会被拒。设置后立即可被 estimate_run/preview_run/run_sim 读到。"
         ),
         parameters={"key": {"type": "string", "description": "可写配置键，如 dynamic.t_max"},
-                    "value": {"type": "json", "description": "新值，类型须匹配该键"}},
+                    "value": {"description": "新值（任意 JSON 形态），类型须匹配该键（见 query_params）"}},
         output_schema={"type": "object", "required": ["ok", "key"]},
         execute=lambda key, value: _set(key, value),
         banned_words=("gate", "choke", "读回面", "session", "channel"),

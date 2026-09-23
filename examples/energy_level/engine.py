@@ -4,6 +4,10 @@
 - estimate 单体无 est_sec ⇒ 补保守粗估（锚点：6 态/50 点/5ns ≈ 2.4 s 实测）。
 - result_summary 无 method 键 ⇒ 从 run['method'] 补进回执。
 
+**线程亲和**（EL 的 ARC cache 是 SQLite，认建它的线程）：所有 protocol 调用
+都汇流到建 cache 的专属引擎线程（单线程 executor）。调用方线程（GUI worker /
+MCP anyio worker / 主线程）随便换，cache 永不跨线程。
+
 ## Known Limitations and Deferred Work
 
 - 取消是尽力而为：监视线程把 EL progress_arr 的取消槽置 1；引擎不响应时跑完
@@ -13,14 +17,16 @@
   由 preview/check_run 表达，不重复造第二份判据。
 - check_run 的非致命问题（如空演化）作为 warnings 如实带出而非硬拦——与 EL
   自身语义一致（GUI 也照跑）；硬拦会造出生产路径不存在的输入（假绿判据）。
+- 引擎线程串行执行所有调用：两个并发 run 排队而非并行（EL 单计算本来就是重
+  活；真并发需求出现时按 ADR 流程加 job 队列，不在此预建）。
 """
 
 from __future__ import annotations
 
 import sys
 import threading
-import uuid
 from collections.abc import Mapping
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from mecha.errors import GateDenied, InvalidSpec, MechaError, UnknownKey
@@ -43,16 +49,26 @@ def import_el(el_root: str | Path):
 
 
 class ElEngine(Engine):
-    """4 必实现 + 领域查询口（list_levels/preview/check 供工具层用）。"""
+    """4 必实现 + 领域查询口（list_levels/preview/check 供工具层用）。
+
+    **线程亲和实现**：ARC cache 是 SQLite（认建它的线程，EL 的 B-1① 约束）。
+    本类持一条专属引擎线程（单 worker executor），所有碰 cache 的 protocol
+    调用都 submit 到它；调用方线程（GUI worker / MCP anyio worker）随便换。
+    """
 
     def __init__(self, el_root: str | Path, *, atom: str = "Rubidium87") -> None:
-        self._protocol = import_el(el_root)
         self._atom = atom
-        self._cache = self._protocol.make_cache(atom)
+        self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="el-engine")
+        # cache 与 schema 都在引擎线程上建（SQLite 亲和 + 一次性物化）
+        self._protocol = self._pool.submit(import_el, el_root).result()
+        self._cache = self._pool.submit(self._protocol.make_cache, atom).result()
+        self._schema = self._pool.submit(self._build_schema).result()
 
-    # ---- 必实现 ①：一处声明的 schema（全部派生自 protocol，不手抄）----
+    def _on_engine(self, fn, *args, **kwargs):
+        """把一次 protocol 调用汇流到引擎线程并等结果。"""
+        return self._pool.submit(fn, *args, **kwargs).result()
 
-    def schema(self) -> Mapping[str, object]:
+    def _build_schema(self) -> Mapping[str, object]:
         p = self._protocol
         return {
             "run_output_required": ["ok", "method"],
@@ -63,12 +79,30 @@ class ElEngine(Engine):
             "settable_keys": p.settable_keys(),
         }
 
+    # ---- 必实现 ①：一处声明的 schema（构造期物化，全部派生自 protocol）----
+
+    def schema(self) -> Mapping[str, object]:
+        return self._schema
+
     # ---- 必实现 ②：run = build → check → evolve → summary ----
 
     def run(self, spec: Mapping[str, object], *, context: ExecutionContext,
             **opts: object) -> Mapping[str, object]:
-        p = self._protocol
         snap = dict(spec)
+        # EL 的 progress_arr 三槽约定在**这里**适配（约定不外泄给框架）：
+        # [0]=进度 [1]=取消标志 [2]=阶段。取消监视线程独立于引擎线程翻标志位。
+        progress_arr = [0.0, 0, ""]
+        watcher = threading.Thread(
+            target=self._watch_cancel, args=(context, progress_arr), daemon=True)
+        watcher.start()
+        try:
+            return self._on_engine(self._run_on_engine, snap, progress_arr)
+        finally:
+            context.report_progress(1.0, "evolve done")
+
+    def _run_on_engine(self, snap: dict, progress_arr: list) -> Mapping[str, object]:
+        """build → check → evolve → summary，全程在引擎线程（cache 亲和）。"""
+        p = self._protocol
         try:
             run = p.build_run(self._cache, snap)
         except ValueError as e:
@@ -80,19 +114,7 @@ class ElEngine(Engine):
             ) from None
         method = str(run.get("method", ""))
         problems = p.check_run(run)
-        if context.cancelled:
-            return {"ok": False, "method": method, "cancelled": True,
-                    "problems": [], "hint": "执行前已取消"}
-        # EL 的 progress_arr 三槽约定在**这里**适配（约定不外泄给框架）：
-        # [0]=进度 [1]=取消标志 [2]=阶段
-        progress_arr = [0.0, 0, ""]
-        watcher = threading.Thread(
-            target=self._watch_cancel, args=(context, progress_arr), daemon=True)
-        watcher.start()
-        try:
-            res = p.evolve_run(run, progress_arr=progress_arr, cache=self._cache)
-        finally:
-            context.report_progress(1.0, "evolve done")
+        res = p.evolve_run(run, progress_arr=progress_arr, cache=self._cache)
         summ = dict(p.result_summary(run, res))
         summ["method"] = method
         if not summ.get("ok"):
@@ -110,7 +132,7 @@ class ElEngine(Engine):
     # ---- 必实现 ③：summary（全部取 EL 的公开声明面）----
 
     def summary(self) -> Mapping[str, object]:
-        methods = self._protocol.config_schema().get(
+        methods = self._schema["config"].get(          # type: ignore[union-attr]
             "dynamic.method", {}).get("enum") or []
         return {"engine": "energy-level", "atom": self._atom,
                 "cache_ready": True, "methods": sorted(map(str, methods))}
@@ -118,7 +140,7 @@ class ElEngine(Engine):
     # ---- 必实现 ④：estimate（补框架必填 est_sec，粗估口径写进 note）----
 
     def estimate(self, spec: Mapping[str, object]) -> Mapping[str, object]:
-        out = dict(self._protocol.estimate(self._cache, dict(spec)))
+        out = dict(self._on_engine(self._protocol.estimate, self._cache, dict(spec)))
         if "est_sec" not in out:
             n = int(out.get("n_states") or 0)
             t_max = float(spec.get("dynamic.t_max") or 0)
@@ -132,13 +154,13 @@ class ElEngine(Engine):
                 out["est_note"] = "缺 t_max/npts/n_states——给保守上限 30 s"
         return out
 
-    # ---- 领域查询口（工具层经 Surface 注册项消费）----
+    # ---- 领域查询口（工具层经 Surface 注册项消费；都汇流到引擎线程）----
 
     def list_levels(self, snap: Mapping[str, object]) -> Mapping[str, object]:
-        return dict(self._protocol.list_levels(self._cache, dict(snap)))
+        return dict(self._on_engine(self._protocol.list_levels, self._cache, dict(snap)))
 
     def preview(self, snap: Mapping[str, object]) -> Mapping[str, object]:
-        return dict(self._protocol.preview(self._cache, dict(snap)))
+        return dict(self._on_engine(self._protocol.preview, self._cache, dict(snap)))
 
 
 def make_validator(engine: ElEngine):
