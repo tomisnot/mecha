@@ -130,5 +130,11 @@ class History:
         """只读副本（append-only：外部拿不到可改的内部列表）。"""
         return list(self._events)
 
+    def close(self) -> None:
+        """关停：释放 sink 的写租约（若有）。宿主关停/租约交接用；幂等。"""
+        closer = getattr(self._sink, "close", None)
+        if callable(closer):
+            closer()
+
     def snapshot(self) -> dict[str, object]:
         return fold(self._events)

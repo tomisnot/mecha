@@ -24,19 +24,28 @@ from pathlib import Path
 from ..data_layout import DataLayout
 from ..errors import MechaError
 from ..format_version import FORMAT_VERSION, JOURNAL_FILENAME, MigrationChain
+from ..write_lease import WriteLease
 
 #: 归档目录名：全库唯一定义点（消 D-9 的"三处分散"）。
 ARCHIVE_DIR_NAME = "archive"
 
 
 class JsonlLogSink:
-    """history.LogSink 的 local 实现。"""
+    """history.LogSink 的 local 实现。
 
-    def __init__(self, layout: DataLayout, chain: MigrationChain | None = None) -> None:
+    构造即抢**跨进程写租约**（审查 2.2）：同一数据目录同时只允许一个写宿主，
+    第二个抛 `MechaError(kind="writer_lease_held")`。这是 History"seq 单调"
+    不变量的地基——两个宿主各写各的会产出重复 seq。`exclusive=False` 留给
+    纯读投影（如只读监控进程）绕过租约。
+    """
+
+    def __init__(self, layout: DataLayout, chain: MigrationChain | None = None,
+                 *, exclusive: bool = True) -> None:
         self._dir = layout.data_dir
         self._path = self._dir / JOURNAL_FILENAME
         self._chain = chain or MigrationChain()
         self._records: list[dict] | None = None  # 惰性读缓存
+        self._lease = WriteLease(self._dir) if exclusive else None
 
     # ---- LogSink 四原语（总纲 §5.2⑤ Log 行）----
 
@@ -63,6 +72,11 @@ class JsonlLogSink:
             kind="unsupported_primitive",
             hint="当前无订阅消费者（D-11 教训：不预建机制）；需要时写 ADR 再接线",
         )
+
+    def close(self) -> None:
+        """释放写租约（宿主关停/租约交接用）。幂等。"""
+        if self._lease is not None:
+            self._lease.release()
 
     # ---- 读取：格式头 + 相邻边迁移 + 崩溃尾容错 ----
 

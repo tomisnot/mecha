@@ -41,12 +41,12 @@ engine = ElEngine(EL)                      # 首次建 ARC cache ~3-13s
 sw = assemble(root=Path("./my-software"), data_dir_name=".mydata",
               engine=engine, summarizer=lambda evs: {},
               validate=make_validator(engine))
-sw.authority.switch_mode(Mode.AI, actor="human")   # 出厂 LOCKED，人类开闸
+sw.authority.switch_mode(Mode.AI, side="human")   # 出厂 LOCKED，人类侧开闸
 
 from examples.energy_level.tools import build_tool_registry
 tools = build_tool_registry(engine, sw.gate, sw.surface,
-                            sw.authority, sw.channels["ai"])
-print([t["name"] for t in tools.schemas()])   # 7 个工具，喂给宿主 ctx.tools
+                            sw.authority, sw.channels["ai"], sw.jobs)
+print([t["name"] for t in tools.schemas()])   # 工具集，喂给宿主 ctx.tools
 ```
 
 写权出厂 LOCKED（nothing ships enabled 用在写权上）；`validate` 必填，不校验

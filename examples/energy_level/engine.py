@@ -224,11 +224,11 @@ def make_validator(engine: ElEngine):
                 suggest=f"可写键示例：{sample}（完整清单 query_params）",
             )
         if key not in settable:
-            raise UnknownKey(
-                f"键 {key!r} 不在可写清单",
+            raise UnknownKey.typo(
+                key, settable,
                 kind="unknown_key",
-                hint=f"可写键共 {len(settable)} 个（config+solve，不含 engine.*）",
-                suggest=f"示例：{sample}；完整清单用 query_params",
+                hint=f"可写键共 {len(settable)} 个（config+solve，不含 engine.*）；"
+                     "完整清单 query_params",
             )
         rec = schema.get(key) or {}
         tname = rec.get("type")

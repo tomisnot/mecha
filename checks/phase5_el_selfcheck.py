@@ -38,6 +38,7 @@ from mecha.data_layout import resolve_data_dir  # noqa: E402
 from mecha.errors import MechaError  # noqa: E402
 from mecha.gate import Channel, Gate  # noqa: E402
 from mecha.history import History  # noqa: E402
+from mecha.providers.jobs import JobRegistry  # noqa: E402
 from mecha.surface import ExecutionContext, Surface  # noqa: E402
 
 from examples.energy_level.engine import ElEngine, make_validator  # noqa: E402
@@ -73,16 +74,18 @@ def main() -> int:
     gate = Gate(authority, history, validate=make_validator(engine))
     surface = Surface(engine)
     ai = Channel("ai")
-    authority.switch_mode(Mode.AI, actor="human")
-    tools = build_tool_registry(engine, gate, surface, authority, ai)
+    authority.switch_mode(Mode.AI, side="human")
+    tools = build_tool_registry(engine, gate, surface, authority, ai,
+                                JobRegistry())
     _ok("全链路装配完成（Gate/Surface/Authority/工具面）")
 
     # ---- 1. 工具面形状：命名守卫 + 投影白名单 ----
     names = [s["name"] for s in tools.schemas()]
     expect = {"set_config", "read_config", "query_params", "estimate_run",
-              "preview_run", "run_sim", "query_levels"}
+              "preview_run", "run_sim", "query_levels",
+              "submit_job", "read_job", "cancel_job", "run_actions"}
     if set(names) == expect:
-        _ok(f"7 个工具注册齐且过命名守卫：{sorted(names)}")
+        _ok(f"工具注册齐且过命名守卫：{sorted(names)}")
     else:
         _fail(out, f"工具集不符：{names}")
     for s in tools.schemas():

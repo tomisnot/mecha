@@ -114,6 +114,12 @@ def check_register_dispose(out: list[str]) -> None:
     except MechaError as e:
         if e.kind == "unknown_query":
             _ok("disposer 撤销注册（可逆副作用）")
+    # disposer 对称：角色表也必须撤销本次登记（否则 capability map 出幽灵条目）
+    if "query:echo" in s.roles.names():
+        _fail(out, "dispose 后能力表仍含 query:echo（角色登记未撤销，"
+                   "map 会带幽灵条目、重注册累积陈旧行）")
+    else:
+        _ok("disposer 对称：entries 与角色表一并撤销（无幽灵条目）")
     # called_by 必填（消 D-18：谁调它必须写明）
     try:
         s.register(EntryKind.HOOK, "no_owner", lambda: None, called_by="  ")

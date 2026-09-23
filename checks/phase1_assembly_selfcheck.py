@@ -99,16 +99,22 @@ def check_gate_authority(out: list[str]) -> None:
     # 能抓坏：ai 通道切模式 → 拒（AI 不能给自己解锁）
     auth, _, _ = _make_gate(Mode.LOCKED)
     try:
-        auth.switch_mode(Mode.AI, actor="ai")
-        _fail(out, "ai 通道竟能切模式")
+        auth.switch_mode(Mode.AI, side="ai")
+        _fail(out, "ai 侧竟能切模式")
     except GateDenied:
-        _ok("ai 通道切模式被拒")
+        _ok("ai 侧切模式被拒")
     # 不许误报：human 切模式 → 成
-    auth.switch_mode(Mode.AI, actor="human")
+    auth.switch_mode(Mode.AI, side="human")
     if auth.mode is Mode.AI:
         _ok("human 切模式成功（不误报）")
     else:
         _fail(out, "human 合法切模式未生效")
+    # 审查 2.4 根除验证：库层只认 side，细标签 'gui' 直传必被拒（同名不同义堵死）
+    try:
+        auth.switch_mode(Mode.HUMAN, side="gui")
+        _fail(out, "细标签 'gui' 直传 authority 竟被接受（应只认 side）")
+    except GateDenied:
+        _ok("authority 只认 side：细标签 'gui' 直传被拒（2.4 陷阱根除）")
 
     # 标签通道：side 定写权、actor 进史做归因（EL 消费方依赖）
     _, hist2, gate2 = _make_gate(Mode.HUMAN)

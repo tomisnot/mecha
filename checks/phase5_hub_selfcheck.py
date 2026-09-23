@@ -37,7 +37,8 @@ EL_ROOT = Path(r"D:\学\BaiduSyncdisk\编程\code\python\Energy Level")
 sys.path.insert(0, str(ROOT))
 
 EXPECTED_TOOLS = {"set_config", "read_config", "query_params", "estimate_run",
-                  "preview_run", "run_sim", "query_levels"}
+                  "preview_run", "run_sim", "query_levels",
+                  "submit_job", "read_job", "cancel_job", "run_actions"}
 
 
 def _ok(msg: str) -> None:
@@ -63,7 +64,7 @@ async def drive(port: int, out: list[str]) -> None:
             tools = (await sess.list_tools()).tools
             names = {t.name for t in tools}
             if names == EXPECTED_TOOLS:
-                _ok(f"list_tools 7 个工具齐（{sorted(names)}）")
+                _ok(f"list_tools 工具齐（含异步作业面）：{sorted(names)}")
             else:
                 _fail(out, f"工具集不符：{names}")
             sc = next((t for t in tools if t.name == "set_config"), None)
@@ -123,6 +124,59 @@ async def drive(port: int, out: list[str]) -> None:
             else:
                 _fail(out, f"run_sim 往返失败：{text[:200]}")
 
+            # 4b. 异步作业面（审查 §1.2①）：submit_job → read_job 轮询到 done
+            is_err, text = await call("submit_job")
+            if is_err:
+                _fail(out, f"submit_job 失败：{text[:120]}")
+            else:
+                jid = json.loads(text)["job_id"]
+                _ok(f"submit_job 立即返回任务号 {jid}（不阻塞）")
+                state, result_txt = "", ""
+                for _ in range(120):        # 最多等 ~60s
+                    await asyncio.sleep(0.5)
+                    ie, tj = await call("read_job", job_id=jid)
+                    if ie:
+                        _fail(out, f"read_job 失败：{tj[:120]}")
+                        break
+                    d = json.loads(tj)
+                    state = d["state"]
+                    if state in ("done", "failed", "cancelled"):
+                        result_txt = tj
+                        break
+                if state == "done" and '"ok": true' in result_txt:
+                    _ok("read_job 轮询到 done 且 result 含 ok（异步长任务通）")
+                elif state == "cancelled":
+                    _ok("read_job 轮询到 cancelled（取消语义生效，如实报告）")
+                else:
+                    _fail(out, f"作业未正常完成：state={state} {result_txt[:120]}")
+                ie, tj = await call("read_job")   # 不带 id = 列全部（投影）
+                if not ie and '"jobs"' in tj:
+                    _ok("read_job 不带 job_id 返回全部任务清单（枚举=投影）")
+                else:
+                    _fail(out, f"read_job 列全部失败：{tj[:120]}")
+
+            # 4c. CodeAct 编排（审查 §1.2②）：一次提交一串动作，逐步记日志
+            ie, tj = await call("run_actions", actions=[
+                {"op": "estimate"}, {"op": "summary"}])
+            if ie:
+                _fail(out, f"run_actions 失败：{tj[:160]}")
+            else:
+                d = json.loads(tj)
+                if (d.get("ok") and d.get("stopped_at") == -1
+                        and len(d.get("steps", [])) == 2
+                        and all(s["ok"] for s in d["steps"])):
+                    _ok("run_actions 两步全成、逐步记日志、stopped_at=-1")
+                else:
+                    _fail(out, f"run_actions 回执不符：{tj[:160]}")
+            # 失败步如实停在当地（不假装全成）
+            ie, tj = await call("run_actions", actions=[
+                {"op": "summary"}, {"op": "no_such_action"}])
+            d = json.loads(tj) if not ie else {}
+            if not ie and d.get("ok") is False and d.get("stopped_at") == 1:
+                _ok("run_actions 失败步停在 index=1 且 ok=False（不假绿）")
+            else:
+                _fail(out, f"run_actions 失败步未如实报告：ie={ie} {tj[:160]}")
+
 
 def main() -> int:
     if hasattr(sys.stdout, "reconfigure"):
@@ -172,6 +226,14 @@ def main() -> int:
                     _ok(f"journal {len(recs)} 条全 actor=ai（写经 v2 门，磁盘为证）")
                 else:
                     _fail(out, f"journal 归因异常：{recs[:3]}")
+                # 审查 2.7：AI 侧 call_id 互引——每条写事件带非空 call_id
+                # （MCP wire request id），与 dsh 行为史可双向走查（§5.2②）。
+                if recs and all(r.get("call_id") for r in recs):
+                    _ok(f"journal 每条带非空 call_id（AI 侧互引接通，如 "
+                        f"{recs[0]['call_id']!r}）")
+                else:
+                    _fail(out, "AI 写事件缺 call_id（互引断链）："
+                              f"{[r.get('call_id') for r in recs[:3]]}")
             else:
                 _fail(out, "journal 未落盘（Hub 没经 History）")
     finally:

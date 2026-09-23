@@ -78,91 +78,91 @@ def build(root: Path):
 
 def check_hole1_no_bypass_write(out: list[str]) -> None:
     with tempfile.TemporaryDirectory() as td:
-        sw = build(Path(td))
-        # 出厂 LOCKED：先验"默认收紧"（nothing ships enabled 用在写权上）
-        try:
-            sw.gate.set(sw.channels["human"], "power", 1, "r")
-            _fail(out, "出厂 LOCKED 竟可写（默认放开）")
-        except GateDenied:
-            _ok("出厂 LOCKED：任何通道默认不可写（不默认放开）")
-        sw.authority.switch_mode(Mode.AI, actor="human")
-        ai = sw.channels["ai"]
-        # 合法：AI 经门写
-        ev = sw.gate.set(ai, "power", 100, "setpoint", call_id="c1")
-        if ev.actor == "ai" and ev.call_id == "c1":
-            _ok("AI 经 Gate 写成功且可归因（actor + call_id）")
-        else:
-            _fail(out, f"合法写归因缺失：{ev}")
-        # 能抓坏：改快照投影不回写（无绕过写口）
-        snap = sw.gate.snapshot
-        snap["power"] = 999
-        if sw.gate.snapshot["power"] == 100:
-            _ok("改快照投影不回写门内状态（洞1：无第二条写路径）")
-        else:
-            _fail(out, "快照投影可回写——门漏在包装层")
-        # 能抓坏：伪造 actor 字符串构造通道
-        try:
-            from mecha.gate import Channel
-            Channel("human")  # 合法
-            Channel("admin")  # 未知 actor 必须拒
-            _fail(out, "未知 actor 通道竟可构造")
-        except GateDenied:
-            _ok("未知 actor 通道构造被拒（无法伪造人类归因）")
+        with build(Path(td)) as sw:
+            # 出厂 LOCKED：先验"默认收紧"（nothing ships enabled 用在写权上）
+            try:
+                sw.gate.set(sw.channels["human"], "power", 1, "r")
+                _fail(out, "出厂 LOCKED 竟可写（默认放开）")
+            except GateDenied:
+                _ok("出厂 LOCKED：任何通道默认不可写（不默认放开）")
+            sw.authority.switch_mode(Mode.AI, side="human")
+            ai = sw.channels["ai"]
+            # 合法：AI 经门写
+            ev = sw.gate.set(ai, "power", 100, "setpoint", call_id="c1")
+            if ev.actor == "ai" and ev.call_id == "c1":
+                _ok("AI 经 Gate 写成功且可归因（actor + call_id）")
+            else:
+                _fail(out, f"合法写归因缺失：{ev}")
+            # 能抓坏：改快照投影不回写（无绕过写口）
+            snap = sw.gate.snapshot
+            snap["power"] = 999
+            if sw.gate.snapshot["power"] == 100:
+                _ok("改快照投影不回写门内状态（洞1：无第二条写路径）")
+            else:
+                _fail(out, "快照投影可回写——门漏在包装层")
+            # 能抓坏：伪造 actor 字符串构造通道
+            try:
+                from mecha.gate import Channel
+                Channel("human")  # 合法
+                Channel("admin")  # 未知 actor 必须拒
+                _fail(out, "未知 actor 通道竟可构造")
+            except GateDenied:
+                _ok("未知 actor 通道构造被拒（无法伪造人类归因）")
 
 
 def check_hole2_run_is_only_executor(out: list[str]) -> None:
     with tempfile.TemporaryDirectory() as td:
-        sw = build(Path(td))
-        # 物理演化经 Surface.run（唯一 executor）
-        r = sw.surface.run({"mode": "evolve"}, context=ExecutionContext())
-        eng = sw.surface._engine
-        if r["ok"] and eng.runs == 1:
-            _ok("run 经 Surface 落到引擎（唯一 executor）")
-        else:
-            _fail(out, f"run 未落引擎：{r}")
-        # 引擎句柄不经公开 API 外露：Software 上没有 get_engine/engine()
-        exposed = [a for a in dir(sw) if "engine" in a.lower()]
-        if not exposed:
-            _ok("装配实例不暴露引擎句柄（洞2：无绕过 run 的库内入口）")
-        else:
-            _fail(out, f"引擎句柄外露：{exposed}")
+        with build(Path(td)) as sw:
+            # 物理演化经 Surface.run（唯一 executor）
+            r = sw.surface.run({"mode": "evolve"}, context=ExecutionContext())
+            eng = sw.surface._engine
+            if r["ok"] and eng.runs == 1:
+                _ok("run 经 Surface 落到引擎（唯一 executor）")
+            else:
+                _fail(out, f"run 未落引擎：{r}")
+            # 引擎句柄不经公开 API 外露：Software 上没有 get_engine/engine()
+            exposed = [a for a in dir(sw) if "engine" in a.lower()]
+            if not exposed:
+                _ok("装配实例不暴露引擎句柄（洞2：无绕过 run 的库内入口）")
+            else:
+                _fail(out, f"引擎句柄外露：{exposed}")
 
 
 def check_independent_of_dsh(out: list[str]) -> None:
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
-        sw = build(root)
-        sw.authority.switch_mode(Mode.HUMAN, actor="human")
-        sw.gate.set(sw.channels["human"], "power", 100, "set", call_id="h1")
-        sw.gate.set(sw.channels["human"], "gain", 5, "set", call_id="h2")
-        # 重启：同一磁盘目录再装配一次（dsh 全程缺席）
-        sw2 = build(root)
-        if sw2.gate.snapshot == {"power": 100, "gain": 5}:
-            _ok("进程重启后从 JSONL 史重建快照一致（软件不依附 dsh）")
-        else:
-            _fail(out, f"重启重建不符：{sw2.gate.snapshot}")
-        # seq 续上（重启后 authority 回出厂 LOCKED，先由人类通道开闸）
-        sw2.authority.switch_mode(Mode.HUMAN, actor="human")
-        ev = sw2.gate.set(sw2.channels["human"], "power", 101, "bump", call_id="h3")
-        if ev.seq == 3:
-            _ok("seq 从盘续（append-only，不重置）")
-        else:
-            _fail(out, f"seq 未续：{ev.seq}")
-        # Monitor 读原始层照常
-        v = sw2.monitor.read()
-        if v.raw_snapshot["power"] == 101 and not v.disputed:
-            _ok("Monitor 原始层独立可读（概括一致不存疑）")
-        else:
-            _fail(out, f"Monitor 独立读不符：{v}")
+        with build(root) as sw:
+            sw.authority.switch_mode(Mode.HUMAN, side="human")
+            sw.gate.set(sw.channels["human"], "power", 100, "set", call_id="h1")
+            sw.gate.set(sw.channels["human"], "gain", 5, "set", call_id="h2")
+        # 旧宿主已关停（with 退出释放写租约，审查 2.2），新宿主可接管同一目录
+        with build(root) as sw2:
+            if sw2.gate.snapshot == {"power": 100, "gain": 5}:
+                _ok("进程重启后从 JSONL 史重建快照一致（软件不依附 dsh）")
+            else:
+                _fail(out, f"重启重建不符：{sw2.gate.snapshot}")
+            # seq 续上（重启后 authority 回出厂 LOCKED，先由人类通道开闸）
+            sw2.authority.switch_mode(Mode.HUMAN, side="human")
+            ev = sw2.gate.set(sw2.channels["human"], "power", 101, "bump", call_id="h3")
+            if ev.seq == 3:
+                _ok("seq 从盘续（append-only，不重置）")
+            else:
+                _fail(out, f"seq 未续：{ev.seq}")
+            # Monitor 读原始层照常
+            v = sw2.monitor.read()
+            if v.raw_snapshot["power"] == 101 and not v.disputed:
+                _ok("Monitor 原始层独立可读（概括一致不存疑）")
+            else:
+                _fail(out, f"Monitor 独立读不符：{v}")
 
 
 def check_history_append_only_on_disk(out: list[str]) -> None:
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
-        sw = build(root)
-        sw.authority.switch_mode(Mode.AI, actor="human")
-        sw.gate.set(sw.channels["ai"], "k", 1, "r", call_id="a")
-        sw.gate.set(sw.channels["ai"], "k", 2, "r", call_id="b")
+        with build(root) as sw:
+            sw.authority.switch_mode(Mode.AI, side="human")
+            sw.gate.set(sw.channels["ai"], "k", 1, "r", call_id="a")
+            sw.gate.set(sw.channels["ai"], "k", 2, "r", call_id="b")
         journal = root / "projdata" / "journal.jsonl"
         if journal.exists():
             lines = [l for l in journal.read_text(encoding="utf-8").splitlines() if l.strip()]
@@ -172,6 +172,34 @@ def check_history_append_only_on_disk(out: list[str]) -> None:
                 _fail(out, f"journal 行不符：{lines}")
         else:
             _fail(out, "journal.jsonl 未落盘（log provider 没接上）")
+
+
+def check_single_writer_lease(out: list[str]) -> None:
+    """审查 2.2 / §4.2：同一数据目录同时只允许一个写宿主（租约致死性）。"""
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        with build(root) as sw:
+            # 能抓坏：第一个宿主活着时，第二个宿主抢同一目录必须被拒
+            try:
+                dup = build(root)
+                dup.close()
+                _fail(out, "第二个写宿主指向同一数据目录竟成功（重复 seq 温床）")
+            except MechaError as e:
+                if e.kind == "writer_lease_held":
+                    _ok("同目录第二个写宿主被拒（writer_lease_held，seq 单调有保）")
+                else:
+                    _fail(out, f"拒绝但 kind 不符：{e.kind}")
+            # 不许误报：旧宿主关停后新宿主可接管（上面 check_independent_of_dsh
+            # 已验）；只读投影（exclusive=False）与写宿主并存不抢锁
+            from mecha.data_layout import resolve_data_dir
+            from mecha.providers.log_local import JsonlLogSink
+            try:
+                ro = JsonlLogSink(resolve_data_dir(root, "projdata"),
+                                  exclusive=False)
+                ro.since(0)          # 真读一次（不造生产路径不存在的输入）
+                _ok("只读投影（exclusive=False）与写宿主并存不误伤")
+            except MechaError as e:
+                _fail(out, f"只读投影被租约误伤：{e}")
 
 
 def main() -> int:

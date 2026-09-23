@@ -47,37 +47,40 @@ class Authority:
     def mode(self) -> Mode:
         return self._mode
 
-    def switch_mode(self, new_mode: Mode, actor: str) -> None:
-        """切模式。谁在切也走归因（写进 History 由调用方负责，这里只校验）。
+    def switch_mode(self, new_mode: Mode, side: str) -> None:
+        """切模式。只有 human **侧**能切——AI 不能把自己解锁。
 
-        只有 human 通道能切模式——AI 不能把自己解锁。
+        参数是 `side`（'human'/'ai'）不是 actor 标签（硬纪律 4：side 定写权，
+        'gui'/'mcp' 这些细标签归因用，不扩权面）。GUI 在 human 侧 ⇒ 传
+        `Channel('gui','human').side`（='human'）可切；传 `.actor`（='gui'）
+        会被拒——审查 2.4 的"同名不同义"陷阱由此从命名上根除。
         """
-        if actor != "human":
+        if side != "human":
             raise GateDenied(
-                f"actor={actor!r} 不能切换写权模式",
+                f"side={side!r} 不能切换写权模式",
                 kind="authority_switch_denied",
-                hint="只有人类通道可切模式；模式机是写权的最后闸门",
-                suggest="经 GUI 切模式，或由人类通道发起",
+                hint="只有人类侧（side='human'）可切模式；模式机是写权的最后闸门",
+                suggest="传 Channel(...).side 而非 .actor；细标签先经适配器映射到 side",
             )
         self._mode = Mode(new_mode)
 
-    def gate(self, actor: str) -> None:
-        """四步 set 的第一步：此刻这个 actor 在当前 mode 下能写吗。
+    def gate(self, side: str) -> None:
+        """四步 set 的第一步：此刻这个 **侧**在当前 mode 下能写吗。
 
         不做 one-shot 授权（那是 Approval Provider 的事）；这里只判 mode 与
-        actor 通道的匹配。
+        side 通道的匹配（写权看 side，不看 actor 标签）。
         """
         if self._mode is Mode.LOCKED:
             raise GateDenied(
                 "写权处于 LOCKED，任何通道都不能改域状态",
                 kind="authority_locked",
-                hint="先由人类通道切到目标模式",
+                hint="先由人类侧切到目标模式",
                 suggest="authority.switch_mode(Mode.AI, 'human')",
             )
-        if actor != self._mode.value:
+        if side != self._mode.value:
             raise GateDenied(
-                f"当前模式 {self._mode.value!r} 不接受 actor={actor!r}",
+                f"当前模式 {self._mode.value!r} 不接受 side={side!r}",
                 kind="authority_mode_mismatch",
-                hint=f"只有 {self._mode.value!r} 通道此刻可写",
-                suggest="切换模式或改用正确通道",
+                hint=f"只有 {self._mode.value!r} 侧此刻可写",
+                suggest="切换模式或改用正确侧的通道",
             )

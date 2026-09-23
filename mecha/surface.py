@@ -148,12 +148,16 @@ class Surface:
                 hint="谁调它（framework/host/consumer）必须写明（消 D-18）",
             )
         self._entries[key] = RegisteredEntry(kind, name, fn, called_by)
-        self._roles.register(f"{kind.value}:{name}",
-                             Role.CONSUMER if kind is EntryKind.QUERY else Role.PROVIDER,
-                             provider=name, consumer=called_by)
+        # 角色登记的 disposer 必须收着，dispose 时一并撤销——否则能力表残留
+        # 已撤销的注册（幽灵条目，map 从角色表生成会带出；重注册累积陈旧行）。
+        dispose_role = self._roles.register(
+            f"{kind.value}:{name}",
+            Role.CONSUMER if kind is EntryKind.QUERY else Role.PROVIDER,
+            provider=name, consumer=called_by)
 
         def dispose() -> None:
             self._entries.pop(key, None)
+            dispose_role()
 
         return dispose
 

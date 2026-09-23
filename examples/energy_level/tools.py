@@ -22,8 +22,11 @@ from typing import Callable
 from mecha.authority import Authority, Mode
 from mecha.errors import MechaError
 from mecha.gate import Channel, Gate
+from mecha.history import History
+from mecha.providers.codeact import Action, CodeAct
+from mecha.providers.jobs import JobRegistry, JobState
 from mecha.surface import ExecutionContext, Surface
-from mecha.tools import ToolRegistry, define_tool
+from mecha.tools import CURRENT_CALL_ID, ToolRegistry, define_tool
 
 from .engine import ElEngine
 
@@ -32,14 +35,22 @@ from .engine import ElEngine
 
 
 def build_tool_registry(engine: ElEngine, gate: Gate, surface: Surface,
-                        authority: Authority, channel: Channel) -> ToolRegistry:
-    """装配 EL 的工具面。channel 决定 actor（AI 侧恒为 'ai'，改不了）。"""
+                        authority: Authority, channel: Channel,
+                        jobs: JobRegistry) -> ToolRegistry:
+    """装配 EL 的工具面。channel 决定 actor（AI 侧恒为 'ai'，改不了）。
+
+    jobs 必填（显式装配，不默认建）——**单一注册表实例**由宿主在装配点建好
+    传进来（消 D-21：两处各建 runner 会互相误翻 interrupted）。
+    """
     reg = ToolRegistry()
     schema = engine.schema()
     settable = list(schema["settable_keys"])
 
     def _set(key: str, value):
-        gate.set(channel, key, value, reason="ai tool")
+        # call_id 从请求作用域读（审查 2.7）：hub 的 MCP 层在 execute 前 set，
+        # 把这次工具调用与 dsh 行为史钉在一起（总纲 §5.2②互引）。
+        gate.set(channel, key, value, reason="ai tool",
+                 call_id=CURRENT_CALL_ID.get())
         return {"ok": True, "key": key, "applied": True}
 
     # ---- set_config ----
@@ -142,7 +153,126 @@ def build_tool_registry(engine: ElEngine, gate: Gate, surface: Surface,
         banned_words=("base_sublevels", "make_levels"),
     ))
 
+    # ---- submit_job / read_job / cancel_job（异步长任务，审查 §1.2①）----
+    # 单一注册表实例由宿主传入（消 D-21）；read_job 合一"查单个/列全部"
+    # ——枚举是投影不是工具（命名守卫禁 list_/get_ 前缀）。
+    reg.register(define_tool(
+        name="submit_job",
+        description=(
+            "把当前配置提交为后台演化任务，立即返回任务号。长任务（两体/多体、"
+            "大基组）用它代替 run_sim——不必让调用方干等。用 read_job 轮询进度，"
+            "done 后 result 即 run_sim 同款摘要。提交时刻的配置被固定，之后的"
+            "改动不影响在飞任务。"
+        ),
+        parameters={},
+        output_schema={"type": "object", "required": ["ok", "job_id"]},
+        execute=lambda: _submit_job(jobs, surface, gate),
+        banned_words=("evolve_run", "队列", "worker"),
+    ))
+    reg.register(define_tool(
+        name="read_job",
+        description=(
+            "查后台任务状态：给 job_id 查单个（done 时含 result 摘要，failed "
+            "时含 error）；不给 job_id 返回全部任务的状态清单。"
+        ),
+        parameters={"job_id": {"type": "string",
+                    "description": "submit_job 返回的任务号；省略则列全部"}},
+        output_schema={"type": "object", "required": ["ok"]},
+        execute=lambda job_id=None: _read_job(jobs, job_id),
+        banned_words=("registry", "轮询"),
+    ))
+    reg.register(define_tool(
+        name="cancel_job",
+        description=(
+            "请求取消后台任务（在下一个计算步边界生效；已结束的取消无效果但"
+            "不报错，状态如实返回）。任务号不存在会被拒。"
+        ),
+        parameters={"job_id": {"type": "string", "description": "要取消的任务号"}},
+        output_schema={"type": "object", "required": ["ok", "job_id"]},
+        execute=lambda job_id: _cancel_job(jobs, job_id),
+        banned_words=("线程", "interrupt"),
+    ))
+
+    # ---- run_actions（CodeAct 编排，审查 §1.2②：机制已建、消费方接上）----
+    reg.register(define_tool(
+        name="run_actions",
+        description=(
+            "一次提交一串动作按序执行（省往返）。每步是 {op, args}：op 可为 "
+            "estimate（探规模）、summary（读引擎概况）、run（跑一次演化，args "
+            "带 spec），或已注册的只读查询名（如 query_levels）。任一步失败即"
+            "停在该步并如实返回失败原因，之前的步不回滚。每步都留可追溯记录。"
+        ),
+        parameters={"actions": {"type": "array",
+                    "description": "动作列表，每项 {\"op\": 名称, \"args\": 对象}"},
+                    "spec": {"type": "object",
+                             "description": "run/estimate 缺省 spec 时用当前配置"}},
+        output_schema={"type": "object", "required": ["ok", "steps", "stopped_at"]},
+        execute=lambda actions, spec=None: _run_actions(
+            surface, gate, channel, actions, spec),
+        banned_words=("eval", "解释器", "dispatch"),
+    ))
+
     return reg
+
+
+def _run_actions(surface: Surface, gate: Gate,
+                 channel: Channel, actions, spec=None):
+    """把一串结构化动作交给 CodeAct 编排（逐子调用记日志，可归因）。
+
+    **审计落一份进程内临时 History，不混进域状态史**（总纲 §5.2②：域状态史
+    与操作者行为史是两份资产）。若把 `codeact.N` 写进域史，Gate 重启折叠快照
+    会把这些审计事件当域状态吃进去 ⇒ read_config 出噪声、存档 load 被 validate
+    当场拒。操作者行为史归宿主（dsh 按 call_id 记），这里逐步随回执如实返回。
+    """
+    if not isinstance(actions, (list, tuple)):
+        raise MechaError("actions 必须是列表", kind="bad_action",
+                         hint='形如 [{"op": "estimate"}, {"op": "run"}]')
+    acts = []
+    for a in actions:
+        if not isinstance(a, Mapping) or "op" not in a:
+            raise MechaError(f"动作项 {a!r} 缺 op", kind="bad_action",
+                             hint='每项须是 {"op": 名称, "args": 对象}')
+        args = dict(a.get("args") or {})
+        if a["op"] in ("run", "estimate") and "spec" not in args:
+            args["spec"] = dict(spec) if spec else dict(gate.snapshot)
+        acts.append(Action(op=str(a["op"]), args=args))
+    actor = channel.actor                      # 恒为 'ai'（通道钉死，改不了）
+    audit = History()                          # 临时审计史（不进域史，见 docstring）
+    codeact = CodeAct(surface, audit, lambda: actor)
+    res = codeact.run(acts, call_id=CURRENT_CALL_ID.get())
+    return {"ok": res.stopped_at == -1,
+            "steps": [{"index": s.index, "op": s.op, "ok": s.ok,
+                       "detail": s.detail} for s in res.steps],
+            "outputs": res.outputs,
+            "stopped_at": res.stopped_at}
+
+
+def _submit_job(jobs: JobRegistry, surface: Surface, gate: Gate):
+    snap = dict(gate.snapshot)     # 提交时刻固定配置（在飞任务不受后续改动影响）
+
+    def _work(ctx: ExecutionContext):
+        return surface.run(snap, context=ctx)
+
+    job = jobs.submit(_work)
+    return {"ok": True, "job_id": job.id, "state": job.state.value}
+
+
+def _read_job(jobs: JobRegistry, job_id):
+    if job_id:
+        job = jobs.get(job_id)     # 未知任务号抛 unknown_job（fail loud）
+        out = {"ok": True, **job.status()}
+        if job.state is JobState.DONE:
+            out["result"] = job.result
+        elif job.state is JobState.FAILED:
+            out["error"] = job.error
+        return out
+    return {"ok": True, "jobs": jobs.list()}
+
+
+def _cancel_job(jobs: JobRegistry, job_id):
+    jobs.cancel(job_id)            # 未知任务号抛 unknown_job
+    return {"ok": True, "job_id": job_id,
+            "state": jobs.get(job_id).state.value}
 
 
 def _run_sim(surface: Surface, gate: Gate, cancel_after_sec):

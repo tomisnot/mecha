@@ -51,6 +51,17 @@ class Software:
     #: 出厂 LOCKED（nothing ships enabled 用在写权上）；人类通道经 switch_mode 开闸
     authority: Authority
 
+    def close(self) -> None:
+        """关停实例：释放 History 的写租约（宿主关停/租约交接用）。幂等。"""
+        self.history.close()
+
+    def __enter__(self) -> "Software":
+        return self
+
+    def __exit__(self, *exc) -> bool:
+        self.close()
+        return False
+
 
 def declare_roles(roles: RoleRegistry, *, engine_name: str, project: str) -> None:
     """§5.4 交付 1：每个 seam 声明角色。无角色标注的扩展点 = 拒收。"""

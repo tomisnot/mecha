@@ -53,7 +53,23 @@ class GateDenied(MechaError):
 
 
 class UnknownKey(MechaError):
-    """set 的键不在声明面内。"""
+    """set 的键不在声明面内。
+
+    ``typo()`` 工厂自动生 did_you_mean（L4：v1 的头号教学特征——打错键名
+    当场猜你想写哪个）。库不持有领域键表：候选集由调用方传入（审查 2.5）。
+    """
+
+    @classmethod
+    def typo(cls, key: object, candidates, *, message: str = "",
+             hint: str = "", kind: str = "unknown_key") -> "UnknownKey":
+        import difflib
+        close = difflib.get_close_matches(
+            str(key), [str(c) for c in candidates], n=3, cutoff=0.4)
+        return cls(
+            message or f"键 {key!r} 不在可写清单",
+            kind=kind, hint=hint,
+            suggest=("你是不是想写：" + "、".join(close)) if close else "",
+        )
 
 
 class UnknownOp(MechaError):

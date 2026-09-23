@@ -117,6 +117,13 @@ def main() -> int:
         _ok("人类夺回：can_write(gui) 恢复 True")
     else:
         _fail(out, "切回 human 后 gui 仍不可写")
+    # 审查 2.4：适配器层细标签 'gui' 切模式 → 映射到 human 侧成功（不撞库层墙）
+    br.switch_mode(Mode.AI, actor="gui")
+    if br.mode == "ai":
+        br.switch_mode(Mode.HUMAN, actor="gui")
+        _ok("bridge.switch_mode(actor='gui') 经适配器映射到 human 侧放行（2.4）")
+    else:
+        _fail(out, "gui 标签切模式未生效（适配器映射断）")
 
     # 4. write_many 原子：坏一键全不写
     before = br.effective()
@@ -159,6 +166,15 @@ def main() -> int:
     except MechaError as e:
         if e.kind == "unknown_key":
             _ok("describe 未入册键报错（fail loud）")
+    # 审查 2.5：打错键名自动 did_you_mean（L4 头号教学特征，difflib 在库层）
+    try:
+        br.describe("field.B_gaus")           # 差一个字母的真·手滑
+        _fail(out, "拼错键竟通过")
+    except MechaError as e:
+        if "field.B_gauss" in (e.suggest or ""):
+            _ok(f"拼错键自动猜你想写（suggest={e.suggest!r}）")
+        else:
+            _fail(out, f"did_you_mean 未生效：suggest={e.suggest!r}")
 
     # 7. ops 计算面（主线程）：prepare → execute → artifact 取回
     br.write_many(SKEL, reason="骨架", actor="gui")

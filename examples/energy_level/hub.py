@@ -2,8 +2,16 @@
 
 进程边界是关键：v1 的 mecha-sdk 与 v2 同名 `mecha`（pip editable 装着 v1），
 同进程会撞名。Hub 作为**独立进程**跑，启动即把 v2 仓根插到 sys.path 最前 ⇒
-本进程 `import mecha` = v2。两进程经**同一份磁盘 journal** 汇流（History
-append-only，可从盘续）。
+本进程 `import mecha` = v2。
+
+**两种部署形态，别混**（审查 2.3 纠偏）：
+- **并存部署（本文件）**：GUI 跑 v1、AI 连这个 Hub（v2）。两进程**各写各的
+  journal**（默认目录不同：`.mecha-v2-hub` vs v1 的 `.mecha`），**不汇流**——
+  谁也不看谁的写。写租约（审查 2.2）保证每个目录各自单写者。
+- **同一道门（bridge.V2Bridge.serve_mcp，实际部署路径）**：GUI 迁 v2
+  （RE0_V2=1）后，MCP 服务器与 GUI **同进程共一 Gate**，一份真值一份史。
+  本文件的 `to_mcp`（工具→MCPServer 转换器）被 serve_mcp 复用；独立进程
+  模式只服务并存部署。
 
 - 7 个工具（tools.build_tool_registry）注册进 mcp 2.x MCPServer，写经 v2 Gate。
 - streamable-http 传输：dsh 插件 re0-mecha 读 .mcp-port → 连 http://host:port/mcp。
@@ -11,12 +19,13 @@ append-only，可从盘续）。
   参数，不覆写就等于把 Phase 4 的 schema 成果在 MCP 层丢掉）。
 
 用法：python examples/energy_level/hub.py --root <EL根> [--port 0]
-      [--data-dir .mecha-v2] [--open-gate] [--port-file 路径]
+      [--data-dir .mecha-v2-hub] [--open-gate] [--port-file 路径]
 
 ## Known Limitations and Deferred Work
 
-- 跨进程不共享内存快照：GUI(v1)+Hub(v2) 并存期各管各的写，只在磁盘 journal
-  追加汇流；真正"人机同一 Gate"要等 GUI 迁 v2（同进程）那一步。
+- 跨进程不共享内存快照：并存部署期 GUI(v1)+Hub(v2) 各管各的写、各写各的
+  journal——**这是并存部署的语义，不是缺陷**；真正"人机同一 Gate"走
+  serve_mcp（同进程）那一步（RE0_V2=1 已落地）。
 - 未接 dsh ctx.approval：AI 写权由 Authority 模式机决定（出厂 LOCKED，
   --open-gate 或人工端点开闸）；细粒度每次写问人待 approval Provider 接线。
 - run_sim 只回摘要（pops/t 不过线）；完整数组走 Spill Provider（待接线）。
@@ -41,7 +50,13 @@ from mecha.authority import Authority, Mode  # noqa: E402
 from mecha.data_layout import resolve_data_dir  # noqa: E402
 from mecha.gate import Channel, Gate  # noqa: E402
 from mecha.history import History  # noqa: E402
+from mecha.providers.jobs import JobRegistry  # noqa: E402
 from mecha.surface import Surface  # noqa: E402
+from mecha.tools import CURRENT_CALL_ID  # noqa: E402
+
+# 模块级导入：`from __future__ import annotations` 下注解是字符串，mcp 的
+# get_type_hints 要能从 _fn.__globals__（= 本模块）解析出 Context 才注入得成。
+from mcp.server.mcpserver import Context  # noqa: E402
 
 from examples.energy_level.engine import ElEngine, make_validator  # noqa: E402
 from examples.energy_level.tools import build_tool_registry  # noqa: E402
@@ -50,7 +65,7 @@ from examples.energy_level.bridge import make_jsonl_history  # noqa: E402
 
 def build_stack(el_root: str | Path, data_root: str | Path,
                 data_dir_name: str = ".mecha-v2") -> dict:
-    """装配 Hub 侧的 v2 栈（engine + gate + surface + tools）。"""
+    """装配 Hub 侧的 v2 栈（engine + gate + surface + jobs + tools）。"""
     engine = ElEngine(el_root)
     layout = resolve_data_dir(Path(data_root), data_dir_name)
     history, _sink = make_jsonl_history(layout)
@@ -58,9 +73,11 @@ def build_stack(el_root: str | Path, data_root: str | Path,
     gate = Gate(authority, history, validate=make_validator(engine))
     surface = Surface(engine)
     ai = Channel("ai")
-    tools = build_tool_registry(engine, gate, surface, authority, ai)
+    jobs = JobRegistry()                   # 本进程唯一注册表（消 D-21）
+    tools = build_tool_registry(engine, gate, surface, authority, ai, jobs)
     return {"engine": engine, "history": history, "authority": authority,
-            "gate": gate, "surface": surface, "ai": ai, "tools": tools}
+            "gate": gate, "surface": surface, "ai": ai, "jobs": jobs,
+            "tools": tools}
 
 
 def to_mcp(stack: dict):
@@ -81,8 +98,16 @@ def _register(server, tools, schema: dict) -> None:
     name = schema["name"]
     parameters = schema["parameters"]
 
-    def _fn(**kwargs):
-        res = tools.execute(name, kwargs)
+    def _fn(ctx: Context = None, **kwargs):
+        # 请求作用域 call_id（审查 2.7）：MCP wire request id 作为本次工具调用的
+        # 关联标识，写进 History 事件（gate.set 经 CURRENT_CALL_ID 读）。dsh 侧
+        # 行为史按同一 id 记录 ⇒ "AI 做了什么"↔"域变成了什么"双向可走查（§5.2②）。
+        # dsh 的 toolu_ 级 callId 若经 _meta 传，归 dsh 侧 Provider 接线（推迟项）。
+        token = CURRENT_CALL_ID.set(ctx.request_id if ctx is not None else "")
+        try:
+            res = tools.execute(name, kwargs)
+        finally:
+            CURRENT_CALL_ID.reset(token)
         if res["is_error"]:
             err = res["error"]
             info = err.get("info", {})
@@ -99,6 +124,7 @@ def _register(server, tools, schema: dict) -> None:
 
     # MCP 从函数签名建 pydantic 入参模型；**kwargs 会得到一个名为 kwargs 的必填
     # 字段（错）。先给闭包一个"真实命名参数"的合成签名，让模型字段=参数名。
+    # ctx 走 __annotations__ 被 find_context_parameter 认出并注入（不进模型）。
     import inspect
     sig_params = [inspect.Parameter(k, inspect.Parameter.KEYWORD_ONLY, default=None)
                   for k in parameters]
@@ -154,7 +180,7 @@ def main(argv=None) -> int:
     data_root = args.data_root or args.root
     stack = build_stack(args.root, data_root, args.data_dir)
     if args.open_gate:
-        stack["authority"].switch_mode(Mode.AI, actor="human")
+        stack["authority"].switch_mode(Mode.AI, side="human")
         print("[hub] 写权已开到 ai 模式（--open-gate）")
 
     server = to_mcp(stack)

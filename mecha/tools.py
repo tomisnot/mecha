@@ -23,12 +23,20 @@
 
 from __future__ import annotations
 
+import contextvars
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 
 from .errors import MechaError, ToolFailure
 from .roles import Disposer
+
+#: 请求作用域的 call_id（审查 2.7：AI 侧互引）。宿主适配器（hub 的 MCP 层）
+#: 在调用 tools.execute 前 set 本次请求的关联 id；写口（gate.set）从这里读，
+#: 把"AI 做了什么"（dsh 行为史）与"域变成了什么"（History 事件）钉在一起
+#: （总纲 §5.2②）。contextvar 天然按请求隔离，不污染工具签名。
+CURRENT_CALL_ID: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "mecha_call_id", default="")
 
 #: schemas() 白名单（dsh ToolSchema 的模型可见字段）。
 MODEL_VISIBLE_FIELDS = ("name", "description", "parameters")

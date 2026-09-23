@@ -29,10 +29,11 @@ from pathlib import Path
 
 from mecha.authority import Authority, Mode
 from mecha.data_layout import DataLayout
-from mecha.errors import GateDenied, MechaError
+from mecha.errors import GateDenied, MechaError, UnknownKey
 from mecha.gate import Channel, Gate
 from mecha.history import Event, History, fold
 from mecha.monitor import Claim, Monitor
+from mecha.providers.jobs import JobRegistry
 from mecha.providers.log_local import JsonlLogSink
 
 
@@ -86,12 +87,12 @@ def el_summarizer(events: list[Event]) -> dict:
     return out
 
 
-def _build_gui_tools(engine, gate, authority, ai):
+def _build_gui_tools(engine, gate, authority, ai, jobs):
     """GUI 进程内工具面（复用 tools.build_tool_registry，Surface 现建）。"""
     from examples.energy_level.tools import build_tool_registry
     from mecha.surface import Surface
     surface = Surface(engine)
-    return build_tool_registry(engine, gate, surface, authority, ai)
+    return build_tool_registry(engine, gate, surface, authority, ai, jobs)
 
 
 class _SessionShim:
@@ -125,6 +126,8 @@ class V2Bridge:
         self.ops = ElOps(self) if engine is not None else None
         # Monitor（第一交付物的后端读面，总纲 §5.2④）：只读，无写回。
         self.monitor = Monitor(history.events, summarizer)
+        # 单一 Job 注册表（本进程唯一，消 D-21）：GUI 与 MCP 线程共用它。
+        self.jobs = JobRegistry()
 
     @classmethod
     def for_gui(cls, *, el_root: str | Path, data_root: str | Path,
@@ -176,7 +179,8 @@ class V2Bridge:
         import threading
         from examples.energy_level.hub import to_mcp, _free_port
         ai = Channel("ai")
-        tools = _build_gui_tools(self._engine, self._gate, self._authority, ai)
+        tools = _build_gui_tools(self._engine, self._gate, self._authority,
+                                 ai, self.jobs)
         server = to_mcp({"tools": tools, "authority": self._authority})
         actual = port or _free_port(host)
         t = threading.Thread(
@@ -232,6 +236,10 @@ class V2Bridge:
         """权威史只读访问口（监控面板原始层用；写不进——append 只在 Gate 内）。"""
         return self._history
 
+    def close(self) -> None:
+        """关停：释放数据目录的写租约（宿主退出/租约交接用）。幂等。"""
+        self._history.close()
+
     @property
     def snapshot(self) -> dict:
         return self._gate.snapshot
@@ -251,7 +259,17 @@ class V2Bridge:
         return self._authority.mode.value
 
     def switch_mode(self, new_mode: str, *, actor="human"):
-        self._authority.switch_mode(Mode(new_mode), actor=actor)
+        # actor 标签 → side（复用写权映射表）；authority 只认 side（审查 2.4）。
+        # 未知标签报错；细标签（gui/human）映到 human 侧 ⇒ 可切，ai/mcp 映到
+        # ai 侧 ⇒ 被 authority 拒（AI 不能自解锁）。
+        side = _ACTOR_CHANNEL.get(str(actor).split(":")[0])
+        if side is None:
+            raise GateDenied(
+                f"未知 actor {actor!r}", kind="unknown_actor",
+                hint="切模式者必须映射到已知通道",
+                suggest=f"已知 actor：{sorted(_ACTOR_CHANNEL)}",
+            )
+        self._authority.switch_mode(Mode(new_mode), side)
 
     # ---- 订阅（GUI 面板刷新）----
 
@@ -314,8 +332,12 @@ class V2Bridge:
         rec = dict(schema["engine"]).get(bare)             # type: ignore[call-overload]
         if rec:
             return {**rec, "name": f"engine.{bare}", "family": "engine"}
-        raise MechaError(f"键 {key!r} 未入册", kind="unknown_key",
-                         hint="参数表见 params()；拼错键名会被拒（fail loud）")
+        raise UnknownKey.typo(
+            key,
+            list(dict(schema["config"])) + list(dict(schema["solve"]))
+            + [f"engine.{k}" for k in dict(schema["engine"])],
+            message=f"键 {key!r} 未入册",
+            hint="参数表见 params()；拼错键名会被拒（fail loud）")
 
 
 class ElOps:
