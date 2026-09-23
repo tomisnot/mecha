@@ -124,6 +124,64 @@ def check_merge_ready(out: list[str]) -> None:
         _fail(out, "独有能力被误判为共有")
 
 
+#: 诚实推迟的 provider（无真实消费者，但显式登记——不是遗忘）。
+#: 加新 provider 若不进这里又不声明 consumer ⇒ 守卫红（逼"推迟不许沉默"）。
+DEFERRED_PROVIDERS = frozenset({
+    "provider.spill.local",       # 大载荷回程待 dsh spillStore 接线
+    "provider.approval.local",    # 细粒度每次写问人待 ctx.approval 接线
+    "provider.skills",            # skill 目录待宿主 skill 面接线
+})
+
+
+def check_consumer_truthfulness(out: list[str]) -> None:
+    """审查勘误 §3/§4.1（升级为必须）：map 的「消费方」列不许说谎。
+
+    两条机械断言：
+      A 每条 PROVIDER 声明的 consumer 必须是**表内真实存在的能力名**——
+        抓 `surface.run`/`tools` 这类"消费一个不存在的能力"的假声明。
+      B 每条 PROVIDER 要么声明真实 consumer，要么在 DEFERRED_PROVIDERS
+        显式登记——抓"加了 provider 忘了它有没有人用"（沉默推迟）。
+    L7 对偶：合规声明 0 命中；合成假 consumer + 未登记 provider 必须被抓。
+    """
+    entries = build_roles().entries()
+    names = {e.name for e in entries}
+    providers = [e for e in entries if e.role is Role.PROVIDER]
+    bad_consumer = []
+    unregistered = []
+    for e in providers:
+        if e.consumers:
+            for c in e.consumers:
+                if c not in names:
+                    bad_consumer.append(f"{e.name}→{c}")
+        elif e.name not in DEFERRED_PROVIDERS:
+            unregistered.append(e.name)
+    if bad_consumer:
+        _fail(out, f"PROVIDER 声明了表内不存在的 consumer（消费方说谎）："
+                   f"{bad_consumer}")
+    else:
+        _ok("每条 PROVIDER 的 consumer 都是表内真实能力名（消费方不说谎）")
+    if unregistered:
+        _fail(out, f"PROVIDER 既无 consumer 又未登记推迟（沉默推迟）："
+                   f"{unregistered}；确属推迟请加入 DEFERRED_PROVIDERS")
+    else:
+        _ok("每个 PROVIDER 要么真实消费、要么显式登记推迟（无沉默推迟）")
+    # 不许误报（L7）：合成一条假 consumer + 一条未登记 provider，必须被抓
+    fake = RoleRegistry()
+    fake.register("surface", Role.DEFINITION, provider="x")
+    fake.register("provider.foo.local", Role.PROVIDER, provider="f",
+                  consumer="no_such_capability")
+    fake.register("provider.bar.local", Role.PROVIDER, provider="b")
+    fp = [e for e in fake.entries() if e.role is Role.PROVIDER]
+    caught_bad = any(c not in {x.name for x in fake.entries()}
+                     for e in fp for c in e.consumers)
+    caught_unreg = any(not e.consumers and e.name not in DEFERRED_PROVIDERS
+                       for e in fp)
+    if caught_bad and caught_unreg:
+        _ok("守卫自测：假 consumer + 未登记 provider 均被抓（非哑守卫）")
+    else:
+        _fail(out, f"守卫对合成违例漏抓：bad={caught_bad} unreg={caught_unreg}")
+
+
 def main() -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -132,6 +190,7 @@ def main() -> int:
     check_roles_declared(out)
     check_map_generated(out)
     check_merge_ready(out)
+    check_consumer_truthfulness(out)
     if out:
         print(f"capability_map_selfcheck: FAIL（{len(out)} 条）")
         return 1

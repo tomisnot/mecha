@@ -75,18 +75,26 @@ def declare_roles(roles: RoleRegistry, *, engine_name: str, project: str) -> Non
     # 操作者适配器（平级，不是主子）
     roles.register("adapter.gui", Role.CONSUMER, consumer="human", provider=project)
     roles.register("adapter.ai", Role.CONSUMER, consumer="ai", provider=project)
-    # Provider 层四 seam
+    # Provider 层四 seam（consumer 只写**真实存在且真会消费**的能力名——
+    # 审查勘误 §3：原 surface.run/tools/gate 三条是假声明，Surface.run 不碰
+    # jobs、tools 层不 import spill、gate 不 import approval。无真实消费者的
+    # 留空（诚实推迟），由 capability_map 守卫盯"声明的 consumer 必须是表内
+    # 能力"+"每个出厂机制有非判据引用"）。
     roles.register("provider.log", Role.DEFINITION, provider=project)
     roles.register("provider.log.local", Role.PROVIDER, provider="jsonl", consumer="history")
     roles.register("provider.jobs", Role.DEFINITION, provider=project)
-    roles.register("provider.jobs.local", Role.PROVIDER, provider="thread", consumer="surface.run")
+    roles.register("provider.jobs.local", Role.PROVIDER, provider="thread", consumer="tools.registry")
     roles.register("provider.spill", Role.DEFINITION, provider=project)
-    roles.register("provider.spill.local", Role.PROVIDER, provider="local-file", consumer="tools")
+    roles.register("provider.spill.local", Role.PROVIDER, provider="local-file")
     roles.register("provider.approval", Role.DEFINITION, provider=project)
-    roles.register("provider.approval.local", Role.PROVIDER, provider="fail-closed", consumer="gate")
+    roles.register("provider.approval.local", Role.PROVIDER, provider="fail-closed")
     # 工具形态层与可见性
     roles.register("tools.registry", Role.CONSUMER, consumer="adapter.ai", provider=project)
     roles.register("visibility.policy", Role.DEFINITION, provider=project)
+    # 编排与目录机制（勘误 §4.2：未消费清单要在 map 里可见，守卫才盯得住）
+    roles.register("provider.codeact", Role.PROVIDER, provider="actions-interp",
+                   consumer="tools.registry")
+    roles.register("provider.skills", Role.PROVIDER, provider="catalog")
 
 
 def build_roles(*, engine_name: str = "unconfigured", project: str = "mecha") -> RoleRegistry:
