@@ -1,8 +1,8 @@
 """Known Limitations 门禁（总纲 §6.2）。
 
-每个模块（``mecha/`` 与 ``checks/`` 下的 ``.py`` 文件）的模块 docstring 必须含
-``## Known Limitations and Deferred Work`` 段，且段内有非空内容——强制每个模块
-自述它不擅长什么（治"血统标签自己也会漂"）。
+每个模块（``mecha/``、``checks/``、``examples/``、``scripts/`` 下的 ``.py``
+文件）的模块 docstring 必须含 ``## Known Limitations and Deferred Work`` 段，
+且段内有非空内容——强制每个模块自述它不擅长什么（治"血统标签自己也会漂"）。
 
 用法：python checks/known_limitations_selfcheck.py
 退出码：0 = 全绿；1 = 有违例或自测失败。
@@ -25,7 +25,7 @@ import tempfile
 from pathlib import Path
 
 SECTION = "## Known Limitations and Deferred Work"
-SCAN_DIRS = ("mecha", "checks")
+SCAN_DIRS = ("mecha", "checks", "examples", "scripts")
 
 
 def _is_lazily_none(body: str) -> bool:
