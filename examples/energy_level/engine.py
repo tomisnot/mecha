@@ -107,13 +107,13 @@ class ElEngine(Engine):
             pass
         arr[1] = 1
 
-    # ---- 必实现 ③：summary ----
+    # ---- 必实现 ③：summary（全部取 EL 的公开声明面）----
 
     def summary(self) -> Mapping[str, object]:
+        methods = self._protocol.config_schema().get(
+            "dynamic.method", {}).get("enum") or []
         return {"engine": "energy-level", "atom": self._atom,
-                "cache_ready": True,
-                "methods": sorted({m for (m, _) in
-                                   self._protocol._runspec._ENGINE_TABLE})}
+                "cache_ready": True, "methods": sorted(map(str, methods))}
 
     # ---- 必实现 ④：estimate（补框架必填 est_sec，粗估口径写进 note）----
 

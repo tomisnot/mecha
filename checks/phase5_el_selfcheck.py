@@ -156,6 +156,13 @@ def main() -> int:
     else:
         _fail(out, f"est_sec 适配失败：{r}")
 
+    # ---- 6b. summary：取 EL 公开声明面（methods 非空且与 enum 一致）----
+    summ = surface.summary()
+    if summ.get("engine") == "energy-level" and summ.get("methods"):
+        _ok(f"summary 回引擎身份 + methods={summ['methods']}（公开声明面）")
+    else:
+        _fail(out, f"summary 不符：{summ}")
+
     # ---- 7. preview：basis_enough 契约 ----
     r = tools.execute("preview_run", {})
     if not r["is_error"] and isinstance(r["value"].get("basis_enough"), bool):
