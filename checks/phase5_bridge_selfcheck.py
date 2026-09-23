@@ -172,6 +172,14 @@ def main() -> int:
     res = br.ops.execute(prepared, actor="gui", reason="GUI 运行演化")
     aid = res.get("artifact_id")
     loaded = br.ops.load_artifact(aid) if aid else None
+    if "problems" not in res:
+        _fail(out, "execute 回执缺顶层 problems（RunWorker 消费 res['problems']"
+                    "发状态栏旁注，只嵌 summary 会静默丢）")
+    elif res["problems"] != prepared.get("problems"):
+        _fail(out, f"顶层 problems 与 prepare 不一致：{res['problems']}"
+                   f" != {prepared.get('problems')}")
+    else:
+        _ok("execute 回执顶层带 problems（v1 RunWorker 消费形状对齐）")
     if res["ok"] and loaded is not None:
         _labels, arrays = loaded
         if "pops" in arrays and "t" in arrays:

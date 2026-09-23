@@ -298,12 +298,16 @@ class ElOps:
         run = prepared["run"]
         res = p.evolve_run(run, progress_arr=progress_arr, cache=self._b.cache)
         summary = dict(p.result_summary(run, res))
-        summary["problems"] = list(prepared.get("problems") or [])
+        problems = list(prepared.get("problems") or [])
+        summary["problems"] = problems
         aid = ""
         if land_artifact and res is not None:
             aid = self._land(run, res)
             summary["artifact_id"] = aid
-        return {"summary": summary, "artifact_id": aid, "ok": bool(summary.get("ok"))}
+        # problems 同时放**顶层**：v1 的 RunWorker 消费 `res.get('problems')`
+        # 发状态栏旁注（evolve_worker.py:45），只嵌 summary 会让旁注静默丢失。
+        return {"summary": summary, "problems": problems,
+                "artifact_id": aid, "ok": bool(summary.get("ok"))}
 
     def _land(self, run: dict, res: dict) -> str:
         import pickle
