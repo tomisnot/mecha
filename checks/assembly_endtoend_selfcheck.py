@@ -200,6 +200,20 @@ def check_single_writer_lease(out: list[str]) -> None:
                 _ok("只读投影（exclusive=False）与写宿主并存不误伤")
             except MechaError as e:
                 _fail(out, f"只读投影被租约误伤：{e}")
+    # 审查 D-32：持有租约自然退出不得污染 stderr（__del__ 关闭期不抛）。
+    # 子进程建 WriteLease 后直接退出（不显式 close），断言 stderr 为空。
+    import subprocess
+    code = ("import sys, tempfile; sys.path.insert(0, %r);"
+            "from mecha.write_lease import WriteLease;"
+            "from pathlib import Path;"
+            "WriteLease(Path(tempfile.mkdtemp())); print('ok')" % str(ROOT))
+    proc = subprocess.run([sys.executable, "-c", code],
+                          capture_output=True, text=True, timeout=30)
+    if proc.returncode == 0 and proc.stderr.strip() == "":
+        _ok("持有租约自然退出：stderr 空（__del__ 不在关闭期抛 ImportError）")
+    else:
+        _fail(out, f"退出污染 stderr（rc={proc.returncode}）："
+                   f"{proc.stderr.strip()[:200]}")
 
 
 def main() -> int:
@@ -211,6 +225,7 @@ def main() -> int:
     check_hole2_run_is_only_executor(out)
     check_independent_of_dsh(out)
     check_history_append_only_on_disk(out)
+    check_single_writer_lease(out)
     if out:
         print(f"assembly_endtoend_selfcheck: FAIL（{len(out)} 条）")
         return 1
