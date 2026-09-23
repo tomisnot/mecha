@@ -1,0 +1,25 @@
+# 领域词守卫词表（D-1/D-3：库内不许出现某个项目的领域值）
+
+# 用法：checks/vocabulary_selfcheck.py 读本文件。
+# 一行一词；# 起注释。命中 = 该词出现在"扫描面"里 → 红。
+# 扫描面按**资产类型**划分（消 D-1 根因"三层扫描面都只扫 .py"）：
+#   code    = .py 源码（含 docstring）
+#   asset   = 非 .py 资产（HTML/JS/CSS/JSON/YAML/TOML）
+#   note    = docs/v2/notes 之外的只读文档（ADR note 允许引用被否决方案，
+#             但必须用引号当反例引用——守卫对 note 只报"未加引号的裸用"）
+
+# —— 以下全部来自 EL（Energy Level）项目的领域值，库内一律禁止 ——
+# 激光行话（v1 的 _ACTUATE 表含 fire/arm，D-5）
+出光
+加压
+淬灭
+里德堡
+# 物理量具名（示例值泄漏，D-1）
+Rb-87
+# v1 的注册键与模块路径（app.js 硬编码，D-1）
+config_head
+src.adapter
+# 端口字面量（D-7；库内零固定端口）
+8765
+8766
+8767
