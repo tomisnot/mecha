@@ -96,3 +96,10 @@ proposed ──落地──▶ implemented ──被完全取代──▶ archiv
 | 归档用 sidecar hash + append-only manifest | **用 git commit 冻结** | git 本身就是不可变日志 |
 | `verify-agent-note-format` 有 header/skeleton 双门禁 | 一条判据四组 | 够用即可 |
 | class 封闭集（feature/bug-fix/simplification/architecture/process/testing） | 先不分类 | 等 note 超过 30 条再引入，避免过早分类 |
+
+## 7. 仓库入口文档（审查 P4 补，2026-09-23）
+
+每个仓库根必须有 `README.md`：它是什么 / 不是什么 / 仓库地图 / 怎么起 /
+怎么验证 / 决策怎么查。**示例代码必须实测可跑**——文档说一套代码做一套是
+D-27 失败类，入口文档尤其致命（新对话第一眼就读它）。README 的更新与代码
+同提交（L9 的一件之内）。
