@@ -25,13 +25,18 @@ from mecha.gate import Channel, Gate
 from mecha.history import History
 from mecha.providers.codeact import Action, CodeAct
 from mecha.providers.jobs import JobRegistry, JobState
-from mecha.surface import ExecutionContext, Surface
+from mecha.surface import EntryKind, ExecutionContext, Surface
 from mecha.tools import CURRENT_CALL_ID, ToolRegistry, define_tool
 
 from .engine import ElEngine
 
 # —— 任务概念词汇（description 只准用这些，禁框架内部词）——
 # 每个工具的 execute 闭包捕获 (gate, surface, engine, channel)。
+
+#: run_actions 声明的只读查询名（**单一来源**：description 由它生成、Surface
+#: QUERY 注册由它驱动、判据按它逐个验真——审查②a：声明与能力面不许两套账）。
+#: CodeAct 内置 op（estimate/summary/run/schema）不在此列，见 providers/codeact。
+DOMAIN_QUERY_OPS = ("read_config", "query_params", "preview_run", "query_levels")
 
 
 def build_tool_registry(engine: ElEngine, gate: Gate, surface: Surface,
@@ -194,13 +199,22 @@ def build_tool_registry(engine: ElEngine, gate: Gate, surface: Surface,
     ))
 
     # ---- run_actions（CodeAct 编排，审查 §1.2②：机制已建、消费方接上）----
+    # 只读查询 op 的真身 = Surface 的 QUERY 注册项（审查②a：description 里
+    # "或已注册的只读查询名"必须为真）。注册驱动自 DOMAIN_QUERY_OPS 单一来源，
+    # 分派直接复用上面各工具已注册的 execute（一份实现两处用，不造第二真值）。
+    for _qn in DOMAIN_QUERY_OPS:
+        _tool = reg.get(_qn)
+        surface.register(EntryKind.QUERY, _qn, _tool.execute,
+                         called_by="framework:CodeAct.run_actions")
+
     reg.register(define_tool(
         name="run_actions",
         description=(
             "一次提交一串动作按序执行（省往返）。每步是 {op, args}：op 可为 "
             "estimate（探规模）、summary（读引擎概况）、run（跑一次演化，args "
-            "带 spec），或已注册的只读查询名（如 query_levels）。任一步失败即"
-            "停在该步并如实返回失败原因，之前的步不回滚。每步都留可追溯记录。"
+            "带 spec），或只读查询名（" + " / ".join(DOMAIN_QUERY_OPS) + "）。"
+            "任一步失败即停在该步并如实返回失败原因，之前的步不回滚。"
+            "每步都留可追溯记录。"
         ),
         parameters={"actions": {"type": "array",
                     "description": "动作列表，每项 {\"op\": 名称, \"args\": 对象}"},

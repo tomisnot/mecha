@@ -39,10 +39,11 @@ from mecha.errors import MechaError  # noqa: E402
 from mecha.gate import Channel, Gate  # noqa: E402
 from mecha.history import History  # noqa: E402
 from mecha.providers.jobs import JobRegistry  # noqa: E402
-from mecha.surface import ExecutionContext, Surface  # noqa: E402
+from mecha.surface import EntryKind, ExecutionContext, Surface  # noqa: E402
 
 from examples.energy_level.engine import ElEngine, make_validator  # noqa: E402
-from examples.energy_level.tools import build_tool_registry  # noqa: E402
+from examples.energy_level.tools import (  # noqa: E402
+    DOMAIN_QUERY_OPS, build_tool_registry)
 
 
 def _ok(msg: str) -> None:
@@ -93,6 +94,22 @@ def main() -> int:
             _fail(out, f"工具 {s['name']} 投影泄漏字段")
     _ok("schemas() 投影全部只含模型可见字段")
 
+    # ---- 1b. ②a 防复发：run_actions 声明的查询名必须真在 Surface QUERY 面 ----
+    # （审查②a：description 说"或已注册的只读查询名"曾是假的——声明与能力面
+    # 不许两套账，判据按 DOMAIN_QUERY_OPS 单一来源逐个验真。）
+    qnames = {e.name for e in surface.entries(EntryKind.QUERY)}
+    if set(DOMAIN_QUERY_OPS) <= qnames:
+        _ok(f"Surface QUERY 面覆盖声明的查询名：{sorted(DOMAIN_QUERY_OPS)}")
+    else:
+        _fail(out, f"QUERY 面缺：{sorted(set(DOMAIN_QUERY_OPS) - qnames)}")
+    ra_desc = next(s["description"] for s in tools.schemas()
+                   if s["name"] == "run_actions")
+    missing_in_desc = [q for q in DOMAIN_QUERY_OPS if q not in ra_desc]
+    if not missing_in_desc:
+        _ok("run_actions description 由单一来源生成（逐个查询名可见）")
+    else:
+        _fail(out, f"run_actions description 缺查询名：{missing_in_desc}")
+
     # ---- 2. 写入门：拒未知键 / 拒只读 engine.*，报错可教学 ----
     r = tools.execute("set_config", {"key": "dynamic.nope", "value": 1})
     if r["is_error"] and r["error"]["info"]["kind"] == "unknown_key" \
@@ -136,6 +153,16 @@ def main() -> int:
             _fail(out, f"骨架键 {key} 被拒：{r['error']['message']}")
             return 1
     _ok("骨架配置经门写入成功（groups/mode/method/t_max/npts/decay）")
+
+    # ---- 4b. ②a 防复发：声明的每个查询 op 经 run_actions 真跑通 ----
+    r = tools.execute("run_actions",
+                      {"actions": [{"op": q} for q in DOMAIN_QUERY_OPS]})
+    if r.get("is_error"):
+        _fail(out, f"run_actions 查询串报错：{r['error']['message']}")
+    elif r["value"]["ok"] and r["value"]["stopped_at"] == -1:
+        _ok(f"run_actions 逐个跑通声明查询：{[s['op'] for s in r['value']['steps']]}")
+    else:
+        _fail(out, f"run_actions 查询串未全通：{r['value']['steps']}")
 
     # ---- 5. query_levels → 真身份键 → 设初态 ----
     r = tools.execute("query_levels", {})
