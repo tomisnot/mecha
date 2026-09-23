@@ -18,7 +18,7 @@ append-only：只追加、永不改写；seq 单调递增；可从盘上续。�
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
@@ -78,6 +78,7 @@ class History:
         self._sink = sink
         self._events: list[Event] = []
         self._seq = 0
+        self._subs: list[Callable[[Event], None]] = []
         if sink is not None:
             self._resume(sink)
 
@@ -97,7 +98,29 @@ class History:
         self._events.append(ev)
         if self._sink is not None:
             self._sink.append(ev.to_record())
+        for cb in list(self._subs):        # 快照迭代：回调里可退订
+            try:
+                cb(ev)
+            except Exception:              # noqa: BLE001 - 一个坏订阅者不拖垮写口
+                pass
         return ev
+
+    def subscribe(self, callback: Callable[[Event], None]) -> Callable[[], None]:
+        """订阅新事件（GUI 面板刷新等真实消费者）。返回 disposer（可逆副作用）。
+
+        同步回调：在 append 之后、写口返回之前逐个调用；回调抛错被吞
+        （坏订阅者不得影响权威史）。回调里若再写门（set）会递归——
+        订阅者应是只读消费者（GUI 刷新、监控投影），写回路径归 Gate。
+        """
+        self._subs.append(callback)
+
+        def dispose() -> None:
+            try:
+                self._subs.remove(callback)
+            except ValueError:
+                pass
+
+        return dispose
 
     @property
     def last_seq(self) -> int:
