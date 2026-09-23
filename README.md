@@ -52,6 +52,10 @@ print([t["name"] for t in tools.schemas()])   # 7 个工具，喂给宿主 ctx.t
 写权出厂 LOCKED（nothing ships enabled 用在写权上）；`validate` 必填，不校验
 请显式传 `accept_all`。
 
+真项目接线（EL 消费配置）：在 EL 仓设 `RE0_V2=1` 再起 GUI——GUI 与 AI（MCP）
+过**同一道 v2 门**（一个 Gate、一份 History），人工夺权走 `:8767/switch_mode`
+（token 在 `.human-token`）。详见 `docs/v2/notes/implemented/2026-09-23-phase5-el接线.md`。
+
 ## 验证
 
 ```
