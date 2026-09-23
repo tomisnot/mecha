@@ -12,7 +12,7 @@
 | `monitor` | definition | mecha | — |
 | `provider.approval` | definition | mecha | — |
 | `provider.approval.local` | provider | fail-closed | — |
-| `provider.codeact` | provider | actions-interp | tools.registry |
+| `provider.codeact` | provider | actions-interp | adapter.ai |
 | `provider.jobs` | definition | mecha | — |
 | `provider.jobs.local` | provider | thread | tools.registry |
 | `provider.log` | definition | mecha | — |

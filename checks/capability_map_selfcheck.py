@@ -132,6 +132,68 @@ DEFERRED_PROVIDERS = frozenset({
     "provider.skills",            # skill 目录待宿主 skill 面接线
 })
 
+#: 有真实消费者的 provider → (实现符号, 自身模块路径子串)。
+#: 守卫 grep 该符号在 mecha/ 或 examples/ 下、排除 checks/ 与 assembly.py
+#: 与自身模块后的引用，独立于 consumer 标签证明"真有人用"（审查 D-29）。
+CONSUMER_SYMBOLS = {
+    "provider.jobs.local": ("JobRegistry", ("providers/jobs.py",)),
+    "provider.codeact": ("CodeAct", ("providers/codeact.py",)),
+    "provider.log.local": ("JsonlLogSink", ("providers/log_local.py",)),
+}
+
+
+def _real_consumer_files(symbol: str, own_module_substrings) -> list[str]:
+    """symbol 被**真实 import** 的文件：mecha/ 或 examples/ 下，非 checks/、
+    非 assembly、非 providers/ 子树（re-export 与兄弟模块不算消费者）。
+    只认含 symbol 的 import 行——docstring/注释里的提及不算（防假绿）。"""
+    hits: list[str] = []
+    for base in ("mecha", "examples"):
+        d = ROOT / base
+        if not d.is_dir():
+            continue
+        for path in d.rglob("*.py"):
+            rel = path.relative_to(ROOT).as_posix()
+            if rel.startswith("checks/") or rel.endswith("assembly.py"):
+                continue
+            if rel.startswith("mecha/providers/"):     # 自身/兄弟/__init__ 转出
+                continue
+            if any(s in rel for s in own_module_substrings):
+                continue
+            try:
+                lines = path.read_text(encoding="utf-8").splitlines()
+            except (UnicodeDecodeError, OSError):
+                continue
+            for ln in lines:
+                s = ln.strip()
+                if s.startswith(("import ", "from ")) and symbol in s:
+                    hits.append(rel)
+                    break
+    return hits
+
+
+def check_real_consumers(out: list[str]) -> None:
+    """审查 D-29（grep 式「有实际消费方」门禁）：声明的机制真被非判据代码引用。
+
+    每个 CONSUMER_SYMBOLS 里的 provider 必须能在 checks/ 之外、assembly 实例化
+    之外、自身模块之外找到引用；DEFERRED_PROVIDERS 里的豁免（诚实推迟）。
+    这独立于 consumer 标签——标签写对了不代表有人 import，grep 才证明。
+    L7 对偶：真符号（JobRegistry）必须非空、假符号必须空（守卫不永远返绿）。
+    """
+    for cap, (sym, own) in CONSUMER_SYMBOLS.items():
+        files = _real_consumer_files(sym, own)
+        if not files:
+            _fail(out, f"{cap} 的实现符号 {sym!r} 在 checks/assembly/自身模块外"
+                       f"零引用（声明有消费方却无人 import）")
+        else:
+            _ok(f"{cap} 有非判据真实消费（{sym} ← {files[0]} 等 {len(files)} 处）")
+    # 不许误报 / 非哑守卫（L7）
+    good = _real_consumer_files("JobRegistry", ("providers/jobs.py",))
+    bogus = _real_consumer_files("NoSuchSymbol_zzz", ())
+    if good and not bogus:
+        _ok("grep 守卫自测：真符号命中、假符号 0 命中（非哑守卫）")
+    else:
+        _fail(out, f"grep 守卫自测失败：good={len(good)} bogus={len(bogus)}")
+
 
 def check_consumer_truthfulness(out: list[str]) -> None:
     """审查勘误 §3/§4.1（升级为必须）：map 的「消费方」列不许说谎。
@@ -191,6 +253,7 @@ def main() -> int:
     check_map_generated(out)
     check_merge_ready(out)
     check_consumer_truthfulness(out)
+    check_real_consumers(out)
     if out:
         print(f"capability_map_selfcheck: FAIL（{len(out)} 条）")
         return 1
