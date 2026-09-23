@@ -47,9 +47,11 @@ def scan_tree(root: Path, banned: list[str]) -> list[str]:
         if not base.is_dir():
             continue
         for path in sorted(base.rglob("*")):
-            if not path.is_file() or path.suffix not in ASSET_SUFFIXES:
+            if not path.is_file():
                 continue
-            if path == WORDLIST:
+            if path == WORDLIST:            # 词表自身永不扫（含全部禁用词）
+                continue
+            if path.suffix not in ASSET_SUFFIXES:
                 continue
             try:
                 text = path.read_text(encoding="utf-8")

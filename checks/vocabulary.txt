@@ -5,8 +5,9 @@
 # 扫描面按**资产类型**划分（消 D-1 根因"三层扫描面都只扫 .py"）：
 #   code    = .py 源码（含 docstring）
 #   asset   = 非 .py 资产（HTML/JS/CSS/JSON/YAML/TOML）
-#   note    = docs/v2/notes 之外的只读文档（ADR note 允许引用被否决方案，
-#             但必须用引号当反例引用——守卫对 note 只报"未加引号的裸用"）
+# 只扫 mecha/ 与 checks/；docs/ 整体排除（ADR note 与审计文档正当引用被否决
+# 方案与 v1 值，不做"加引号才放行"的细粒度判定——那是未实现的设想，写在此
+# 处反而误导，见审查第二轮动作 5）。
 
 # —— 以下全部来自 EL（Energy Level）项目的领域值，库内一律禁止 ——
 # 激光行话（v1 的 _ACTUATE 表含 fire/arm，D-5）
