@@ -332,8 +332,10 @@ class V2Bridge:
             for key, rec in dict(schema[fam]).items():     # type: ignore[arg-type]
                 rows.append({**rec, "name": key, "family": fam})
         if include_internal:
+            # engine 族用**裸名**（v1 registry 约定：family='engine' + name='R_CRIT'，
+            # 不带 engine. 前缀）——GUI 的精度旋钮回显按裸名查记录，前缀名查不到。
             for key, rec in dict(schema["engine"]).items():  # type: ignore[arg-type]
-                rows.append({**rec, "name": f"engine.{key}", "family": "engine"})
+                rows.append({**rec, "name": key, "family": "engine"})
         rows.sort(key=lambda r: r["name"])
         return {"params": rows[:page_size], "count": len(rows)}
 
