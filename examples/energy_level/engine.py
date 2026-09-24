@@ -296,6 +296,10 @@ def make_validator(engine: ElEngine):
                 hint=f"可写键共 {len(settable)} 个（config+solve，不含 engine.*）；"
                      "完整清单 query_params",
             )
+        # None = "清空回默认"（GUI 的"留空=默认/跟随模板"语义，v1 既有）：
+        # 下游消费方（mb_get、runspec 的 `or` 回落）一律把快照里的 None 当未设。
+        if value is None:
+            return
         rec = schema.get(key) or {}
         tname = rec.get("type")
         enum = rec.get("enum")
