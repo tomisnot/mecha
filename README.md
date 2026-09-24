@@ -23,7 +23,8 @@ mecha/providers/  Provider 层（dsh 的 churn 关在这里）：log_local / job
                 spill / approval / skills / codeact —— local 是出厂默认
 examples/energy_level/  EL（Rb-87 里德堡仿真）作为第一个 Provider 的参考实现
 checks/         判据（见下）+ 门禁；python checks/run_all.py 一条跑全
-docs/v2/        架构总纲 + 遗留登记 + ADR 制度 + notes/（ADR 四态树）
+docs/v2/        架构总纲（规范源：为什么这么设计）+ 架构详解（建成态导览：代码
+                现在长什么样）+ 遗留登记 + ADR 制度 + notes/（ADR 四态树）
 docs/capabilities.md  生成的 capability map（禁止手改，改了判据红）
 scripts/        gen_capability_map.py（map 生成器）
 ```
