@@ -6,7 +6,8 @@
 ## Known Limitations and Deferred Work
 
 - 串行跑（判据总耗时秒级，并行是过早优化）。
-- 不跑 Phase 5 的 EL 侧判据（EL 项目未接入，n=1）。
+- Phase 5 的 EL 侧判据（el/hub/bridge）在列——EL 已接入本仓 examples；
+  缺 EL 根时对应判据自己报红（不假绿），耗时主要在 cache 建与真演化。
 """
 
 from __future__ import annotations
