@@ -1,17 +1,14 @@
 """v2 MCP Hub：AI 操作者经这道门驱动 EL（Phase 5 第 1 步，独立进程）。
 
-进程边界是关键：v1 的 mecha-sdk 与 v2 同名 `mecha`（pip editable 装着 v1），
-同进程会撞名。Hub 作为**独立进程**跑，启动即把 v2 仓根插到 sys.path 最前 ⇒
-本进程 `import mecha` = v2。
-
 **两种部署形态，别混**（审查 2.3 纠偏）：
-- **并存部署（本文件）**：GUI 跑 v1、AI 连这个 Hub（v2）。两进程**各写各的
-  journal**（默认目录不同：`.mecha-v2-hub` vs v1 的 `.mecha`），**不汇流**——
-  谁也不看谁的写。写租约（审查 2.2）保证每个目录各自单写者。
-- **同一道门（bridge.V2Bridge.serve_mcp，实际部署路径）**：GUI 迁 v2
-  （RE0_V2=1）后，MCP 服务器与 GUI **同进程共一 Gate**，一份真值一份史。
-  本文件的 `to_mcp`（工具→MCPServer 转换器）被 serve_mcp 复用；独立进程
-  模式只服务并存部署。
+- **独立进程 Hub（本文件的 main）**：无 GUI 的 headless 部署（跑在 A 机、
+  AI 从 B 机连）。写权威落 `--data-dir`（默认 `.mecha-v2-hub`）。
+- **同一道门（bridge.V2Bridge.serve_mcp，EL 默认部署路径）**：GUI 进程内
+  MCP 服务器线程与 GUI **共一 Gate**，一份真值一份史（v1 已退役，GUI 即默认）。
+  本文件的 `to_mcp`（工具→MCPServer 转换器）被 serve_mcp 复用。
+
+（历史：v1/v2 同名 `mecha` 并存期，本文件还承担"GUI 跑 v1、AI 连 v2 Hub"的
+并存部署；库替换后该形态退役，独立进程只剩 headless 一种语义。）
 
 - 工具面（tools.build_tool_registry 注册的全部工具，清单见其 schemas()）注册进
   mcp 2.x MCPServer，写经 v2 Gate。
@@ -24,9 +21,8 @@
 
 ## Known Limitations and Deferred Work
 
-- 跨进程不共享内存快照：并存部署期 GUI(v1)+Hub(v2) 各管各的写、各写各的
-  journal——**这是并存部署的语义，不是缺陷**；真正"人机同一 Gate"走
-  serve_mcp（同进程）那一步（RE0_V2=1 已落地）。
+- 独立进程与 GUI **不共享内存快照**：两进程同起会各写各的 journal（写租约
+  保证各目录单写者，但互不见对方的写）——headless 部署就**只起这一个**权威。
 - 未接 dsh ctx.approval：AI 写权由 Authority 模式机决定（出厂 LOCKED，
   --open-gate 或人工端点开闸）；细粒度每次写问人待 approval Provider 接线。
 - run_sim 只回摘要（pops/t 不过线）；完整数组走 Spill Provider（待接线）。
@@ -42,7 +38,7 @@ import os
 import sys
 from pathlib import Path
 
-# —— 进程内 v2 优先：把本仓根插到最前，确保 import mecha = v2 ——
+# —— 本仓优先：把仓根插到 sys.path 最前，从检出目录直跑也 import 到本仓 mecha ——
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
@@ -161,13 +157,14 @@ def main(argv=None) -> int:
                     help="EL 项目根（含 src/core/protocol.py）")
     ap.add_argument("--data-root", default="", help="数据目录父（默认=EL 根）")
     ap.add_argument("--data-dir", default=".mecha-v2-hub",
-                    help="数据目录名（注入；与 GUI 的 .mecha-v2 分开——并存部署"
-                         "各写各的 journal，不汇流；写租约各保各目录单写者）")
+                    help="数据目录名（注入；headless 独立进程写权威落此处。"
+                         "与 GUI 的 .mecha-v2 分开——两进程各写各的 journal，"
+                         "写租约各保各目录单写者，但互不见对方的写）")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=0, help="0=自动选空闲端口")
     ap.add_argument("--port-file", default="",
                     help="端口文件（默认 <root>/.mcp-port，与 dsh 插件 re0-mecha "
-                         "的发现约定一致；v1 serve 运行时勿同时起 hub）")
+                         "的发现约定一致；勿与 GUI 进程同起——两者都写此文件会互踩）")
     ap.add_argument("--open-gate", action="store_true",
                     help="启动即开 ai 写权（演示/测试；默认 LOCKED）")
     args = ap.parse_args(argv)
