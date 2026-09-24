@@ -201,11 +201,26 @@ class CommandSpec:
 
 @dataclass
 class CommandResult:
-    """命令体回执：``ok`` 为假时 ``error`` 必须给 ``MechaError``（fail loud）。"""
+    """命令体回执：``ok`` 为假时 ``error`` 必须给 ``MechaError``（fail loud）。
+
+    ``result_ref`` 是**不透明**的宿主结果引用（如 ``{"kind": "ml_run",
+    "run_id": "..."}``）：核心只检查它是映射，不解释内容；它随审计事件进
+    History，让"命令调用"与"宿主结果"可互引，而结果体仍留宿主侧。
+    """
 
     ok: bool
     values: Mapping[str, object]
     error: MechaError | None = None
+    result_ref: Mapping[str, object] | None = None
+
+    def __post_init__(self) -> None:
+        if self.result_ref is not None and not isinstance(self.result_ref, Mapping):
+            raise MechaError(
+                f"CommandResult.result_ref 需要映射或 None，收到 "
+                f"{type(self.result_ref).__name__}",
+                kind="bad_command_result_ref",
+                hint="result_ref 是宿主结果的不透明引用（如 run_id/locator）",
+            )
 
 
 def define_command(
@@ -358,9 +373,10 @@ class CommandRegistry:
             error = _output_error(spec, payload)
         # 审计在回执契约判定之后、返回之前：有副作用的命令哪怕回执不合契约，
         # 也已经动过宿主状态 ⇒ 必须留痕（否则最该被审计的失败反而无痕）。
-        audit_error = self._audit(spec, gate, channel, meta, payload, error)
+        audit_error = self._audit(spec, gate, channel, meta, payload, error,
+                                  result.result_ref)
         if error is not None:
-            return _failure(error)
+            return _failure(error, payload)
         if audit_error is not None:
             return _failure(audit_error)
         return {"is_error": False, "value": payload}
@@ -404,7 +420,9 @@ class CommandRegistry:
             )
         if spec.parameters.get("additionalProperties") is True:
             return
-        extra = [k for k in args if k not in required]
+        props = spec.parameters.get("properties")
+        allowed = set(props) if isinstance(props, Mapping) else set(required)
+        extra = [k for k in args if k not in allowed]
         if extra:
             raise MechaError(
                 f"命令 {spec.name!r} 收到未声明的参数 {extra}",
@@ -445,7 +463,8 @@ class CommandRegistry:
 
     def _audit(self, spec: CommandSpec, gate: object | None,
                channel: object | None, meta: Mapping[str, object],
-               payload: Mapping[str, object], error: MechaError | None
+               payload: Mapping[str, object], error: MechaError | None,
+               result_ref: Mapping[str, object] | None = None
                ) -> MechaError | None:
         """有副作用的命令经 Gate 写 ``command.<name>`` 审计事件。
 
@@ -472,6 +491,9 @@ class CommandRegistry:
             "error_kind": error.kind if error is not None else "",
             "error_message": error.message if error is not None else "",
         }
+        if result_ref is not None:
+            # 不透明引用：核心不解释，只保证可 JSON 化（值由宿主负责）。
+            record["result_ref"] = dict(result_ref)
         try:
             gate.set(channel or _default_channel(spec.name),   # type: ignore[attr-defined]
                      f"{AUDIT_KEY_PREFIX}{spec.name}", record, reason, call_id)
@@ -510,11 +532,19 @@ def _output_error(spec: CommandSpec, values: Mapping[str, object]) -> MechaError
     return None
 
 
-def _failure(error: MechaError) -> dict:
-    """MechaError → ``ToolFailure {message, info}`` 形状的归一化失败回执。"""
-    return {"is_error": True, "error": ToolFailure(
+def _failure(error: MechaError,
+             payload: Mapping[str, object] | None = None) -> dict:
+    """MechaError → ``ToolFailure {message, info}`` 形状的归一化失败回执。
+
+    若命令体已产出回执（``payload``），失败回执里额外带 ``value``：宿主
+    回执的引用字段（如 run_ids）不能在失败路径丢失，否则对账断链。
+    """
+    out = {"is_error": True, "error": ToolFailure(
         message=error.message, kind=error.kind, hint=error.hint,
         suggest=error.suggest).to_failure()}
+    if payload is not None:
+        out["value"] = dict(payload)
+    return out
 
 
 def command_signature_names(handler: Callable[..., object]) -> tuple[list[str], bool]:

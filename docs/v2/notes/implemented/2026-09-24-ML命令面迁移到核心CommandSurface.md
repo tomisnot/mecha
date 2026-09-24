@@ -1,8 +1,12 @@
 # ML 命令面迁移到核心 Command Surface
 
-> **状态**：proposed
+> **状态**：implemented
 > **作者**：ML×mecha 衔接（Lead）
 > **日期**：2026-09-24
+> **落地**：核心加 `CommandResult.result_ref` 与审计写入；ML adapter 经
+> `assemble_ml_mecha` 注册 4 条命令并把 `MLEngine.run` 路由到核心
+> `CommandRegistry.invoke`；只读查询走 `Surface.query`；命令审计键
+> `command.<name>` 在 ML validator 中显式放行。
 
 ## Problem
 

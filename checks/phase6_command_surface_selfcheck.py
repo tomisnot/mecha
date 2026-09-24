@@ -262,6 +262,19 @@ def check_params_and_output(out: list[str]) -> None:
         _ok("未声明参数被拒（声明漂移 fail loud，不静默吞参）")
     else:
         _fail(out, f"未声明参数未拒：{r}")
+    # 声明里的可选参数（properties 有、required 没有）必须放行
+    reg_opt = CommandRegistry()
+    reg_opt.register(_summary_cmd(parameters={
+        "type": "object",
+        "properties": {"of": {"type": "string"}, "mode": {"type": "string"}},
+        "required": ["of"]}),
+        lambda context, of, mode="fast": {"ok": True, "digest": f"{of}/{mode}"})
+    r = reg_opt.invoke("compute_summary", {"of": "x", "mode": "slow"},
+                       context=_Ctx())
+    if not r.get("is_error") and r["value"]["digest"] == "x/slow":
+        _ok("可选参数（properties 声明但非 required）被放行（不误拒）")
+    else:
+        _fail(out, f"可选参数被误拒：{r}")
     # 显式声明 additionalProperties 才放行附加参数（宿主显式表态）
     reg_ap = CommandRegistry()
     reg_ap.register(_summary_cmd(parameters={
@@ -410,6 +423,49 @@ def check_side_effect_audit(out: list[str]) -> None:
         dispose()
 
 
+def check_result_ref_audit(out: list[str]) -> None:
+    """命令体可带不透明 result_ref；它进审计，但结果体不进 History。"""
+    with _with_software() as sw:
+        sw.authority.switch_mode(Mode.AI, side="human")
+
+        def handler(context, text):
+            return CommandResult(ok=True, values={"ok": True, "stored_key": "ref"},
+                                 result_ref={"kind": "note", "id": "n-1"})
+
+        sw.commands.register(
+            _note_cmd(output_schema={"type": "object",
+                                     "required": ["ok", "stored_key"]}),
+            handler)
+        r = sw.commands.invoke("record_note", {"text": "x"}, context=_Ctx(),
+                               gate=sw.gate, channel=sw.channels["ai"])
+        if not r.get("is_error") and r["value"].get("stored_key") == "ref":
+            _ok("带 result_ref 的命令正常返回回执")
+        else:
+            _fail(out, f"带 result_ref 的命令回执不符：{r}")
+        events = [e for e in sw.history.events()
+                  if e.key == f"{AUDIT_KEY_PREFIX}record_note"]
+        if events and events[-1].value.get("result_ref") == {"kind": "note",
+                                                             "id": "n-1"}:
+            _ok("result_ref 进审计（命令调用与宿主结果可互引）")
+        else:
+            _fail(out, f"result_ref 未进审计：{[e.value for e in events]}")
+        # 不透明引用不进结果体；参数原文也不进审计
+        audit_value = events[-1].value
+        if "x" not in str(audit_value) and "values" not in audit_value:
+            _ok("result_ref 审计不含结果体/入参原文（大对象不进 History）")
+        else:
+            _fail(out, f"result_ref 审计泄漏结果体：{audit_value}")
+    # 坏形状的 result_ref 构造即拒（门在执行器上）
+    try:
+        CommandResult(ok=True, values={}, result_ref="not-a-mapping")
+        _fail(out, "非映射 result_ref 竟可构造")
+    except MechaError as e:
+        if e.kind == "bad_command_result_ref":
+            _ok("非映射 result_ref 构造即拒")
+        else:
+            _fail(out, f"坏 result_ref 报错 kind 不对：{e.kind}")
+
+
 # ---------------------------------------------------------------------------
 # E 只读命令不经 Gate
 # ---------------------------------------------------------------------------
@@ -527,6 +583,7 @@ def main() -> int:
     check_register_dispose(out)
     check_params_and_output(out)
     check_side_effect_audit(out)
+    check_result_ref_audit(out)
     check_readonly_bypasses_gate(out)
     check_projection(out)
     check_no_false_alarm(out)
