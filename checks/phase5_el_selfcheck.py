@@ -32,6 +32,8 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 EL_ROOT = Path(r"D:\学\BaiduSyncdisk\编程\code\python\Energy Level")
+# 领域实现归所属项目（ADR 领域参考实现搬回所属项目）：引擎/工具面从 EL 仓 import。
+sys.path.insert(0, str(EL_ROOT))
 
 from mecha.authority import Authority, Mode  # noqa: E402
 from mecha.data_layout import resolve_data_dir  # noqa: E402
@@ -41,8 +43,8 @@ from mecha.history import History  # noqa: E402
 from mecha.providers.jobs import JobRegistry  # noqa: E402
 from mecha.surface import EntryKind, ExecutionContext, Surface  # noqa: E402
 
-from examples.energy_level.engine import ElEngine, make_validator  # noqa: E402
-from examples.energy_level.tools import (  # noqa: E402
+from mecha_v2.engine import ElEngine, make_validator  # noqa: E402
+from mecha_v2.tools import (  # noqa: E402
     DOMAIN_QUERY_OPS, build_tool_registry)
 
 

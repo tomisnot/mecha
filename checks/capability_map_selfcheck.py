@@ -165,12 +165,15 @@ DEFERRED_PROVIDERS = frozenset({
 })
 
 #: 有真实消费者的 provider → (实现符号, 自身模块路径子串)。
-#: 守卫 grep 该符号在 mecha/ 或 examples/ 下、排除 checks/ 与 assembly.py
-#: 与自身模块后的引用，独立于 consumer 标签证明"真有人用"（审查 D-29）。
+#: 守卫 grep 该符号在**库（mecha/）或真实项目（EL 仓 mecha_v2/）**下、排除
+#: checks/ 与 assembly.py 与自身模块后的引用，独立于 consumer 标签证明
+#: "真有人用"（审查 D-29）。examples/ 退役后（ADR 领域参考实现搬回所属项目），
+#: 项目侧证据扫 EL 仓——**库机制被真项目 import 才算数，被框架自己的示例 import
+#: 从来不算**（旧扫描面反而更弱）。
 #: provider.log.local 的证据符号是 `assemble`：D-33 后 sink 只经具名装配点
 #: 注入 History（依赖倒置，消费者不 import Provider 类）——真实路径
-#: （bridge/hub）import assemble 即证明整条 log 链被真消费；若谁退回手搭
-#: 装配，该 import 消失、守卫当场红（D-33 的机械防回归）。
+#: （EL mecha_v2/bridge、hub）import assemble 即证明整条 log 链被真消费；
+#: 若谁退回手搭装配，该 import 消失、守卫当场红（D-33 的机械防回归）。
 CONSUMER_SYMBOLS = {
     "provider.jobs.local": ("JobRegistry", ("providers/jobs.py",)),
     "provider.codeact": ("CodeAct", ("providers/codeact.py",)),
@@ -179,17 +182,17 @@ CONSUMER_SYMBOLS = {
 
 
 def _real_consumer_files(symbol: str, own_module_substrings) -> list[str]:
-    """symbol 被**真实 import** 的文件：mecha/ 或 examples/ 下，非 checks/、
-    非 assembly、非 providers/ 子树（re-export 与兄弟模块不算消费者）。
+    """symbol 被**真实 import** 的文件：mecha 仓 mecha/ 与 EL 仓 mecha_v2/ 下，
+    非 checks/、非 assembly、非 providers/ 子树（re-export 与兄弟模块不算消费者）。
     只认含 symbol 的 import 行——docstring/注释里的提及不算（防假绿）。"""
     hits: list[str] = []
-    for base in ("mecha", "examples"):
-        d = ROOT / base
+    bases = [(ROOT / "mecha", "mecha/"), (EL_ROOT / "mecha_v2", "EL:mecha_v2/")]
+    for d, prefix in bases:
         if not d.is_dir():
             continue
         for path in d.rglob("*.py"):
-            rel = path.relative_to(ROOT).as_posix()
-            if rel.startswith("checks/") or rel.endswith("assembly.py"):
+            rel = prefix + path.relative_to(d).as_posix()
+            if rel.endswith("assembly.py"):
                 continue
             if rel.startswith("mecha/providers/"):     # 自身/兄弟/__init__ 转出
                 continue
@@ -330,9 +333,9 @@ def check_runtime_graph_matches(out: list[str]) -> None:
     else:
         _fail(out, "surface 持有另一张表——assemble 的 roles 注入漂了")
 
-    # B：bridge 真路径（serve_mcp → _build_gui_tools）必须复用装配点的 surface
-    src = (ROOT / "examples" / "energy_level" / "bridge.py").read_text(
-        encoding="utf-8")
+    # B：bridge 真路径（serve_mcp → _build_gui_tools）必须复用装配点的 surface。
+    # （领域实现搬回 EL 仓后，bridge 在 EL_ROOT/mecha_v2/ —— 与 phase5 判据同源）
+    src = (EL_ROOT / "mecha_v2" / "bridge.py").read_text(encoding="utf-8")
     if ("surface=sw.surface" in src and "surface=self._surface" in src
             and "surface or Surface(engine)" in src):
         _ok("bridge 真路径穿装配点 surface（_assembled→serve_mcp→工具面同源）")

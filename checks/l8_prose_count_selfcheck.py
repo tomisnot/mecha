@@ -1,6 +1,6 @@
 """L8 散文计数守卫（D-34：文档不写计数，只写名字或指向单一来源）。
 
-扫 mecha/、examples/、checks/ 的 .py（docstring + 注释）与 README.md、
+扫 mecha/、checks/ 的 .py（docstring + 注释）与 README.md、
 docs/v2/notes/**.md，抓**会增长的集合**的手写数量：`N 个 工具/provider/模块/
 能力/seam/原语` 与 `N 条 判据/门禁`。这类数字随功能增删必漂（v1 付过两次账：
 18→16、16→17，五处手抄全红；本轮又漂了一次 7→11）。
@@ -43,7 +43,7 @@ GROWING_COUNT = re.compile(rf"(\d+)\s*个\s*({GROWING})")
 GROWING_TIAO = re.compile(r"(\d+)\s*条\s*(判据|门禁)")
 
 SCAN_GLOBS = (
-    "mecha/**/*.py", "examples/**/*.py", "checks/**/*.py",
+    "mecha/**/*.py", "checks/**/*.py",
     "README.md", "docs/v2/notes/**/*.md",
 )
 

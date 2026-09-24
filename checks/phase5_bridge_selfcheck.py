@@ -39,11 +39,14 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 EL_ROOT = Path(r"D:\学\BaiduSyncdisk\编程\code\python\Energy Level")
+# 领域实现归所属项目（ADR 领域参考实现搬回所属项目）：EL 适配器从 EL 仓 import，
+# 不再寄存在框架 examples/ —— 缺 EL 即红（下方 exists 检查守）。
+sys.path.insert(0, str(EL_ROOT))
 
 from mecha.authority import Mode  # noqa: E402
 from mecha.errors import GateDenied, MechaError  # noqa: E402
 
-from examples.energy_level.bridge import V2Bridge  # noqa: E402
+from mecha_v2.bridge import V2Bridge  # noqa: E402
 
 SKEL = {
     "groups.list": [{"n": 60, "l": 0, "j": 0.5}, {"n": 60, "l": 1, "j": 1.5}],

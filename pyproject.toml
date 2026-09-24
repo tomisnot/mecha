@@ -13,12 +13,12 @@ dependencies = []
 # dsh 宿主接线（Phase 5 第 2 步）才需要；库本体零依赖是纪律（独立于 dsh）。
 
 [tool.setuptools.packages.find]
-include = ["mecha*", "examples*"]
+include = ["mecha*"]
 
-# examples/ 随包发：EL 的真实接线（src/v2_bind.py）从这里 import V2Bridge/ElEngine
-# （单一来源；examples 标"参考实现非契约"）。D-23 的教训是"docstring 指向不存在的
-# 文件"——把 examples 打进包正是销号路径。mecha/ 库本体仍零领域值（ElEngine 的 EL
-# 依赖只活在 examples 内）。
+# 只发库本体：examples/ 已退役（ADR 领域参考实现搬回所属项目）——EL 的领域实现
+# （ElEngine/V2Bridge/tools/hub）住 EL 项目仓 `mecha_v2` 包，框架包不代管项目代码。
+# D-23 教训的兑现方式随之改变：库 docstring/README 不再指向"包内示例文件"，
+# 而是自包含最小例（README"怎么起"，实测可跑）+ 指向 EL 仓真表 docs/capabilities.md。
 
 # D-24 教训：package-data 必须显式声明并真出包验证，读代码永远看不出来。
 # 当前 mecha/ 无随包资产；将来出厂 UI/资产进 cockpit 时在此声明并跑 pip wheel 验。

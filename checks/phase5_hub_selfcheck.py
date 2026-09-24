@@ -201,11 +201,11 @@ def main() -> int:
     data_dir = "hubdata"
     log_file = (tmp / "hub.log").open("w", encoding="utf-8")
     proc = subprocess.Popen(
-        [sys.executable, str(ROOT / "examples" / "energy_level" / "hub.py"),
+        [sys.executable, "-m", "mecha_v2.hub",
          "--root", str(EL_ROOT), "--data-root", str(tmp),
          "--data-dir", data_dir,
          "--port-file", str(port_file), "--open-gate"],
-        cwd=str(ROOT), stdout=log_file, stderr=subprocess.STDOUT)
+        cwd=str(EL_ROOT), stdout=log_file, stderr=subprocess.STDOUT)
     try:
         # 等端口文件（cache 建要十几秒）
         port = None

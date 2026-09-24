@@ -21,7 +21,6 @@ mecha/          稳定脊椎：gate / history / surface / monitor / authority /
                 data_layout / errors + assembly（具名装配点）
 mecha/providers/  Provider 层（dsh 的 churn 关在这里）：log_local / jobs /
                 spill / approval / skills / codeact —— local 是出厂默认
-examples/energy_level/  EL（Rb-87 里德堡仿真）作为第一个 Provider 的参考实现
 checks/         判据（见下）+ 门禁；python checks/run_all.py 一条跑全
 docs/v2/        架构总纲（规范源：为什么这么设计）+ 架构详解（建成态导览：代码
                 现在长什么样）+ 遗留登记 + ADR 制度 + notes/（ADR 四态树）
@@ -31,32 +30,37 @@ scripts/        gen_capability_map.py（map 生成器）
 
 ## 怎么起（30 秒）
 
+mecha 是**领域无关框架**——接入 = 实现 `Engine` 的四个必方法（schema/run/
+summary/estimate），经具名装配点 `assemble` 组装。下面是一个自包含的最小例子
+（不依赖任何外部项目，可直接跑）：
+
 ```python
 from pathlib import Path
 from mecha.assembly import assemble
 from mecha.authority import Mode
-from examples.energy_level.engine import ElEngine, make_validator
+from mecha.gate import accept_all
+from mecha.surface import Engine
 
-EL = Path(r"D:\学\BaiduSyncdisk\编程\code\python\Energy Level")
-engine = ElEngine(EL)                      # 首次建 ARC cache ~3-13s
+class MyEngine(Engine):
+    def schema(self):  return {"run_output_required": ["ok"]}
+    def run(self, spec, *, context, **opts): return {"ok": True}
+    def summary(self): return {"ok": True}
+    def estimate(self, spec): return {"est_sec": 1.0}
+
 sw = assemble(root=Path("./my-software"), data_dir_name=".mydata",
-              engine=engine, summarizer=lambda evs: {},
-              validate=make_validator(engine))
+              engine=MyEngine(), summarizer=lambda evs: {},
+              validate=accept_all)          # 不校验请显式传 accept_all
 sw.authority.switch_mode(Mode.AI, side="human")   # 出厂 LOCKED，人类侧开闸
-
-from examples.energy_level.tools import build_tool_registry
-tools = build_tool_registry(engine, sw.gate, sw.surface,
-                            sw.authority, sw.channels["ai"], sw.jobs)
-print([t["name"] for t in tools.schemas()])   # 工具集，喂给宿主 ctx.tools
+sw.gate.set(sw.channels["ai"], "power", 42, reason="demo")
+print(sw.gate.snapshot)                     # {'power': 42}——写经门、记进史
 ```
 
-写权出厂 LOCKED（nothing ships enabled 用在写权上）；`validate` 必填，不校验
-请显式传 `accept_all`。
-
-真项目接线（EL 消费配置）：EL 仓起 GUI 即走 v2（`python 能级.py`，v2 已是默认）——
-GUI 与 AI（MCP）过**同一道 v2 门**（一个 Gate、一份 History），人工夺权走
-`:8767/switch_mode`（token 在 `.human-token`）。详见 `docs/v2/notes/implemented/`
-下 `phase5-el接线` 与 `代替v1-判据迁移与落地` 两篇 ADR。
+真项目接线（EL 消费配置）：领域实现住 **EL 项目仓**（`mecha_v2` 包：ElEngine +
+build_tool_registry + V2Bridge + hub），不在本框架仓——"个性知识归所属项目"
+（ADR `领域参考实现搬回所属项目`）。EL 起软件走 `python launcher.py`（两模式：
+GUI 纯本地 / AI 经 dsh），详见 `docs/v2/notes/implemented/` 下 `两模式启动` 与
+`phase5-el接线` 两篇 ADR。本仓判据的 phase5_* 直接 import EL 仓的 `mecha_v2`
+（缺 EL 即红，不假绿）。
 
 ## 验证
 
