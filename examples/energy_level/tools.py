@@ -229,15 +229,16 @@ def build_tool_registry(engine: ElEngine, gate: Gate, surface: Surface,
             "detuning_mhz": {"type": "number", "description": "相对共振的失谐 MHz（默认 0）"},
             "mode": {"type": "string", "description": "append（默认追加）/ replace（整组替换）"},
             "atom": {"type": "string", "description": "单体 single（默认）；两体 A / B"},
+            "name": {"type": "string", "description": "波形名（默认 drive；多条波时用可辨的名字）"},
         },
         output_schema={"type": "object", "required": ["ok", "key", "wave"]},
         execute=lambda src, tgt, rabi_mhz=None, intensity_mwcm2=None,
         pol="π", pulse="", duration_ns=None, detuning_mhz=0.0,
-        mode="append", atom="single": _set_drive(
+        mode="append", atom="single", name="drive": _set_drive(
             engine, gate, channel, src, tgt, pol=pol, rabi_mhz=rabi_mhz,
             intensity_mwcm2=intensity_mwcm2, pulse=pulse,
             duration_ns=duration_ns, detuning_mhz=detuning_mhz, mode=mode,
-            atom=atom),
+            atom=atom, name=name),
         banned_words=("gate", "dipole", "dme", "serialize", "wave_list 结构"),
     ))
 
