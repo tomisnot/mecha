@@ -130,13 +130,19 @@ class ElEngine(Engine):
         snap = dict(spec)
         # EL 的 progress_arr 三槽约定在**这里**适配（约定不外泄给框架）：
         # [0]=进度 [1]=取消标志 [2]=阶段。取消监视线程独立于引擎线程翻标志位。
+        # stop 事件让 watcher 在 run 正常结束时也能退出（外部深研 P0：
+        # 只等 cancel_event 的旧写法每次成功 run 泄漏一个等待线程）。
         progress_arr = [0.0, 0, ""]
+        stop = threading.Event()
         watcher = threading.Thread(
-            target=self._watch_cancel, args=(context, progress_arr), daemon=True)
+            target=self._watch_cancel, args=(context, progress_arr, stop),
+            daemon=True)
         watcher.start()
         try:
             return self._on_engine(self._run_on_engine, snap, progress_arr)
         finally:
+            stop.set()
+            watcher.join(timeout=1.0)
             context.report_progress(1.0, "evolve done")
 
     def _run_on_engine(self, snap: dict, progress_arr: list) -> Mapping[str, object]:
@@ -163,10 +169,17 @@ class ElEngine(Engine):
         return summ
 
     @staticmethod
-    def _watch_cancel(context: ExecutionContext, arr: list) -> None:
-        while not context.cancel_event.wait(0.05):
-            pass
-        arr[1] = 1
+    def _watch_cancel(context: ExecutionContext, arr: list,
+                      stop: threading.Event) -> None:
+        """轮询取消：cancel_event 置位 → 翻标志退出；run 结束（stop 置位）→ 退出。
+
+        两条退出路径都收敛（不泄漏等待线程）；run 已结束才看到 stop 时翻
+        arr[1] 无意义，故 cancel 分支优先于 stop 分支无冲突。
+        """
+        while not stop.is_set():
+            if context.cancel_event.wait(0.05):
+                arr[1] = 1
+                return
 
     # ---- 必实现 ③：summary（全部取 EL 的公开声明面）----
 
