@@ -116,23 +116,31 @@ def _register(server, tools, schema: dict) -> None:
             raise ToolError(text)
         return json.dumps(res["value"], ensure_ascii=False, default=str)
 
-    # MCP 从函数签名建 pydantic 入参模型；**kwargs 会得到一个名为 kwargs 的必填
-    # 字段（错）。先给闭包一个"真实命名参数"的合成签名，让模型字段=参数名。
-    # ctx 走 __annotations__ 被 find_context_parameter 认出并注入（不进模型）。
+    # required 从 execute 闭包签名派生（**无默认值=必填**，单一来源）——接管
+    # 报告 P1-8：旧写法从 parameters 节点读 required 标记，但无人声明 ⇒ 全部
+    # 工具的必填项在 MCP 面静默消失，模型以为 set_config 可以只给 key。
     import inspect
-    sig_params = [inspect.Parameter(k, inspect.Parameter.KEYWORD_ONLY, default=None)
-                  for k in parameters]
+    tool_def = tools.get(name)
+    exec_params = list(inspect.signature(tool_def.execute).parameters.values())
+    required = [p.name for p in exec_params
+                if p.default is inspect.Parameter.empty
+                and p.kind in (p.POSITIONAL_OR_KEYWORD, p.KEYWORD_ONLY)]
+
+    # MCP 从函数签名建 pydantic 入参模型；**kwargs 会得到一个名为 kwargs 的必填
+    # 字段（错）。先给闭包一个"真实命名参数"的合成签名，让模型字段=参数名；
+    # 必填项不给默认值 ⇒ pydantic 层同样强制。
+    # ctx 走 __annotations__ 被 find_context_parameter 认出并注入（不进模型）。
+    sig_params = [
+        inspect.Parameter(
+            k, inspect.Parameter.KEYWORD_ONLY,
+            default=None if k not in required else inspect.Parameter.empty)
+        for k in parameters]
     _fn.__signature__ = inspect.Signature(sig_params, return_annotation=str)
 
     server.add_tool(_fn, name=name, description=schema["description"])
     # 再把对外声明覆写成 v2 的形状（带类型/描述；Phase 4 成果过线不丢）
-    props = {}
-    required = []
-    for pk, pv in parameters.items():
-        node = dict(pv) if isinstance(pv, dict) else {"type": "string"}
-        if node.pop("required", False):
-            required.append(pk)
-        props[pk] = node
+    props = {pk: (dict(pv) if isinstance(pv, dict) else {"type": "string"})
+             for pk, pv in parameters.items()}
     input_schema = {"type": "object", "properties": props}
     if required:
         input_schema["required"] = required

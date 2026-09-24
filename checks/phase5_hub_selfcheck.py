@@ -76,6 +76,13 @@ async def drive(port: int, out: list[str]) -> None:
                 _ok("set_config 的 inputSchema 带 key/value（Phase 4 声明过线不丢）")
             else:
                 _fail(out, f"inputSchema 被 **kwargs 掏空：{props}")
+            # required 投影（接管报告 P1-8）：execute 闭包无默认值的参数=必填，
+            # 必须出现在 inputSchema.required，否则模型以为 set_config 可只给 key
+            req = (schema_obj or {}).get("required", []) if sc else []
+            if set(req) == {"key", "value"}:
+                _ok("set_config 的 inputSchema.required=[key,value]（必填投影自签名派生）")
+            else:
+                _fail(out, f"required 投影缺失/错误：{req}")
 
             async def call(name, **args):
                 res = await asyncio.wait_for(
