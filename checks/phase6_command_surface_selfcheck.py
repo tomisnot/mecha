@@ -52,6 +52,7 @@ from mecha.commands import (  # noqa: E402
 )
 from mecha.errors import MechaError  # noqa: E402
 from mecha.gate import accept_all  # noqa: E402
+from mecha.scopes import ScopePolicy  # noqa: E402
 from mecha.surface import Engine, ExecutionContext  # noqa: E402
 
 
@@ -466,6 +467,55 @@ def check_result_ref_audit(out: list[str]) -> None:
             _fail(out, f"坏 result_ref 报错 kind 不对：{e.kind}")
 
 
+def check_scope_policy(out: list[str]) -> None:
+    """ScopePolicy：有 scope 的命令在副作用前按 side 过滤；未注入不过滤。"""
+    reached: list[str] = []
+
+    def handler(context, text):
+        reached.append(text)
+        return {"ok": True, "stored_key": text}
+
+    spec = _note_cmd(scope=("write",))
+    with _with_software() as sw:
+        sw.authority.switch_mode(Mode.AI, side="human")
+        # 未注入 policy：scope 只是声明，不参与分派（向后兼容）
+        sw.commands.register(spec, handler)
+        r = sw.commands.invoke("record_note", {"text": "ok"}, context=_Ctx(),
+                               gate=sw.gate, channel=sw.channels["ai"])
+        if not r.get("is_error"):
+            _ok("未注入 ScopePolicy → scope 只是声明（单宿主不受影响）")
+        else:
+            _fail(out, f"未注入 policy 却被 scope 拒：{r}")
+    with _with_software() as sw:
+        sw.authority.switch_mode(Mode.HUMAN, side="human")
+        policy = ScopePolicy()
+        policy.grant("human", "write")
+        sw.commands.bind_scope_policy(policy)
+        sw.commands.register(spec, handler)
+        events_before = len(sw.history.events())
+        r = sw.commands.invoke("record_note", {"text": "ai"}, context=_Ctx(),
+                               gate=sw.gate, channel=sw.channels["ai"])
+        if _fail_shape(r, "scope_denied") and len(sw.history.events()) == events_before \
+                and "ai" not in reached:
+            _ok("AI 缺 scope → scope_denied，且无副作用、无审计（fail closed）")
+        else:
+            _fail(out, f"scope 拒绝语义不符：{r} reached={reached} "
+                       f"events={len(sw.history.events()) - events_before}")
+        r = sw.commands.invoke("record_note", {"text": "human"}, context=_Ctx(),
+                               gate=sw.gate, channel=sw.channels["human"])
+        if not r.get("is_error") and "human" in reached:
+            _ok("有 scope 的 side 正常放行且审计照写")
+        else:
+            _fail(out, f"已授权 side 被误拒：{r}")
+    # 显式 default_allow=True 才放开未列出的 scope（不把默认拒绝静默改掉）
+    policy2 = ScopePolicy(default_allow=True)
+    try:
+        policy2.check("ai", ["anything"])
+        _ok("default_allow=True 显式放开未列出的 scope")
+    except MechaError:
+        _fail(out, "default_allow=True 未生效")
+
+
 # ---------------------------------------------------------------------------
 # E 只读命令不经 Gate
 # ---------------------------------------------------------------------------
@@ -584,6 +634,7 @@ def main() -> int:
     check_params_and_output(out)
     check_side_effect_audit(out)
     check_result_ref_audit(out)
+    check_scope_policy(out)
     check_readonly_bypasses_gate(out)
     check_projection(out)
     check_no_false_alarm(out)

@@ -261,6 +261,15 @@ class CommandRegistry:
         self._caller = caller
         self._specs: dict[str, CommandSpec] = {}
         self._handlers: dict[str, Callable[..., object]] = {}
+        self._scope_policy = None
+
+    def bind_scope_policy(self, policy) -> None:
+        """注入 ScopePolicy：有 scope 的命令在副作用前先过作用域写权过滤。
+
+        不注入时不做 scope 过滤（单宿主向后兼容）；注入后默认拒绝未授予的
+        scope（fail closed），机制细节见 ``mecha/scopes.py``。
+        """
+        self._scope_policy = policy
 
     # ---- 注册 ----
 
@@ -352,6 +361,14 @@ class CommandRegistry:
                 hint="已注册命令见 CommandRegistry.specs()；新命令先 register",
                 suggest="、".join(self.names()) or "",
             ))
+        # 作用域写权过滤在**任何副作用之前**：scope 不齐即拒，不写审计、
+        # 不调 handler（与 Authority 的 mode 门是两个正交层）。
+        if self._scope_policy is not None and spec.scope:
+            side = getattr(channel, "side", "ai") if channel is not None else "ai"
+            try:
+                self._scope_policy.check(side, spec.scope)
+            except MechaError as e:
+                return _failure(e)
         meta = {k: args.get(k) for k in RESERVED_ARGS if k in args}
         declared = spec.parameters.get("required", [])
         declared_set = set(declared) if _is_name_sequence(declared) else set()
