@@ -280,6 +280,57 @@ def main() -> int:
     else:
         _fail(out, f"reset_config 不符：{r}")
 
+    # ---- 8e. 实测第二轮 §4 的顺手感（spec_patch / op 别名 / pick / t_max 对账）----
+    # reset 已清空快照，重铺最小骨架（estimate 用得到 n_states/t_max/npts；
+    # B 让 60S ±0.5 有 Zeeman 分裂，set_drive 的跃迁频率才非零）。
+    for key, val in (
+        ("groups.list", [{"n": 60, "l": 0, "j": 0.5}, {"n": 60, "l": 1, "j": 1.5}]),
+        ("field.B_gauss", 1.0),
+        ("dynamic.mode", 0), ("dynamic.method", "mixed"),
+        ("dynamic.t_max", 5.0), ("dynamic.npts", 50), ("dynamic.decay_index", 0),
+    ):
+        tools.execute("set_config", {"key": key, "value": val})
+    # 4-2 op 别名：顶层工具名 estimate_run/run_sim 直接当 op 用（不再"每次试一次"）
+    r = tools.execute("run_actions", {"actions": [{"op": "estimate_run"}]})
+    if not r["is_error"] and r["value"]["ok"] and r["value"]["steps"][0]["ok"]:
+        _ok("run_actions 接受工具名 estimate_run 作 op 别名（4-2）")
+    else:
+        _fail(out, f"op 别名不符：{r}")
+    # 4-1 spec_patch：在现有配置上只改 t_max（不重抄全量 spec），且**不写回快照**
+    base = tools.execute("run_actions", {"actions": [{"op": "estimate"}]})
+    patched = tools.execute("run_actions", {"actions": [
+        {"op": "estimate", "args": {"spec_patch": {"dynamic.t_max": 10.0}}}]})
+    b_sec = base["value"]["steps"][0]["output"]["est_sec"]
+    p_sec = patched["value"]["steps"][0]["output"]["est_sec"]
+    if (p_sec > b_sec and gate.snapshot.get("dynamic.t_max") == 5.0):
+        _ok(f"spec_patch 只改变化量（est_sec {b_sec}→{p_sec}）且不污染域快照（4-1）")
+    else:
+        _fail(out, f"spec_patch 不符：base={b_sec} patched={p_sec} "
+                   f"快照 t_max={gate.snapshot.get('dynamic.t_max')}")
+    # 4-4 pick：只回关注量；写错的键如实进 _missing（绝不静默 null）
+    r = tools.execute("run_actions", {
+        "actions": [{"op": "estimate"}],
+        "pick": ["est_sec", "no_such_key"]})
+    po = r["value"]["steps"][0]["output"]
+    if (po.get("est_sec") is not None and "n_states" not in po
+            and po.get("_missing") == ["no_such_key"]):
+        _ok("pick 投影每步 output（关注量在、非选键不回、错键列 _missing，4-4）")
+    else:
+        _fail(out, f"pick 不符：{po}")
+    # 4-3 set_drive 回执对账 t_max（脉冲结束 vs 演化窗口）——不拦止、只提示。
+    # 报告的实际陷阱是 t_max 晚于脉冲结束（终态含脉冲后自由演化）：快照 t_max=5，
+    # 给一个 2ns 短脉冲 → 波结束 2ns < t_max 5ns → 应报"晚于"提示。
+    rl = tools.execute("query_levels", {})
+    kk = [s["key"] for s in rl["value"]["states"][:2]]
+    r = tools.execute("set_drive", {"src": kk[0], "tgt": kk[1],
+                                    "intensity_mwcm2": 1.0, "duration_ns": 2.0})
+    v = r["value"]
+    if (not r["is_error"] and v.get("pulse_end_ns") == 2.0
+            and "t_max_note" in v and "晚于" in v["t_max_note"]):
+        _ok("set_drive 回执带 pulse_end_ns + t_max 对账提示（4-3，脉冲 2ns< t_max 5ns→晚于）")
+    else:
+        _fail(out, f"set_drive t_max 对账不符：{v}")
+
     # ---- 9. History 可归因：所有写都带 actor=ai + 有 call 记录 ----
     evs = history.events()
     if evs and all(e.actor == "ai" for e in evs):
