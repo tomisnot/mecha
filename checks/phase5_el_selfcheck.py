@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import sys
 import time
+from collections.abc import Mapping
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -87,7 +88,7 @@ def main() -> int:
     expect = {"set_config", "read_config", "query_params", "estimate_run",
               "preview_run", "run_sim", "query_levels",
               "submit_job", "read_job", "cancel_job", "run_actions",
-              "set_drive"}
+              "set_drive", "read_waves", "reset_config"}
     if set(names) == expect:
         _ok(f"工具注册齐且过命名守卫：{sorted(names)}")
     else:
@@ -127,14 +128,18 @@ def main() -> int:
     else:
         _fail(out, f"只读键处理不符：{r}")
 
-    # ---- 3. 合法写 + 快照读回 ----
+    # ---- 3. 合法写 + 回读自证（实测报告 P1-4：写一次就核对，不必二次查询）----
+    gate.set(ai, "field.B_gauss", 0.5, "seed-before")     # 造一个可对照的旧值
     r = tools.execute("set_config", {"key": "field.B_gauss", "value": 1.0})
     if not r["is_error"] and r["value"]["applied"]:
+        v = r["value"]
         rr = tools.execute("read_config", {})
-        if rr["value"]["config"].get("field.B_gauss") == 1.0:
-            _ok("set→read 闭环生效（经门写、快照读回）")
+        if (rr["value"]["config"].get("field.B_gauss") == 1.0
+                and v["before"] == 0.5 and v["resolved"] == 1.0
+                and v["readback"] == 1.0):
+            _ok("set→read 闭环 + 回执自带回读（before/resolved/readback 三口齐）")
         else:
-            _fail(out, f"read_config 未反映写入：{rr}")
+            _fail(out, f"回读自证不符：value={v} read={rr}")
     else:
         _fail(out, f"合法 set_config 被拒：{r}")
 
@@ -233,7 +238,7 @@ def main() -> int:
     else:
         _fail(out, f"run_sim 回执缺 ok/method：{r}")
 
-    # ---- 8b. ②b set_drive / get_waves：驱动手感端到端 ----
+    # ---- 8b. ②b set_drive / read_waves：驱动手感端到端（顶层一步问到，P1-7）----
     # 用 intensity+duration 路径（不依赖具体 dme 符号，稳定）；写回单键、读回摘要。
     rl = tools.execute("query_levels", {})
     kk = [s["key"] for s in rl["value"]["states"][:2]]
@@ -243,16 +248,37 @@ def main() -> int:
     if r["is_error"]:
         _fail(out, f"set_drive 被拒：{r['error']['message']}")
     elif r["value"]["key"] == "dynamic.waves_single" and r["value"]["wave"]["intensity"] == 1.0:
-        rw = tools.execute("run_actions", {"actions": [{"op": "get_waves"}]})
-        waves = (rw["value"]["outputs"][0].get("waves")
-                 if not rw["is_error"] and rw["value"]["ok"] else [])
+        rw = tools.execute("read_waves", {})      # 顶层工具直读（不再绕编排）
+        waves = (rw["value"].get("waves")
+                 if not rw["is_error"] else [])
         if waves and waves[0]["intensity_mwcm2"] == 1.0:
-            _ok(f"set_drive 写波 + get_waves 读回闭环（{len(waves)} 波，"
+            _ok(f"set_drive 写波 + read_waves 顶层读回闭环（{len(waves)} 波，"
                 f"freq={waves[0]['freq_mhz']:.1f}MHz）")
         else:
-            _fail(out, f"get_waves 未读回刚写的波：{rw}")
+            _fail(out, f"read_waves 未读回刚写的波：{rw}")
     else:
         _fail(out, f"set_drive 回执不符：{r}")
+
+    # ---- 8c. run_actions 结果带名字（实测报告 P1-6）----
+    r = tools.execute("run_actions", {"actions": [{"op": "read_config"},
+                                                  {"op": "no_such_action"}]})
+    steps = r["value"]["steps"]
+    if ("outputs" not in r["value"]
+            and steps[0]["ok"] and isinstance(steps[0].get("output"), Mapping)
+            and steps[0].get("detail")
+            and not steps[1]["ok"] and steps[1]["detail"]):
+        _ok("run_actions 每步自带 output+detail（成功有摘要、失败有原因，无位置数组）")
+    else:
+        _fail(out, f"run_actions 结果形状不符：{steps}")
+
+    # ---- 8d. reset_config 清零入口（实测报告 P1-5）----
+    r = tools.execute("reset_config", {"reason": "判据收台"})
+    if (not r["is_error"] and r["value"]["n"] == len(r["value"]["cleared"])
+            and r["value"]["n"] > 0
+            and all(v is None for v in gate.snapshot.values())):
+        _ok(f"reset_config 全键清空回默认（{r['value']['n']} 键，快照全 None）")
+    else:
+        _fail(out, f"reset_config 不符：{r}")
 
     # ---- 9. History 可归因：所有写都带 actor=ai + 有 call 记录 ----
     evs = history.events()

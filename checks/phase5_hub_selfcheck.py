@@ -40,7 +40,7 @@ sys.path.insert(0, str(ROOT))
 EXPECTED_TOOLS = {"set_config", "read_config", "query_params", "estimate_run",
                   "preview_run", "run_sim", "query_levels",
                   "submit_job", "read_job", "cancel_job", "run_actions",
-                  "set_drive"}
+                  "set_drive", "read_waves", "reset_config"}
 
 
 def _ok(msg: str) -> None:
@@ -94,19 +94,33 @@ async def drive(port: int, out: list[str]) -> None:
                     is_err = getattr(res, "isError", False)
                 return bool(is_err), text
 
-            # 2. 写经门
+            # 2. 写经门 + 回执自带回读（实测报告 P1-4）
             is_err, text = await call("set_config", key="field.B_gauss", value=1.0)
-            if not is_err and '"applied": true' in text:
-                _ok("set_config 经 v2 门写入成功（MCP 往返）")
+            try:
+                w = json.loads(text)
+            except Exception:                                # noqa: BLE001
+                w = {}
+            if (not is_err and w.get("applied")
+                    and {"before", "resolved", "readback"} <= set(w)
+                    and w["resolved"] == 1.0 and w["readback"] == 1.0):
+                _ok("set_config 经 v2 门写入成功，回执带 before/resolved/readback")
             else:
-                _fail(out, f"set_config 失败：{text}")
+                _fail(out, f"set_config 失败/回读缺失：{text}")
 
-            # 3. 教学错误过线
+            # 3. 教学错误过线（实测报告 P0-3/P2-8）：isError=True 且正文是
+            #    机读 JSON {ok:false, error:{message, info:{kind,...}}}
             is_err, text = await call("set_config", key="dynamic.nope", value=1)
-            if is_err and "提示" in text:
-                _ok("未知键 → 回执含教学 hint（L4 过线不降级）")
+            try:
+                e = json.loads(text)
+            except Exception:                                # noqa: BLE001
+                e = {}
+            if (is_err and e.get("ok") is False
+                    and e.get("error", {}).get("info", {}).get("kind")
+                    == "unknown_key"
+                    and e["error"]["info"].get("hint")):
+                _ok("未知键 → isError=True + 结构化 error JSON（kind=unknown_key+hint）")
             else:
-                _fail(out, f"错误教学缺失：is_err={is_err} {text[:120]}")
+                _fail(out, f"错误判别性不符：is_err={is_err} {text[:160]}")
 
             # 4. 真物理：骨架配置 → run_sim
             for k, v in (("groups.list", [{"n": 60, "l": 0, "j": 0.5},
@@ -185,6 +199,30 @@ async def drive(port: int, out: list[str]) -> None:
                 _ok("run_actions 失败步停在 index=1 且 ok=False（不假绿）")
             else:
                 _fail(out, f"run_actions 失败步未如实报告：ie={ie} {tj[:160]}")
+
+            # 4d. 可选参数默认值**真生效**（实测报告 P0-1 的活体复现）：宿主对
+            # 省略的可选参数填显式 null 传进来，曾盖掉闭包默认（pol="π" 等）⇒
+            # 崩。只给 src/tgt+强度+时长、不传 pol/detuning/mode/atom 必须成功。
+            ie, tj = await call("set_drive", src=key0, tgt=lv["states"][1]["key"],
+                                intensity_mwcm2=1.0, duration_ns=10.0)
+            try:
+                w = json.loads(tj)
+            except Exception:                                # noqa: BLE001
+                w = {}
+            if not ie and w.get("ok") and w.get("wave", {}).get("pol") == "π":
+                _ok("set_drive 省略可选参数：闭包默认生效（pol=π，null 不再盖默认）")
+            else:
+                _fail(out, f"默认值未生效（P0-1 回归）：ie={ie} {tj[:200]}")
+            # read_waves 顶层一步问到（P1-7）
+            ie, tj = await call("read_waves")
+            try:
+                rw = json.loads(tj)
+            except Exception:                                # noqa: BLE001
+                rw = {}
+            if not ie and rw.get("ok") and rw.get("waves"):
+                _ok("read_waves 顶层工具直读驱动清单（不绕 run_actions）")
+            else:
+                _fail(out, f"read_waves 往返失败：ie={ie} {tj[:160]}")
 
 
 def main() -> int:
