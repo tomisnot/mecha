@@ -322,6 +322,10 @@ def make_validator(engine: ElEngine):
             raise _gate_err(f"{key} 须是映射")
         if tname == "wave_list":
             p.validate_wave_list(value, err=_gate_err)
+        if tname == "atom_list":
+            # 多体 atoms 的真契约（g/r 四元组 / pos 三元组 / Ω 数值）——委托
+            # EL core（schema_mb），与 wave_list 同角色：类型级校验在门上。
+            p.validate_atom_list(value, err=_gate_err)
         lo, hi = rec.get("lo"), rec.get("hi")
         if isinstance(value, (int, float)) and not isinstance(value, bool):
             if lo is not None and value < lo:

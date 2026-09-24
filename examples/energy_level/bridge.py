@@ -115,8 +115,8 @@ class V2Bridge:
         self._engine = engine
         self._lock = threading.Lock()
         self.cache = cache if cache is not None else (engine._cache if engine else None)
-        self._artifact_root = artifact_root or (
-            Path(".mecha-v2/artifacts") if engine else Path(".mecha-v2/artifacts"))
+        self._artifact_root = (Path(artifact_root) if artifact_root is not None
+                               else Path(".mecha-v2/artifacts"))
         self.session = _SessionShim(self)
         self.ops = ElOps(self) if engine is not None else None
         # Monitor（第一交付物的后端读面，总纲 §5.2④）：只读，无写回。
