@@ -80,12 +80,17 @@ def el_summarizer(events: list[Event]) -> dict:
     return out
 
 
-def _build_gui_tools(engine, gate, authority, ai, jobs):
-    """GUI 进程内工具面（复用 tools.build_tool_registry，Surface 现建）。"""
+def _build_gui_tools(engine, gate, authority, ai, jobs, surface=None):
+    """GUI 进程内工具面（复用 tools.build_tool_registry）。
+
+    surface 传入装配点建好的那份（含角色表）——审查缺口 B：serve_mcp 若再
+    `Surface(engine)` 新建，工具注册与角色登记就落在一张运行时不存在的图上，
+    capability map 与运行时脱节。缺省自建仅供纯内存判据装配。
+    """
     from examples.energy_level.tools import build_tool_registry
     from mecha.surface import Surface
-    surface = Surface(engine)
-    return build_tool_registry(engine, gate, surface, authority, ai, jobs)
+    return build_tool_registry(engine, gate, surface or Surface(engine),
+                               authority, ai, jobs)
 
 
 class _SessionShim:
@@ -108,11 +113,15 @@ class V2Bridge:
                  *, engine=None, cache=None, artifact_root: Path | None = None,
                  summarizer=el_summarizer,
                  monitor: Monitor | None = None,
-                 jobs: JobRegistry | None = None) -> None:
+                 jobs: JobRegistry | None = None,
+                 surface=None) -> None:
         self._gate = gate
         self._history = history
         self._authority = authority
         self._engine = engine
+        # 装配点建好的 Surface（带角色表）——serve_mcp 复用它，不再另建裸的
+        # （审查缺口 B：运行时图必须 = 声明表）。测试注入缺省 None → 工具面自建。
+        self._surface = surface
         self._lock = threading.Lock()
         self.cache = cache if cache is not None else (engine._cache if engine else None)
         self._artifact_root = (Path(artifact_root) if artifact_root is not None
@@ -142,7 +151,7 @@ class V2Bridge:
                       project="energy-level")
         return cls(sw.gate, sw.history, sw.authority, engine=engine, cache=cache,
                    artifact_root=sw.layout.data_dir / "artifacts",
-                   monitor=sw.monitor, jobs=sw.jobs)
+                   monitor=sw.monitor, jobs=sw.jobs, surface=sw.surface)
 
     @classmethod
     def for_gui(cls, *, el_root: str | Path, data_root: str | Path,
@@ -186,7 +195,7 @@ class V2Bridge:
         from examples.energy_level.hub import to_mcp, _free_port
         ai = Channel("ai")
         tools = _build_gui_tools(self._engine, self._gate, self._authority,
-                                 ai, self.jobs)
+                                 ai, self.jobs, surface=self._surface)
         server = to_mcp({"tools": tools, "authority": self._authority})
         actual = port or _free_port(host)
         t = threading.Thread(

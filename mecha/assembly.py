@@ -75,6 +75,8 @@ def declare_roles(roles: RoleRegistry, *, engine_name: str, project: str) -> Non
     # Surface 的 Provider 是项目引擎本身（Definition 我们拥有、Provider 项目提供）
     roles.register("surface.engine", Role.PROVIDER, provider=engine_name, consumer="surface")
     roles.register("monitor", Role.DEFINITION, provider=project)
+    # 写权模式机（审查完整性守卫抓出的漏声明：脊椎件却不在表里）
+    roles.register("authority", Role.DEFINITION, provider=project)
     # 操作者适配器（平级，不是主子）
     roles.register("adapter.gui", Role.CONSUMER, consumer="human", provider=project)
     roles.register("adapter.ai", Role.CONSUMER, consumer="ai", provider=project)

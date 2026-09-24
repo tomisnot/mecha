@@ -7,6 +7,7 @@
 |---|---|---|---|
 | `adapter.ai` | consumer | mecha | ai |
 | `adapter.gui` | consumer | mecha | human |
+| `authority` | definition | mecha | — |
 | `gate` | definition | mecha | — |
 | `history` | definition | mecha | — |
 | `monitor` | definition | mecha | — |

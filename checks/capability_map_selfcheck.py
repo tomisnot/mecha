@@ -6,8 +6,8 @@
         provider, consumer}；出现无角色标注的扩展点 = 红。
   交付 2 生成 map：docs/capabilities.md 与 gen_capability_map.render() 逐字
         一致（手改 = 红）；且文件头带"禁止手工编辑"标记。
-  交付 3 汇总就绪：合成第二个项目（EL）的能力表，字段格式一致，能机械
-        diff 出共有能力（不靠人读两份表）。
+  交付 3 汇总就绪：读 EL 仓**真表**（EL scripts/gen_capability_map.py 生成入库），
+        字段格式一致，机械 diff 出共有能力（不靠人读两份表）。
 
 L7 对偶：合规装配全绿；并表在"共有能力存在"时给出非空交集。
 
@@ -16,14 +16,16 @@ L7 对偶：合规装配全绿；并表在"共有能力存在"时给出非空交
 
 ## Known Limitations and Deferred Work
 
-- 交付 3 用**合成**的第二项目表测并表算法；真实 EL 表 Phase 5 生成后，同一
-  diff 函数直接复用（字段格式已锁）。
+- 交付 3 读 EL 真表（ADR `边界机制补三洞` 兑现了原"Phase 5 生成后复用"的承诺）；
+  真表缺失即红，不回退合成表。第三项目接入时照 EL 方式出表、判据加一路 diff。
 - 不校验"某能力该归 definition 还是 provider"（那是分类内容，n=1 推迟）；
   这里只校验"每个能力都声明了角色"（机制）。
 """
 
 from __future__ import annotations
 
+import os
+import re
 import sys
 from pathlib import Path
 
@@ -85,15 +87,40 @@ def check_map_generated(out: list[str]) -> None:
         _ok("map 与生成结果逐字一致（分类是生成的，交付 2）")
 
 
+#: EL 仓根（真表来源）。与 phase5_* 判据同一约定；MECHA_EL_ROOT 可覆盖。
+EL_ROOT = Path(os.environ.get("MECHA_EL_ROOT")
+               or r"D:\学\BaiduSyncdisk\编程\code\python\Energy Level")
+EL_MAP = EL_ROOT / "docs" / "capabilities.md"
+
+_ROW_RE = re.compile(
+    r"^\|\s*`([^`]+)`\s*\|\s*(\w+)\s*\|\s*([^|]*?)\s*\|\s*([^|]*?)\s*\|\s*$")
+
+
+def _parse_map(md_text: str) -> list[CapabilityEntry]:
+    """解析生成的 capability map（markdown 表）为条目列表。"""
+    out: list[CapabilityEntry] = []
+    for line in md_text.splitlines():
+        m = _ROW_RE.match(line.strip())
+        if not m:
+            continue
+        name, role, prov, cons = m.group(1), m.group(2), m.group(3), m.group(4)
+        providers = tuple(p.strip() for p in prov.split(",") if p.strip() and p.strip() != "—")
+        consumers = tuple(c.strip() for c in cons.split(",") if c.strip() and c.strip() != "—")
+        out.append(CapabilityEntry(name, Role(role), providers, consumers))
+    return out
+
+
 def _el_project_entries() -> list[CapabilityEntry]:
-    """合成第二个项目（EL）的能力表——字段格式与主表一致，供并表判据。"""
-    r = RoleRegistry()
-    r.register("gate", Role.DEFINITION, provider="el")
-    r.register("history", Role.DEFINITION, provider="el")
-    r.register("surface", Role.DEFINITION, provider="el")
-    r.register("engine.sim", Role.PROVIDER, provider="rydberg")  # EL 独有
-    r.register("adapter.ai", Role.CONSUMER, consumer="ai", provider="el")
-    return r.entries()
+    """读 EL 仓**真表**（EL scripts/gen_capability_map.py 生成入库）。
+
+    审查建议 2：合成表退役——并表判据只证明"能 diff 我自己写的表"不算数，
+    必须拿第二个真实项目生成的表来 diff。真表缺失即红（不假绿、不回退合成表）。
+    """
+    if not EL_MAP.exists():
+        raise FileNotFoundError(
+            f"EL 真表不存在：{EL_MAP}\n"
+            f"先在 EL 仓跑 python scripts/gen_capability_map.py 生成（ADR 边界机制补三洞）")
+    return _parse_map(EL_MAP.read_text(encoding="utf-8"))
 
 
 def _common_capabilities(a: list[CapabilityEntry], b: list[CapabilityEntry]) -> set[str]:
@@ -104,24 +131,29 @@ def _common_capabilities(a: list[CapabilityEntry], b: list[CapabilityEntry]) -> 
 
 
 def check_merge_ready(out: list[str]) -> None:
-    """交付 3：两份 map 能机械 diff 出共有能力。"""
+    """交付 3：两份**真实** map 能机械 diff 出共有能力。"""
     main = build_roles().entries()
-    el = _el_project_entries()
+    try:
+        el = _el_project_entries()
+    except FileNotFoundError as e:
+        _fail(out, str(e))
+        return
     # 字段格式一致（并表前提）
     for e in main + el:
         if not all(hasattr(e, f) for f in MAP_FIELDS):
             _fail(out, f"能力行 {e.name!r} 字段不全，无法并表")
             return
     common = _common_capabilities(main, el)
-    if {"gate", "history", "surface"} <= common:
-        _ok(f"两项目 map 机械 diff 出共有脊椎件：{sorted(common)}（交付 3）")
+    if {"gate", "history", "surface", "monitor", "authority"} <= common:
+        _ok(f"主表 × EL 真表机械 diff 出共有脊椎件：{sorted(common)}（交付 3·真表）")
     else:
         _fail(out, f"并表未抓到共有能力：{sorted(common)}")
-    # EL 独有能力不出现在共有集（不误报）
-    if "engine.sim" not in common:
-        _ok("项目独有能力未被误并入共有集（不误报）")
+    # EL 运行时才有的注册项（裸 engine / query:*）不误并入共有集（不误报）
+    leaked = [n for n in common if n == "engine" or n.startswith("query:")]
+    if not leaked:
+        _ok("EL 独有注册项（engine/query:*）未被误并入共有集（不误报）")
     else:
-        _fail(out, "独有能力被误判为共有")
+        _fail(out, f"项目独有注册项被误判为共有：{leaked}")
 
 
 #: 诚实推迟的 provider（无真实消费者，但显式登记——不是遗忘）。
@@ -248,6 +280,110 @@ def check_consumer_truthfulness(out: list[str]) -> None:
         _fail(out, f"守卫对合成违例漏抓：bad={caught_bad} unreg={caught_unreg}")
 
 
+def check_runtime_graph_matches(out: list[str]) -> None:
+    """审查缺口 B：服务面角色表 ⊇ 声明表（map 描述的图必须是运行时真实存在的图）。
+
+    D-33 只修了一半的先例：`_assembled` 调用了 assemble，但 `serve_mcp` 又
+    `Surface(engine)` 裸建丢掉带角色的那份 ⇒ 声明 19 条、运行时 3 条。本判据把
+    "装配点建的 Surface 用的就是声明表"钉成永不再犯：
+      A  `assemble()` 产出的 surface.roles ⊇ build_roles() 全部 (name, role)
+      A2 且是**同一张表**（sw.surface.roles is sw.roles，不是复制）
+      B  bridge 真路径源码断言：_assembled 穿 surface、serve_mcp 复用它
+         （漂回裸建 ⇒ 红）
+      C  L7 对偶（守卫载重）：裸建 Surface(engine) 的表不含 gate ⇒ 若谁把
+         assemble 改回裸建，A 当场红。
+    """
+    import tempfile
+    from pathlib import Path as _P
+
+    from mecha.assembly import assemble
+    from mecha.gate import accept_all
+    from mecha.surface import Surface
+
+    class Toy:
+        def schema(self):
+            return {"run_output_required": ["ok"]}
+
+        def run(self, spec, *, context, **opts):
+            return {"ok": True}
+
+        def summary(self):
+            return {"ok": True}
+
+        def estimate(self, spec):
+            return {"est_sec": 1.0}
+
+    declared = {(e.name, e.role.value) for e in build_roles().entries()}
+    sw = assemble(root=_P(tempfile.mkdtemp(prefix="capmap-")),
+                  data_dir_name=".mecha-v2-check", engine=Toy(),
+                  summarizer=lambda evs: {}, validate=accept_all,
+                  project="energy-level")
+    runtime = {(e.name, e.role.value) for e in sw.surface.roles.entries()}
+    missing = declared - runtime
+    if missing:
+        _fail(out, f"运行时服务面缺声明条目（map 描述的是不存在的图）："
+                   f"{sorted(missing)}")
+    else:
+        _ok(f"assemble 的 surface.roles ⊇ 声明表全部 {len(declared)} 条（缺口 B 已合）")
+    if sw.surface.roles is sw.roles:
+        _ok("surface 用的就是装配点那张角色表（同一对象，非复制）")
+    else:
+        _fail(out, "surface 持有另一张表——assemble 的 roles 注入漂了")
+
+    # B：bridge 真路径（serve_mcp → _build_gui_tools）必须复用装配点的 surface
+    src = (ROOT / "examples" / "energy_level" / "bridge.py").read_text(
+        encoding="utf-8")
+    if ("surface=sw.surface" in src and "surface=self._surface" in src
+            and "surface or Surface(engine)" in src):
+        _ok("bridge 真路径穿装配点 surface（_assembled→serve_mcp→工具面同源）")
+    else:
+        _fail(out, "bridge 的 surface 穿线断了（漂回裸建 Surface ⇒ 双图复活）")
+
+    # C：L7 对偶——裸建的表确实缺声明表的脊椎条目（守卫不是永远绿的哑守卫）
+    bare = {(e.name, e.role.value) for e in Surface(Toy()).roles.entries()}
+    if "gate" not in bare and not declared <= bare:
+        _ok("守卫自测：裸建 Surface 的表缺脊椎件（漂回裸建必被 A 抓）")
+    else:
+        _fail(out, f"守卫对『裸建』违例漏抓：bare={sorted(bare)[:5]}…")
+
+
+def check_declaration_completeness(out: list[str]) -> None:
+    """审查缺口 A：漏声明抓得到——每个装配进 Software 的机制都有角色条目。
+
+    单一来源 = `Software` 数据类字段（D-33 后装配点是唯一具名组装处，新机制
+    必然出现在这里），不是手写清单（L8）。规则：每个字段名必须是某能力名的
+    一个 token（按 `.`/`_` 切分）——`jobs`→`provider.jobs`、`tools`→
+    `tools.registry`、`visibility`→`visibility.policy`。
+    豁免三个管线件（各自理由）：`roles`（map 机制自身，自我声明循环）、
+    `channels`（Channel 的实例化，归 adapter.* 条目表达）、
+    `layout`（路径解析管线，非能力 seam）。
+    L7 对偶：合成一个未声明的字段（widget）必须被抓——守卫不哑。
+    """
+    import dataclasses
+    import re
+
+    from mecha.assembly import Software
+
+    PLUMBING = {"roles", "channels", "layout"}
+    tokens: set[str] = set()
+    for e in build_roles().entries():
+        tokens |= set(re.split(r"[._]", e.name))
+    fields = {f.name for f in dataclasses.fields(Software)} - PLUMBING
+    missing = sorted(fields - tokens)
+    if missing:
+        _fail(out, f"装配机制漏声明角色（无角色标注的扩展点=拒收）：{missing}；"
+                   f"补进 declare_roles 或说明为何非能力")
+    else:
+        _ok(f"Software 全部 {len(fields)} 个机制字段都在角色表有条目（缺口 A 已合）")
+    # 守卫自测（L7）：合成"漏声明"必须被抓
+    fake_fields = fields | {"widget"}
+    caught = sorted(fake_fields - tokens)
+    if caught == ["widget"]:
+        _ok("守卫自测：合成未声明机制（widget）被抓（非哑守卫）")
+    else:
+        _fail(out, f"完整性守卫对合成违例漏抓：{caught}")
+
+
 def main() -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -258,6 +394,8 @@ def main() -> int:
     check_merge_ready(out)
     check_consumer_truthfulness(out)
     check_real_consumers(out)
+    check_runtime_graph_matches(out)
+    check_declaration_completeness(out)
     if out:
         print(f"capability_map_selfcheck: FAIL（{len(out)} 条）")
         return 1
