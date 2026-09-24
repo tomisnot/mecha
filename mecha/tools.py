@@ -176,6 +176,22 @@ class ToolRegistry:
             value = dict(tool.execute(**dict(args)))
         except MechaError as e:
             return {"is_error": True, "error": e.to_failure()}
+        except TypeError as e:
+            # 缺必填参数（接管报告 P1-16）：裸 TypeError 会逃过归一化缝，
+            # MCP 层只见"内部错误"、模型拿不到可执行的纠正信息。
+            return {"is_error": True,
+                    "error": ToolFailure(
+                        f"工具 {name!r} 参数不符：{e}", kind="missing_arguments",
+                        hint="必填参数见该工具 parameters 声明",
+                    ).to_failure()}
+        except Exception as e:  # noqa: BLE001
+            # 工具体内的意外异常同样不许逃（不吞 MechaError——上面已先接）。
+            # 回执如实报告内部错误，栈留给宿主日志，模型只拿结构化失败。
+            return {"is_error": True,
+                    "error": ToolFailure(
+                        f"工具 {name!r} 内部错误：{type(e).__name__}: {e}",
+                        kind="internal_error",
+                    ).to_failure()}
         missing = [k for k in tool.output.schema.get("required", []) if k not in value]
         if missing:
             return {"is_error": True,

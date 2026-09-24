@@ -159,6 +159,23 @@ def check_error_shape(out: list[str]) -> None:
         _ok("未知工具 → 结构化错误，不抛穿")
     else:
         _fail(out, f"未知工具处理不符：{r2}")
+    # 缺必填参数：裸 TypeError 不许逃（接管报告 P1-16）
+    reg3 = ToolRegistry()
+    reg3.register(_good_tool())
+    r3 = reg3.execute("set_config", {"key": "a"})
+    if r3["is_error"] and r3["error"]["info"]["kind"] == "missing_arguments":
+        _ok("缺参 → missing_arguments 结构化失败（不抛裸 TypeError）")
+    else:
+        _fail(out, f"缺参未归一化：{r3}")
+    # 意外异常同样不许逃（MechaError 优先接，见上）
+    reg4 = ToolRegistry()
+    reg4.register(_good_tool(
+        execute=lambda key, value: (_ for _ in ()).throw(RuntimeError("boom"))))
+    r4 = reg4.execute("set_config", {"key": "a", "value": 1})
+    if r4["is_error"] and r4["error"]["info"]["kind"] == "internal_error":
+        _ok("工具体意外异常 → internal_error 结构化失败")
+    else:
+        _fail(out, f"意外异常未归一化：{r4}")
 
 
 def main() -> int:
