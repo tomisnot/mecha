@@ -40,10 +40,13 @@ HEADER = """<!-- 本文件由 scripts/gen_capability_map.py 从角色声明生�
 """
 
 
-def render() -> str:
-    roles = build_roles()
+def render(entries=None) -> str:
+    """渲染 map。entries 缺省 = 本仓出厂声明；**项目侧（如 EL）传入自己的
+    角色表条目复用同一函数**——字段格式单一来源，两份表并表才机械可比。"""
+    if entries is None:
+        entries = build_roles().entries()
     lines = [HEADER]
-    for e in roles.entries():
+    for e in entries:
         prov = ", ".join(e.providers) or "—"
         cons = ", ".join(e.consumers) or "—"
         lines.append(f"| `{e.name}` | {e.role.value} | {prov} | {cons} |\n")
