@@ -145,6 +145,24 @@ def main() -> int:
     else:
         _fail(out, f"枚举校验不符：{r}")
 
+    # ---- 3b. 数值串收编 + reason 留痕（使用者 AI 实测坑 1/5 的回归钉） ----
+    # 坑 1：宿主把未声明 type 的 value 转成 str ⇒ 工具层按键类型收编回数值。
+    r = tools.execute("set_config", {"key": "field.B_gauss", "value": "2.5"})
+    ok_coerce = (not r["is_error"]) and abs(
+        gate.snapshot.get("field.B_gauss", 0) - 2.5) < 1e-9
+    # 不许误伤：str 型键的字符串值原样过（method 上面已验合法值）
+    r_bad = tools.execute("set_config", {"key": "field.B_gauss", "value": "abc"})
+    # 坑 5：reason 进史（飞行记录仪折叠行的中文摘要来源）
+    r_rr = tools.execute("set_config", {"key": "field.E_vpcm", "value": 1.0,
+                                        "reason": "开 AC-Stark 看光移"})
+    last_ev = history.events()[-1]
+    if (ok_coerce and r_bad["is_error"]
+            and not r_rr["is_error"] and last_ev.reason == "开 AC-Stark 看光移"):
+        _ok("数值串收编（'2.5'→2.5）+ 非数字串仍拒 + reason 中文摘要进史")
+    else:
+        _fail(out, f"收编/reason 面不符：coerce={ok_coerce} "
+                   f"bad={r_bad['is_error']} reason={last_ev.reason!r}")
+
     # ---- 4. 真配置骨架（groups/时长/网格/初态） ----
     for key, val in (
         ("groups.list", [{"n": 60, "l": 0, "j": 0.5}, {"n": 60, "l": 1, "j": 1.5}]),
