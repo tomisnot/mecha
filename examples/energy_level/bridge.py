@@ -279,6 +279,16 @@ class V2Bridge:
 
     # ---- 订阅（GUI 面板刷新）----
 
+    def activity(self, since: int = 0) -> list[dict]:
+        """v1 Session.activity 兼容口：seq >= since 的事件（v1 事件 dict 形状）。
+
+        GUI 判据与面板用它对账"谁在什么时候写了什么"；数据源就是权威史，
+        与 subscribe 的推送形状一致（同一适配，两种取法）。
+        """
+        return [{"kind": "set", "actor": e.actor, "target": e.key,
+                 "value": e.value, "seq": e.seq, "call_id": e.call_id}
+                for e in self._history.events() if e.seq >= since]
+
     def subscribe(self, callback):
         """把 v2 Event 适配成 v1 事件 dict（{kind,actor,target,value,seq,call_id}）。"""
         def _ev(e: Event) -> None:
