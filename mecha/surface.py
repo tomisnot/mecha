@@ -12,6 +12,9 @@
 - 隐式契约键显式化（消 D-15）：``schema()`` 必须声明 ``run`` 回执的必填键，
   ops 管道逐条校验，缺键即报错——契约不再"只在 spec 与判据里"。
 - 取消与进度是 ExecutionContext 的显式字段（消 D-16），不是数组三槽约定。
+- 命令面（``commands``）是 **additive** 的另一条分派路径：命令是注册项，
+  不是 Definition 的第 5 个必实现（消"具名 ABC 方法膨胀"）。``run`` / ``query``
+  语义一字未改——单操作引擎照旧，多命令宿主多了归宿。
 
 ## Known Limitations and Deferred Work
 
@@ -30,6 +33,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 
+from .commands import CommandRegistry
 from .errors import InvalidSpec, MechaError, UnknownOp
 from .roles import Disposer, Role, RoleRegistry
 
@@ -121,6 +125,9 @@ class Surface:
         self._engine = engine
         self._roles = roles or RoleRegistry()
         self._entries: dict[tuple[EntryKind, str], RegisteredEntry] = {}
+        # 通用命令面（additive；不占 Engine 必实现，不改 run/query 语义）。
+        # 角色表共用装配点那张 ⇒ command:<name> 能力行与声明表同源。
+        self._commands = CommandRegistry(roles=self._roles, caller="Surface")
         self._roles.register("engine", Role.DEFINITION)
         self._roles.register("engine", Role.PROVIDER, provider=type(engine).__name__)
         self._roles.register("ops_pipeline", Role.CONSUMER, consumer="Surface")
@@ -128,6 +135,15 @@ class Surface:
     @property
     def roles(self) -> RoleRegistry:
         return self._roles
+
+    @property
+    def commands(self) -> CommandRegistry:
+        """命令面入口：``surface.commands.register(spec, handler) → disposer``。
+
+        与 QUERY 注册项并列（注册项三角色不变；命令是分派目标，不是 Definition
+        的第 5 个必实现）。只读命令经 ``query`` 走，有副作用的命令在这里注册。
+        """
+        return self._commands
 
     # ---- 注册项（register → disposer，dsh AGENTS.md:106）----
 

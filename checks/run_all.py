@@ -6,6 +6,8 @@
 ## Known Limitations and Deferred Work
 
 - 串行跑（判据总耗时秒级，并行是过早优化）。
+- Phase 6 命令面判据用中性假宿主（命令名与状态键都是判据自己的中性值），
+  不依赖任何真宿主的 adapter；真宿主的命令表对齐归各宿主自己的判据。
 - Phase 5 的 EL 侧判据（el/hub/bridge）在列——EL 领域实现住本仓外的 EL 项目
   （`mecha_v2` 包，ADR 领域参考实现搬回所属项目）；缺 EL 根时对应判据自己报红
   （不假绿），耗时主要在 cache 建与真演化。
@@ -30,6 +32,7 @@ CHECKS = [
     "checks/assembly_endtoend_selfcheck.py",
     "checks/vocabulary_selfcheck.py",
     "checks/l8_prose_count_selfcheck.py",
+    "checks/phase6_command_surface_selfcheck.py",
     "checks/phase5_el_selfcheck.py",
     "checks/phase5_hub_selfcheck.py",
     "checks/phase5_bridge_selfcheck.py",

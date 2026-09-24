@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .authority import Authority, DEFAULT_MODE, Mode
+from .commands import CommandRegistry
 from .data_layout import DataLayout, resolve_data_dir
 from .format_version import MigrationChain
 from .gate import Channel, Gate, Validator
@@ -45,6 +46,10 @@ class Software:
     spill: LocalSpillStore
     approval: LocalApproval
     tools: ToolRegistry
+    #: 通用命令面。**同一对象**即 ``surface.commands``（不是第二张注册表）：
+    #: 装配点这里多一个取用入口，是为了让宿主"只拿 Software 就能挂命令"，
+    #: 而不必去摸 Surface 内部（L7 单一来源）。
+    commands: CommandRegistry
     visibility: VisibilityPolicy
     roles: RoleRegistry
     channels: dict[str, Channel]
@@ -92,6 +97,10 @@ def declare_roles(roles: RoleRegistry, *, engine_name: str, project: str) -> Non
     roles.register("provider.approval.local", Role.PROVIDER, provider="fail-closed")
     # 工具形态层与可见性
     roles.register("tools.registry", Role.CONSUMER, consumer="adapter.ai", provider=project)
+    # 通用命令面（命令是注册项：Surface.commands / Software.commands 同一对象；
+    # 具体 command:<name> 能力行由注册时动态登记，不进出厂 map）
+    roles.register("commands.registry", Role.CONSUMER, consumer="adapter.ai",
+                   provider=project)
     roles.register("visibility.policy", Role.DEFINITION, provider=project)
     # 编排与目录机制（consumer=真消费它的适配器层；spill/approval/skills 无
     # 真实消费者，进 DEFERRED_PROVIDERS 显式登记为诚实推迟）
@@ -130,9 +139,12 @@ def assemble(*, root: Path, data_dir_name: str | None, engine: Engine,
     spill = LocalSpillStore(layout)
     approval = LocalApproval(approval_decider)
     tools = ToolRegistry()
+    # 命令面 = Surface 上那一份（同一对象，非第二张表）：注册进它即可被
+    # surface.commands.invoke 分派，capability map 也共用装配点角色表。
+    commands = surface.commands
     visibility = VisibilityPolicy()
     channels = {"human": Channel("human"), "ai": Channel("ai")}
     return Software(gate=gate, history=history, surface=surface, monitor=monitor,
                     jobs=jobs, spill=spill, approval=approval, tools=tools,
-                    visibility=visibility, roles=roles, channels=channels,
-                    authority=authority, layout=layout)
+                    commands=commands, visibility=visibility, roles=roles,
+                    channels=channels, authority=authority, layout=layout)

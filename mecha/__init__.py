@@ -25,4 +25,5 @@ __all__ = [
     "authority",
     "gate",
     "monitor",
+    "commands",
 ]

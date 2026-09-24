@@ -8,6 +8,7 @@
 | `adapter.ai` | consumer | mecha | ai |
 | `adapter.gui` | consumer | mecha | human |
 | `authority` | definition | mecha | — |
+| `commands.registry` | consumer | mecha | adapter.ai |
 | `gate` | definition | mecha | — |
 | `history` | definition | mecha | — |
 | `monitor` | definition | mecha | — |
