@@ -183,14 +183,18 @@ class Surface:
 
     # ---- ops 管道（框架真会调的 4 个方法 + 校验）----
 
-    def query(self, name: str, **args: object) -> object:
+    def query(self, op_name: str, **args: object) -> object:
         """只读查询分派。查询**不经写权门**（这是 D-4 的解法：不存在"只读动词
         被判不可逆"）；未注册的查询名报 ``UnknownOp`` 并带 hint——先 register 再调。
+
+        参数名是 ``op_name`` 而不是 ``name``：第二个宿主的详情查询自带
+        ``name`` 参数，若本方法形参也叫 ``name``，``query("detail",
+        name="x")`` 会撞成"重复实参"——通用机制不能占用宿主的参数名。
         """
-        entry = self._entries.get((EntryKind.QUERY, name))
+        entry = self._entries.get((EntryKind.QUERY, op_name))
         if entry is None:
             raise UnknownOp(
-                f"查询 {name!r} 未注册",
+                f"查询 {op_name!r} 未注册",
                 kind="unknown_query",
                 hint=f"已注册查询见 Surface.entries('query')；新动词先 register",
             )
