@@ -277,6 +277,14 @@ class V2Bridge:
             )
         self._authority.switch_mode(Mode(new_mode), side)
 
+    def watch_mode(self, callback):
+        """订阅写权模式变更（真变化才回调，回调收 mode 字符串）。
+
+        mode 不落 History ⇒ 史订阅收不到它；GUI 按钮/状态栏与人工控制网页
+        要实时反映"此刻谁能写"就订这里。返回 disposer。
+        """
+        return self._authority.watch(lambda m: callback(m.value))
+
     # ---- 订阅（GUI 面板刷新）----
 
     def activity(self, since: int = 0) -> list[dict]:

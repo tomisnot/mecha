@@ -13,6 +13,10 @@ dsh 的 approval **刻意窄**——one-shot only，无 allow-always / 无规则
   回到出厂 mode；后果（审查 P5-3）：AI 写了一半崩溃，重启后人类看到的是
   LOCKED 而不是"刚才 AI 在写"——丢失的只是协调态，域状态史本身完整可查。
   是否需要持久化等第二个项目表态（n=1 推迟）。
+- `watch` 的回调在 `switch_mode` 的**调用线程**上同步执行（与 History.subscribe
+  同纪律）：GUI 侧订阅者自己负责编组回主线程（Qt 信号），本模块不 import UI 库。
+  通知**不补发**——订阅者起步时应先读一次 `mode` 再挂 watch（先挂后读的竞态窗口
+  以"读"为准即可，协调态本就允许瞬时滞后）。
 - 不实现"超时自动降级"：需要时经 Approval Provider 的 one-shot 重取，而非
   本模块内置计时器。
 """
@@ -42,10 +46,29 @@ class Authority:
 
     def __init__(self, mode: Mode = DEFAULT_MODE) -> None:
         self._mode = Mode(mode)
+        self._watchers: list = []
 
     @property
     def mode(self) -> Mode:
         return self._mode
+
+    def watch(self, callback) -> "Callable[[], None]":
+        """订阅模式变更：每次**真变化**（新 mode ≠ 旧 mode）在 switch_mode 的
+        调用线程上同步回调 `callback(new_mode)`。返回 disposer（退订）。
+
+        给谁用：GUI 按钮/状态栏、人工控制网页——mode 是协调态**不落 History**
+        （见模块 docstring），史订阅收不到它，UI 要实时反映"此刻谁能写"就订这里。
+        坏订阅者不拖垮模式机（回调抛错被吞，与 History.subscribe 同纪律）。
+        """
+        self._watchers.append(callback)
+
+        def dispose() -> None:
+            try:
+                self._watchers.remove(callback)
+            except ValueError:
+                pass
+
+        return dispose
 
     def switch_mode(self, new_mode: Mode, side: str) -> None:
         """切模式。只有 human **侧**能切——AI 不能把自己解锁。
@@ -62,7 +85,15 @@ class Authority:
                 hint="只有人类侧（side='human'）可切模式；模式机是写权的最后闸门",
                 suggest="传 Channel(...).side 而非 .actor；细标签先经适配器映射到 side",
             )
-        self._mode = Mode(new_mode)
+        new = Mode(new_mode)
+        if new is self._mode:
+            return                      # 幂等：真变化才通知，UI 不吃重复刷新
+        self._mode = new
+        for cb in list(self._watchers):  # 快照迭代：回调里可退订
+            try:
+                cb(new)
+            except Exception:            # noqa: BLE001 - 坏订阅者不拖垮模式机
+                pass
 
     def gate(self, side: str) -> None:
         """四步 set 的第一步：此刻这个 **侧**在当前 mode 下能写吗。
