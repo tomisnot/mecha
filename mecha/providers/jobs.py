@@ -43,6 +43,11 @@ class Job:
     ``result_ref`` 与命令面 ``CommandResult.result_ref`` 同语义：**不透明的
     宿主结果引用**（对 ML 是 ``{"kind": "ml_command", "run_ids": [...]}``），
     由宿主经 ``result_ref_fn`` 从 job 结果里提取。Job 自身不解释它。
+
+    字段语义**分开**（审查 P2-4）：``error`` 只说"job 本身失败了"，即
+    ``state=FAILED`` 的原因；``ref_error`` 只说"可选引用没提取出来"，此时
+    job 可能是 ``state=DONE``。消费者用 ``if error:`` 判 job 失败不会被
+    引用提取失败误伤——一个字段不许同时表示两件事。
     """
 
     def __init__(self, jid: int, fn: Callable[[ExecutionContext], object], *,
@@ -54,6 +59,7 @@ class Job:
         self.result: object = None
         self.result_ref: Mapping[str, object] | None = None
         self.error: str = ""
+        self.ref_error: str = ""
         self.context = ExecutionContext()
         self.started_at: float | None = None
         self.finished_at: float | None = None
@@ -72,6 +78,8 @@ class Job:
             out["result_ref"] = dict(self.result_ref)
         if self.error:
             out["error"] = self.error
+        if self.ref_error:
+            out["ref_error"] = self.ref_error
         if self.started_at is not None:
             out["started_at"] = self.started_at
         if self.finished_at is not None:
@@ -103,8 +111,9 @@ class JobRegistry:
                | None = None) -> Job:
         """提交一个后台 job。
 
-        ``result_ref_fn`` 从 job 结果提取不透明结果引用；提取自身抛错归
-        job 的 ``error``（只影响引用，不影响 job 结果——引用是可选的）。
+        ``result_ref_fn`` 从 job 结果提取不透明结果引用；提取自身抛错写 job 的
+        ``ref_error``（只影响可选引用，不影响 job 结果与 ``error``——后者只说
+        job 失败）。
         """
         with self._lock:
             job = Job(next(self._ids), fn, command=command)
@@ -121,9 +130,12 @@ class JobRegistry:
         ``result_ref`` 只在 ``state=DONE`` 这一条路径上提取，cancelled/failed
         一律留空——取消态携带成功态引用就是真值混用（第三轮审查 P1-3）。
         ``state`` 的终态是收尾的**最后一次写**（在 ``finished_at`` /
-        ``result_ref`` / ``error`` 都定稿之后、``_done.set()`` 之前）：轮询者
-        看到 ``done`` 时引用已定稿，``wait()`` 返回时终态一定已落地
-        （审查 P2-3）。
+        ``result_ref`` / ``error`` / ``ref_error`` 都定稿之后、``_done.set()``
+        之前）：轮询者看到 ``done`` 时引用已定稿，``wait()`` 返回时终态一定
+        已落地（审查 P2-3）。
+
+        两条失败路径**分开**：``_fn`` 抛错 ⇒ ``state=FAILED`` + ``error``；
+        ``result_ref_fn`` 抛错 ⇒ ``state=DONE`` + ``ref_error``（job 没失败）。
         """
         job.state = JobState.RUNNING
         job.started_at = time.time()
@@ -145,7 +157,10 @@ class JobRegistry:
                         if ref is not None:
                             job.result_ref = dict(ref)
                     except Exception as e:  # noqa: BLE001 - 引用失败不改 job 结果
-                        job.error = f"result_ref 提取失败：{type(e).__name__}: {e}"
+                        # 独立字段：job 本身成功了（state=DONE），失败的只是
+                        # "可选引用"这一步。写进 ``error`` 会让消费者用
+                        # ``if error:`` 把成功的 job 判成失败（审查 P2-4）。
+                        job.ref_error = f"result_ref 提取失败：{type(e).__name__}: {e}"
                 terminal = JobState.DONE
         except Exception as e:  # noqa: BLE001 - 记录后归为 failed，不外抛
             job.error = f"{type(e).__name__}: {e}"
