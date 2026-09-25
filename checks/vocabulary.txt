@@ -24,3 +24,6 @@ src.adapter
 8765
 8766
 8767
+# 物理量键名（最终验收审查抓到 monitor.py docstring 残留；核心与通用判据禁止，
+# EL 消费配置判据 checks/phase5_*.py 显式豁免，见 vocabulary_selfcheck.py）
+B_gauss

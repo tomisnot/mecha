@@ -75,7 +75,7 @@ def _fail(out: list[str], msg: str) -> None:
 
 def _good_tool(**over):
     kw = dict(
-        name="run_sim",
+        name="do_thing",
         description="按给定参数跑一次计算，并把结果回执交给调用方。",
         parameters={"key": {"type": "string"}, "value": {"type": "number"}},
         output_schema={"type": "object", "required": ["ok", "applied"]},
@@ -182,7 +182,7 @@ def check_protocol_and_projection(out: list[str]) -> None:
 def check_good_call(out: list[str]) -> None:
     """B：合规调用成功 + canonical value + content（不误报）。"""
     reg = _reg(_good_tool())
-    result = LocalToolHost(reg).call("run_sim", {"key": "alpha", "value": 1})
+    result = LocalToolHost(reg).call("do_thing", {"key": "alpha", "value": 1})
     if result.get("is_error") is False and result.get("value") == {"ok": True,
                                                                   "applied": "alpha"}:
         _ok("合规调用成功：canonical value 原样回（不误报）")
@@ -206,16 +206,16 @@ def check_normalized_failures(out: list[str]) -> None:
     host = LocalToolHost(_reg(_good_tool()))
     cases: list[tuple[str, str, dict]] = [
         ("未知工具", "unknown_tool", host.call("no_such_tool", {})),
-        ("缺必填参数", "missing_arguments", host.call("run_sim", {"key": "a"})),
+        ("缺必填参数", "missing_arguments", host.call("do_thing", {"key": "a"})),
     ]
     bad_receipt = LocalToolHost(_reg(_good_tool(
         execute=lambda key, value: {"ok": True})))          # 缺 applied
     cases.append(("回执缺必填键", "bad_tool_output",
-                  bad_receipt.call("run_sim", {"key": "a", "value": 1})))
+                  bad_receipt.call("do_thing", {"key": "a", "value": 1})))
     boom = LocalToolHost(_reg(_good_tool(
         execute=lambda key, value: (_ for _ in ()).throw(RuntimeError("boom")))))
     cases.append(("工具体意外异常", "internal_error",
-                  boom.call("run_sim", {"key": "a", "value": 1})))
+                  boom.call("do_thing", {"key": "a", "value": 1})))
     for label, want, result in cases:
         got = _failure_kind(result)
         if got == want:
@@ -242,7 +242,7 @@ def check_exception_never_escapes(out: list[str]) -> None:
             return []
 
     try:
-        result = LocalToolHost(ExplodingRegistry(), name=LOCAL_HOST).call("run_sim", {})
+        result = LocalToolHost(ExplodingRegistry(), name=LOCAL_HOST).call("do_thing", {})
         kind = _failure_kind(result)
         if kind == "toolhost_error":
             _ok("宿主句柄抛错 → toolhost_error 结构化失败（异常不逃过边界）")
@@ -261,7 +261,7 @@ def check_exception_never_escapes(out: list[str]) -> None:
     for label, probe in malformed:
         try:
             kind = _failure_kind(_host_with_bad_result(probe, label="probe").call(
-                "run_sim", {}))
+                "do_thing", {}))
             if kind == "bad_host_result":
                 _ok(f"宿主回执畸形（{label}）→ bad_host_result（不当成值透传）")
             else:
@@ -291,7 +291,7 @@ def check_declaration_rejects_drift(out: list[str]) -> None:
         ("description 为空串", [{**good[0], "description": "   "}]),
         ("交过来的是 ToolDefinition 本体", [_good_tool()]),
         ("整体不是列表", good[0]),
-        ("整体是字符串", "run_sim"),
+        ("整体是字符串", "do_thing"),
     ]
     for label, bad in bads:
         try:
@@ -320,7 +320,7 @@ def check_teardown_idempotent(out: list[str]) -> None:
     host.teardown()
     host.teardown()
     host.teardown()
-    result = host.call("run_sim", {"key": "a", "value": 1})
+    result = host.call("do_thing", {"key": "a", "value": 1})
     if _failure_kind(result) == "" and host.schemas():
         _ok("teardown 连调幂等：不抛错、投影与调用能力不受损")
     else:
@@ -353,7 +353,7 @@ def check_assembled_path(out: list[str]) -> None:
             _ok("装配路径：注册 → 声明 → 投影贯通（真注册表非替身）")
         else:
             _fail(out, f"装配路径投影不符：{schemas}")
-        result = host.call("run_sim", {"key": "beta", "value": 2})
+        result = host.call("do_thing", {"key": "beta", "value": 2})
         if result.get("is_error") is False and result["value"]["applied"] == "beta":
             _ok("装配路径：宿主调用走通（回执 canonical）")
         else:

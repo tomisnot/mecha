@@ -181,27 +181,27 @@ def check_spill_opaque(out: list[str]) -> None:
 def check_visibility_default_readable(out: list[str]) -> None:
     pol = VisibilityPolicy()
     pol.declare("my_query")
-    pol.declare("set_config")
+    pol.declare("write_setting")
     # 能抓坏的反面（L7）：未声明 restriction 的新动词默认可读（消 D-4）
     if pol.is_visible("my_query"):
         _ok("未声明的只读动词默认可见（不判 L3）")
     else:
         _fail(out, "新动词被默认拒绝（D-4 复发）")
     # deny 单调 + disposer 恢复
-    dispose = pol.restrict(ToolRestriction(deny=["set_config"]))
-    if not pol.is_visible("set_config") and pol.is_visible("my_query"):
+    dispose = pol.restrict(ToolRestriction(deny=["write_setting"]))
+    if not pol.is_visible("write_setting") and pol.is_visible("my_query"):
         _ok("deny 只缩减可见集")
     else:
         _fail(out, "deny 语义不符")
     dispose()
-    if pol.is_visible("set_config"):
+    if pol.is_visible("write_setting"):
         _ok("restriction disposer 撤销恢复可见（可逆副作用）")
     else:
         _fail(out, "撤销 restriction 未恢复可见性")
     # 交集：两层 restriction 取交
-    pol.restrict(ToolRestriction(allow=["my_query", "set_config"]))
+    pol.restrict(ToolRestriction(allow=["my_query", "write_setting"]))
     pol.restrict(ToolRestriction(deny=["my_query"]))
-    if pol.visible() == ["set_config"]:
+    if pol.visible() == ["write_setting"]:
         _ok("多层 restriction 取交集")
     else:
         _fail(out, f"交集不符：{pol.visible()}")

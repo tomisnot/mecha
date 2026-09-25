@@ -87,7 +87,7 @@ def run_selftest() -> list[str]:
         (tmp / "mecha").mkdir()
         # E+ 合规：名字清单 + 框架固定常量（4 个必实现不抓）
         (tmp / "mecha" / "clean.py").write_text(
-            '"""工具：set_config / run_sim / submit_job（清单见 schemas()）。\n'
+            '"""工具：write_setting / do_thing / submit_job（清单见 schemas()）。\n'
             '必实现只有 4 个（FRAMEWORK_CALLS 钉死）。"""\n', encoding="utf-8")
         clean_hits = check_tree(tmp)
         if clean_hits:

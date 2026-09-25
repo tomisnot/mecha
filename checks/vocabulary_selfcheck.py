@@ -19,6 +19,8 @@ docs/ 整体排除（ADR note 与审计文档正当引用被否决方案与 v1 �
 - 只扫 mecha/ 与 checks/；EL 的领域实现（EL 仓 `mecha_v2` 包，原 examples/
   energy_level，见 ADR 领域参考实现搬回所属项目）**故意不扫**——那里出现项目
   领域值是合法的（§9 反模式禁的是**库里**写死项目值）。
+- `checks/phase5_*.py` 显式豁免（EL 消费配置判据，职责就是引用 EL 键）；
+  豁免名单是常量，新文件默认仍被扫。
 """
 
 from __future__ import annotations
@@ -30,6 +32,14 @@ ROOT = Path(__file__).resolve().parent.parent
 WORDLIST = ROOT / "checks" / "vocabulary.txt"
 SCAN_DIRS = ("mecha", "checks")
 ASSET_SUFFIXES = (".py", ".html", ".js", ".css", ".json", ".yaml", ".yml", ".toml")
+#: EL 消费配置判据：它们的**职责**就是拿 EL 领域键跑端到端（ADR 领域参考实现
+#: 搬回所属项目）。与 docs/ 排除同理——禁的是"库/通用判据写死项目值"，不是
+#: "项目自己的接线判据引用项目值"。豁免是显式白名单，新增文件不会静默获免。
+EXEMPT_FILES = frozenset({
+    "phase5_el_selfcheck.py",
+    "phase5_hub_selfcheck.py",
+    "phase5_bridge_selfcheck.py",
+})
 
 
 def load_banned() -> list[str]:
@@ -51,6 +61,8 @@ def scan_tree(root: Path, banned: list[str]) -> list[str]:
             if not path.is_file():
                 continue
             if path == WORDLIST:            # 词表自身永不扫（含全部禁用词）
+                continue
+            if path.name in EXEMPT_FILES:   # EL 消费配置判据：领域值合法
                 continue
             if path.suffix not in ASSET_SUFFIXES:
                 continue

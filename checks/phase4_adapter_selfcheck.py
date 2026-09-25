@@ -42,7 +42,7 @@ def _fail(out: list[str], msg: str) -> None:
 
 def _good_tool(**over):
     kw = dict(
-        name="set_config",
+        name="write_setting",
         description="把某个配置键设置为给定值；键必须已在 schema 中声明。",
         parameters={"key": {"type": "string"}, "value": {"type": "number"}},
         output_schema={"type": "object", "required": ["ok", "applied"]},
@@ -68,7 +68,7 @@ def check_naming(out: list[str]) -> None:
         _ok("list_/get_/前缀名全部拒注册（动词_宾语同构）")
     # 不许误报：合规名
     try:
-        _good_tool(name="run_sim")
+        _good_tool(name="do_thing")
         _ok("合规名注册通过（不误报）")
     except MechaError as e:
         _fail(out, f"合规名被拒：{e}")
@@ -85,7 +85,7 @@ def check_output_contract(out: list[str]) -> None:
     # 能抓坏：回执缺声明过的键 → isError + ToolFailure 形状
     reg = ToolRegistry()
     reg.register(_good_tool(execute=lambda key, value: {"ok": True}))  # 缺 applied
-    r = reg.execute("set_config", {"key": "a", "value": 1})
+    r = reg.execute("write_setting", {"key": "a", "value": 1})
     if r["is_error"] and set(r["error"]) == {"message", "info"} \
             and r["error"]["info"]["kind"] == "bad_tool_output":
         _ok("回执缺键 → ToolFailure {message, info} 对齐")
@@ -94,7 +94,7 @@ def check_output_contract(out: list[str]) -> None:
     # 不许误报：合规回执通过 + render 产出 content
     reg2 = ToolRegistry()
     reg2.register(_good_tool())
-    r2 = reg2.execute("set_config", {"key": "a", "value": 1})
+    r2 = reg2.execute("write_setting", {"key": "a", "value": 1})
     if not r2["is_error"] and r2["value"]["applied"] == "a" and r2["content"]:
         _ok("合规工具执行 + canonical 值 + content 投影（不误报）")
     else:
@@ -130,7 +130,7 @@ def check_projection_whitelist(out: list[str]) -> None:
     else:
         _fail(out, f"投影泄漏：{sorted(s.keys())}")
     # 无手写 TOOL_NAMES：注册即投影，dispose 即消失
-    dispose = reg.register(_good_tool(name="run_sim",
+    dispose = reg.register(_good_tool(name="do_thing",
                                       execute=lambda **kw: {"ok": True, "applied": "x"},
                                       output_schema={"type": "object", "required": ["ok", "applied"]}))
     if len(reg.schemas()) == 2:
@@ -147,7 +147,7 @@ def check_error_shape(out: list[str]) -> None:
     reg = ToolRegistry()
     reg.register(_good_tool(execute=lambda key, value: (_ for _ in ()).throw(
         GateDenied("当前模式不接受写", kind="authority_mode_mismatch", hint="切模式"))))
-    r = reg.execute("set_config", {"key": "a", "value": 1})
+    r = reg.execute("write_setting", {"key": "a", "value": 1})
     if r["is_error"] and r["error"]["info"]["kind"] == "authority_mode_mismatch" \
             and "hint" in r["error"]["info"]:
         _ok("MechaError → ToolFailure 投影（kind/hint/suggest 进 info）")
@@ -162,7 +162,7 @@ def check_error_shape(out: list[str]) -> None:
     # 缺必填参数：裸 TypeError 不许逃（接管报告 P1-16）
     reg3 = ToolRegistry()
     reg3.register(_good_tool())
-    r3 = reg3.execute("set_config", {"key": "a"})
+    r3 = reg3.execute("write_setting", {"key": "a"})
     if r3["is_error"] and r3["error"]["info"]["kind"] == "missing_arguments":
         _ok("缺参 → missing_arguments 结构化失败（不抛裸 TypeError）")
     else:
@@ -171,7 +171,7 @@ def check_error_shape(out: list[str]) -> None:
     reg4 = ToolRegistry()
     reg4.register(_good_tool(
         execute=lambda key, value: (_ for _ in ()).throw(RuntimeError("boom"))))
-    r4 = reg4.execute("set_config", {"key": "a", "value": 1})
+    r4 = reg4.execute("write_setting", {"key": "a", "value": 1})
     if r4["is_error"] and r4["error"]["info"]["kind"] == "internal_error":
         _ok("工具体意外异常 → internal_error 结构化失败")
     else:
