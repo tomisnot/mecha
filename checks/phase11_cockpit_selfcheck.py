@@ -1,6 +1,6 @@
 """Phase 11 判据：cockpit 只读监控端点 + portfile（L6 装配级 + L7 对偶）。
 
-钉住冻结契约（ADR 两层传输上提），七组：
+钉住冻结契约（ADR 两层传输上提），八组：
 
   A 投影正确性：真 ``assemble()`` 装配的 ``Software`` 上跑四条投影的字段与排序
   B ``before`` 全史 fold：**致死性**——增量窗口内无前值、全史有前值时必须仍给出
@@ -11,6 +11,12 @@
     ``runtime_writer`` 的调用时机
   F ``portfile``：三条语义（读 / 写 / 清），含 ``expected`` 不匹配则不删
   G 概括投影：``Claim`` → ``{"value", "target"}``（否则对账信息在 wire 上丢失）
+  H **POST 请求体 drain**（既有缺陷修复）：带 body 的 POST 若不读干净就关连接，
+    Windows 内核回 RST ⇒ 客户端在读状态行前被打断（``ConnectionAbortedError`` /
+    ``WinError 10053``）。本组钉三件：①**决定性**判别子——公告的 body 未发完时
+    服务端不得提前回响应（不修的实现必然在这里红）；②压测式——带 body POST 多轮，
+    零中断、每轮干净 404；③``_drain_request_body`` 的三分规则 + "不许误报"对偶
+    （正常路径不多加 ``Connection`` 头、GET/OPTIONS 契约不变）
 
 L7 纪律：每组都配"不许误报"的对偶断言（合规输入必须 0 命中）。
 
@@ -25,11 +31,19 @@ L7 纪律：每组都配"不许误报"的对偶断言（合规输入必须 0 命
   新旧实现同进程双起逐字段 diff 属迁移期的一次性验收（规格 §8 的建议），不在本仓。
 - 不测非回环绑定与鉴权缺失的**安全性**（只读 + 回环是设计前提，不是被测属性）；
   也不测"AI 不能自授权"——那属 ``authority`` 的判据面。
+- H 组读了模块私有面 ``_Handler``（要直接用假对象测 ``_drain_request_body`` 的三分，
+  并要绕过 ``urllib`` 直发"公告大 body 只发一半"的请求）。RST 是**概率性**的，
+  所以 H 组不只靠压测：决定性判别子在任何一次运行里都能判红未修的实现。
+- **残余面（未覆盖，已登记）**：``do_GET`` / ``do_OPTIONS`` 带 body、以及
+  ``BaseHTTPRequestHandler`` 对未实现方法回的 501，同样"不 drain 就关"。
+  POST 是唯一有真实消费者的路径（面板只发 GET、门禁只发 POST），故不为其加机制。
 """
 
 from __future__ import annotations
 
+import http.client
 import json
+import socket
 import sys
 import tempfile
 import urllib.error
@@ -45,10 +59,18 @@ from mecha.cockpit import (  # noqa: E402
     CORE_ROUTES, MonitorEndpoint, MonitorSource, activity_records, config_tree,
     history_records, monitor_summary_payload, start_monitor_endpoint,
 )
+from mecha.cockpit import _Handler  # noqa: E402  (判据刻意读私有面，见 Limitations)
 from mecha.errors import MechaError  # noqa: E402
 from mecha.gate import accept_all  # noqa: E402
 from mecha.monitor import Claim, MonitorView  # noqa: E402
 from mecha.portfile import clear_port_file, read_port, write_port_file  # noqa: E402
+
+#: 压测轮数。单次跑抓不到这个缺陷（本仓实测未修时 40 轮里命中 0–13 次，抖动大），
+#: 所以既压测**又**配一条决定性判别子（见 check_post_body_drain）。
+POST_ROUNDS = 40
+
+#: 压测 body 体积（够大才留得下未读数据 ⇒ 才可能触发 RST）。
+POST_BODY_BYTES = 256 * 1024
 
 #: 投影字段集（契约的一部分：多一个少一个都是漂移）。
 ACTIVITY_KEYS = {"kind", "actor", "target", "value", "seq", "call_id"}
@@ -558,6 +580,171 @@ def check_summary_projection(out: list[str]) -> None:
         _fail(out, "空概括形状错")
 
 
+# --------------------------------------------------------------------------
+# H POST 请求体 drain（既有缺陷修复）
+# --------------------------------------------------------------------------
+
+def _drain_rule(out: list[str]) -> None:
+    """``_drain_request_body`` 的三分（纯逻辑，不依赖 RST 的时序运气）。"""
+
+    class _Fake:
+        close_connection = False
+        MAX_DRAIN_BYTES = _Handler.MAX_DRAIN_BYTES
+
+        def __init__(self, raw, payload=b""):
+            self.headers = {} if raw is None else {"Content-Length": raw}
+            self._buf = payload
+            self.rfile = self
+
+        def read(self, n):
+            chunk, self._buf = self._buf[:n], self._buf[n:]
+            return chunk
+
+    def _call(raw, payload=b""):
+        fake = _Fake(raw, payload)
+        reusable = _Handler._drain_request_body(fake)
+        return reusable, fake.close_connection
+
+    if (_call(None) == (False, True)
+            and _call("abc") == (False, True)
+            and _call(str((1 << 20) + 1)) == (False, True)):
+        _ok("drain 三分：Content-Length 缺失 / 非法 / 超上界 ⇒ 不硬读，要求关连接")
+    else:
+        _fail(out, "drain 三分（缺失 / 非法 / 超界）不符规则")
+    if _call("0") == (True, False):
+        _ok("drain：Content-Length 0 ⇒ 没有 body 要读，连接可复用")
+    else:
+        _fail(out, "drain 对 0 长度处理错")
+    if _call("8", b"12345678") == (True, False):
+        _ok("drain：合法长度 ⇒ 读净丢弃且**不**要求关连接（正常路径契约不变）")
+    else:
+        _fail(out, "drain 合法路径错")
+    if _call("8", b"123") == (False, True):
+        _ok("对偶（不许误报）：body 没发全 ⇒ 判为读不干净并要求关连接")
+    else:
+        _fail(out, "body 没发全却被当成读干净了")
+
+
+def check_post_body_drain(out: list[str]) -> None:
+    """H 组：带 body 的 POST 必须被读干净再回 404（否则 Windows 内核回 RST）。"""
+    _drain_rule(out)
+    with tempfile.TemporaryDirectory(prefix="cockpit-h-") as td:
+        with _software(Path(td)) as sw:
+            ep = start_monitor_endpoint(MonitorSource.from_software(sw), port=0)
+            try:
+                # ① 决定性判别子：公告的 body 未发完时不得提前回响应
+                sock = socket.create_connection(("127.0.0.1", ep.port), timeout=10)
+                early: bool | None = None
+                blob = b""
+                try:
+                    sock.sendall(b"POST /status HTTP/1.1\r\nHost: check\r\n"
+                                 b"Content-Length: 1000\r\n\r\n" + b"x" * 10)
+                    sock.settimeout(1.5)
+                    try:
+                        sock.recv(200)
+                        early = True
+                    except socket.timeout:
+                        early = False
+                    except OSError:
+                        early = True          # 连接被打断 = 服务端提前收尾
+                    sock.settimeout(5.0)
+                    try:
+                        sock.sendall(b"x" * 990)
+                        while b"\r\n\r\n" not in blob:
+                            chunk = sock.recv(4096)
+                            if not chunk:
+                                break
+                            blob += chunk
+                    except OSError:
+                        pass                      # 未修实现的典型表现：RST
+                finally:
+                    sock.close()
+                if early is False:
+                    _ok("⭐ 决定性：公告的 body 未发完时服务端**不提前回响应**"
+                        "（不修的实现会立刻回 404 ⇒ 这里必然红，与 RST 时序运气无关）")
+                else:
+                    _fail(out, "服务端在请求体发完之前就回了响应——没读 body 就关连接"
+                               "（既有缺陷：Windows 内核回 RST）")
+                if b"404" in blob.split(b"\r\n", 1)[0]:
+                    _ok("补完 body 后拿到干净的 404（状态码未变）")
+                else:
+                    _fail(out, f"补完 body 后未拿到 404：{blob[:80]!r}")
+
+                # ② 压测：带 body 的 POST 不得出现中断
+                body = b"x" * POST_BODY_BYTES
+                bad: list[str] = []
+                for _ in range(POST_ROUNDS):
+                    conn = http.client.HTTPConnection("127.0.0.1", ep.port,
+                                                      timeout=10)
+                    try:
+                        conn.request("POST", "/status", body=body,
+                                     headers={"Content-Type": "application/json"})
+                        resp = conn.getresponse()
+                        data = resp.read()
+                        if (resp.status != 404
+                                or b"read-only monitor endpoint" not in data):
+                            bad.append(f"bad-response {resp.status} {data[:40]!r}")
+                    except Exception as exc:              # noqa: BLE001
+                        bad.append(f"{type(exc).__name__}: {exc}")
+                    finally:
+                        try:
+                            conn.close()
+                        except Exception:                 # noqa: BLE001
+                            pass
+                if not bad:
+                    _ok(f"⭐ 压测 {POST_ROUNDS} 轮带 body POST"
+                        f"（{POST_BODY_BYTES // 1024} KiB）：零 ConnectionAbortedError / "
+                        f"零 WinError 10053，且每轮都是干净 404")
+                else:
+                    _fail(out, f"压测 {POST_ROUNDS} 轮命中 {len(bad)} 次"
+                               f"（首例：{bad[0]}）——不 drain 就关连接 ⇒ Windows RST")
+
+                # ③ 规范分支：缺 Content-Length ⇒ 如实要求关连接（不硬读）
+                sock2 = socket.create_connection(("127.0.0.1", ep.port), timeout=10)
+                raw = b""
+                try:
+                    sock2.sendall(b"POST /status HTTP/1.1\r\nHost: check\r\n\r\n")
+                    while b"\r\n\r\n" not in raw:
+                        chunk = sock2.recv(4096)
+                        if not chunk:
+                            break
+                        raw += chunk
+                finally:
+                    sock2.close()
+                head = raw.split(b"\r\n\r\n", 1)[0] if raw else b""
+                if b"404" in head.split(b"\r\n", 1)[0] and b"Connection: close" in head:
+                    _ok("缺 Content-Length 的 POST ⇒ 404 + Connection: close"
+                        "（不硬读，如实要求关连接）")
+                else:
+                    _fail(out, f"缺 Content-Length 的 POST 未按规范处置：{head[:120]!r}")
+
+                # ④ 不许误报：正常路径契约一字不变
+                code, headers, text = _request(ep.url + "/status", "POST")
+                if (code == 404 and json.loads(text) == {
+                        "ok": False, "error": "read-only monitor endpoint"}):
+                    _ok("对偶：POST（带 Content-Length: 0）仍 404 逐字 body")
+                else:
+                    _fail(out, f"POST 契约变了：{code} {text!r}")
+                if headers.get("Connection") is None:
+                    _ok("对偶：读得干净的路径**不新增** Connection 头（wire 一字不变）")
+                else:
+                    _fail(out, f"正常路径多出 Connection 头："
+                               f"{headers.get('Connection')!r}")
+                code, headers, _ = _request(ep.url + "/status")
+                if code == 200 and headers.get("Connection") is None:
+                    _ok("对偶：GET 完全不受影响（无新增 Connection 头）")
+                else:
+                    _fail(out, f"GET 契约变了：{code} "
+                               f"Connection={headers.get('Connection')!r}")
+                code, headers, _ = _request(ep.url + "/status", "OPTIONS")
+                if code == 204 and headers.get("Connection") is None:
+                    _ok("对偶：OPTIONS 完全不受影响")
+                else:
+                    _fail(out, f"OPTIONS 契约变了：{code}")
+            finally:
+                ep.stop()
+
+
 def main() -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -570,6 +757,7 @@ def main() -> int:
     check_lifecycle(out)
     check_portfile(out)
     check_summary_projection(out)
+    check_post_body_drain(out)
     if out:
         print(f"phase11_cockpit_selfcheck: FAIL（{len(out)} 条）")
         return 1

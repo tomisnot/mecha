@@ -382,13 +382,19 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *args) -> None:            # noqa: N802 - 基类约定
         """静音：访问日志不给控制台刷屏（面板每拍都打会淹掉真输出）。"""
 
-    def _json(self, code: int, obj: object) -> None:
-        """统一响应：JSON + CORS + 精确 Content-Length（所有状态码都带 CORS）。"""
+    def _json(self, code: int, obj: object, *, close: bool = False) -> None:
+        """统一响应：JSON + CORS + 精确 Content-Length（所有状态码都带 CORS）。
+
+        ``close=True`` 时额外发 ``Connection: close``——**只在请求体读不干净时**
+        用（见 :meth:`_drain_request_body`）；正常路径不加这个头，契约一字不变。
+        """
         data = json.dumps(obj, ensure_ascii=False, default=str).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", _JSON_CONTENT_TYPE)
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Access-Control-Allow-Origin", "*")
+        if close:
+            self.send_header("Connection", "close")
         self.end_headers()
         self.wfile.write(data)
 
@@ -413,9 +419,58 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             payload, code = _route_error(exc), 500
         self._json(code, payload)
 
+    #: drain 请求体的上界：超过就不读完，改为要求关连接（不为 drain 无限期地读）。
+    MAX_DRAIN_BYTES = 1 << 20
+
+    def _drain_request_body(self) -> bool:
+        """把请求体读干净再回响应；返回"连接是否还能复用"。
+
+        为什么必须：请求体没读干净就关连接时，Windows 内核回 RST，客户端在读**状态
+        行之前**就被打断（``ConnectionAbortedError`` / ``WinError 10053``）。这是
+        既有缺陷（迁移前的老实现同病，EL 用 ``git show`` 取旧实现做过决定性实验）；
+        代价不是用户可见故障——真实面板只发 GET——而是**两个项目的门禁偶发假红**
+        （本仓实测未修时 40 轮里命中 0–13 次）。
+
+        三分（照 HTTP 语义，不猜）：
+
+        - 合法 ``Content-Length`` 且在界内 ⇒ 读净丢弃，连接可复用（不加任何头）；
+        - ``Content-Length`` 缺失 / 非法 / 超上界 ⇒ **不硬读**，要求关连接
+          （调用方据此发 ``Connection: close``）——最接近"不读就关"的诚实处置。
+
+        已知残余：声明了 ``Content-Length`` 却永远不发 body 的客户端会让这个请求
+        线程阻塞在读取上（``ThreadingHTTPServer`` 一连接一线程，不牵连其它连接）；
+        不为它加读超时——那是新机制，今天没有消费者。
+        """
+        raw = self.headers.get("Content-Length")
+        text = "" if raw is None else str(raw).strip()
+        if not text.isdigit():
+            self.close_connection = True
+            return False
+        remaining = int(text)
+        if remaining <= 0:
+            return True
+        if remaining > self.MAX_DRAIN_BYTES:
+            self.close_connection = True
+            return False
+        while remaining > 0:
+            chunk = self.rfile.read(min(remaining, 65536))
+            if not chunk:
+                break
+            remaining -= len(chunk)
+        if remaining:
+            self.close_connection = True
+            return False
+        return True
+
     def do_POST(self) -> None:                       # noqa: N802 - 基类约定
-        """只读红线：一切写 / 切模式 POST 恒 404（控制权归看门人的进程交接）。"""
-        self._json(404, {"ok": False, "error": "read-only monitor endpoint"})
+        """只读红线：一切写 / 切模式 POST 恒 404（控制权归看门人的进程交接）。
+
+        ⚠ 回响应前**必须先把请求体读干净**（:meth:`_drain_request_body`）。读不干净
+        时只多加 ``Connection: close``——**状态码与 body 一字不变**。
+        """
+        drained = self._drain_request_body()
+        self._json(404, {"ok": False, "error": "read-only monitor endpoint"},
+                   close=not drained)
 
 
 class MonitorEndpoint:
