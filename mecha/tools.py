@@ -54,7 +54,7 @@ def check_tool_name(name: str, *, banned_prefixes: tuple[str, ...] = (OWN_PACKAG
         raise MechaError(
             f"工具名 {name!r} 不合命名律",
             kind="bad_tool_name",
-            hint="必须 snake_case 且至少两段（动词_宾语，如 set_config / run_sim）",
+            hint="必须 snake_case 且至少两段（动词_宾语，如 do_thing / read_status）",
         )
     first = name.split("_")[0]
     if first in ("get", "list"):

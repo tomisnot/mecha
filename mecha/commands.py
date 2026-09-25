@@ -30,9 +30,11 @@
 2. **有副作用的命令经 Gate 写审计事件**，键为 ``command.<name>``。审计值只放
    操作语义（命令名 / ok / 回执键 / 错误 kind / scope），**不放结果体**——大
    对象由宿主自己存，History 只留引用（总纲 §5.2②，宪章 §8）。
-3. **框架不替宿主表态**：``scope`` / ``approval_required`` / ``cancel_supported``
-   是声明字段，本模块**不解释**它们的领域含义，也不据此改变分派；谁消费由
-   宿主与 Consumer 决定（分类留宿主，机制进核心）。
+3. **框架不替宿主表态**：``approval_required`` / ``cancel_supported`` 是声明
+   字段，本模块**不解释**它们的领域含义，也不据此改变分派；谁消费由宿主与
+   Consumer 决定（分类留宿主，机制进核心）。``scope`` 是唯一例外：宿主
+   ``bind_scope_policy`` 注入 ScopePolicy 后，它参与分派前的写权过滤，且
+   ``side`` 只从真正的 ``Channel`` 取（见 ``_bad_channel``）。
 
 ``invoke`` 回执形状（与 ``ToolRegistry.execute`` 同构，宿主适配层可共用一套
 归一化）：``{"is_error": False, "value": {...}}`` 或
@@ -48,8 +50,9 @@
 - Gate 审计键 ``command.<name>`` 要求宿主的 ``validate`` 接受该前缀；宿主
   validator 若拒绝未知键，审计写入会 fail loud（``command_audit_denied``），
   框架不替宿主放行——这是刻意的，见 ADR 的 Consequences。
-- ``scope`` / ``approval_required`` / ``cancel_supported`` 目前**只是声明**：
-  Scope 化 Authority（宪章 §10.3）与 Job 契约（§10.4）落地前不参与分派。
+- ``approval_required`` / ``cancel_supported`` 目前**只是声明**：命令面不据此
+  改变分派（审批归宿主 validator、取消归 Job Provider）。``scope`` 已可由
+  ``bind_scope_policy`` 注入的 ScopePolicy 消费（不注入则不做过滤）。
 - 不内置并发控制：同命令并发 invoke 的串行化归宿主 Job Provider（n=1 无此压力）。
 - 不校验 handler 形参与 ``parameters`` 声明的**逐字一致**：只校验调用时**传进来
   的键**与声明吻合（缺必填键或多未声明键都拒）。handler 多收一个声明过的参数
@@ -113,7 +116,7 @@ def check_command_name(name: str, *,
             f"命令名 {name!r} 不合命名律",
             kind="bad_command_name",
             hint="必须非空 snake_case（小写字母/数字/下划线，字母开头，"
-                 "不许首尾或连续下划线），如 run_method / prepare_dataset / reset",
+                 "不许首尾或连续下划线），如 do_thing / compute_summary / reset",
         )
     for p in banned_prefixes:
         if name.startswith(p + "_"):
@@ -363,8 +366,17 @@ class CommandRegistry:
             ))
         # 作用域写权过滤在**任何副作用之前**：scope 不齐即拒，不写审计、
         # 不调 handler（与 Authority 的 mode 门是两个正交层）。
+        #
+        # 通道先做**类型**校验：side 是授权判定的唯一输入，而它必须来自
+        # ``mecha.gate.Channel``（构造时钉死、frozen）。只读 ``getattr(obj,
+        # "side")`` 会让任意鸭子类型对象自称 human 就拿到人类 scope
+        # （第三轮审查 P1-2）——那是把硬纪律 4 降级成"调用方自称"。
+        if channel is not None:
+            bad = _bad_channel(channel)
+            if bad is not None:
+                return _failure(bad)
         if self._scope_policy is not None and spec.scope:
-            side = getattr(channel, "side", "ai") if channel is not None else "ai"
+            side = channel.side if channel is not None else "ai"
             try:
                 self._scope_policy.check(side, spec.scope)
             except MechaError as e:
@@ -523,6 +535,40 @@ class CommandRegistry:
                 suggest=e.suggest,
             )
         return None
+
+
+#: scope 判定允许的 side 白名单（与 ``gate.Channel.__post_init__`` 同一口径）。
+_VALID_SIDES = ("human", "ai")
+
+
+def _bad_channel(channel: object) -> MechaError | None:
+    """通道类型守卫：授权判定用的 ``side`` 必须来自真正的 ``mecha.gate.Channel``。
+
+    ``invoke`` 是**公开 API**，``channel`` 就是参数本身，没有第二道签名。
+    只读 ``getattr(obj, "side")`` 会让 ``class FakeCh: side = "human"`` 直接
+    以人类身份过 scope（第三轮审查 P1-2 实测）：授权判定从"构造时钉死"降级
+    成"调用方自称"。这里把资格钉回 ``Channel``（构造即校验 side 且 frozen），
+    并**再查一遍** side 白名单——防止绕过构造器的伪造实例（如
+    ``object.__setattr__(ch, "side", "root")``）。
+    """
+    from .gate import Channel
+    if not isinstance(channel, Channel):
+        return MechaError(
+            f"channel 必须是 mecha.gate.Channel，收到 {type(channel).__name__}",
+            kind="bad_channel",
+            hint="通道对象由装配点钉死（如 sw.channels['ai']）；"
+                 "不接受鸭子类型对象自称 side",
+            suggest="invoke(..., channel=sw.channels['ai'])",
+        )
+    side = channel.side
+    if side not in _VALID_SIDES:
+        return MechaError(
+            f"channel.side={side!r} 不在 {list(_VALID_SIDES)} 内",
+            kind="bad_channel",
+            hint="side 只能是 'human' 或 'ai'（Channel 构造时钉死）；"
+                 "细标签放 actor（如 Channel('gui', 'human')）",
+        )
+    return None
 
 
 def _default_channel(name: str) -> object:

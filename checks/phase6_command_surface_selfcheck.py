@@ -18,6 +18,9 @@
     只含操作语义、不含结果体（大对象不进 History）。
   E 只读命令**不过 Gate**：``side_effect=False`` 时 gate 传了也不碰、不写史；
     有副作用却不注入 gate 则 fail loud（``missing_gate``）。
+  E2 通道类型（反向断言）：scope 的 ``side`` 只认真正的 ``mecha.gate.Channel``；
+    鸭子类型对象自称 ``side='human'`` 或绕过构造器伪造的 side 一律
+    ``bad_channel``，且 handler 未进、无审计（P1-2 回归）。
   F 投影不泄漏 handler：``specs()`` 只有声明字段，命令体可调用实现不外露。
   G 不许误报（L7）：一个完全合规的命令注册后全绿——invoke 成功、回执齐键、
     只读的 0 条史、有副作用的 1 条审计。
@@ -30,8 +33,9 @@
 - 判据用装配级替身（ToyEngine + 中性假命令），不依赖任何真宿主 adapter；
   真宿主的命令表与工具投影对齐归各宿主自己判据（mecha 核心不持有命令名）。
 - 不测 spec → AI 工具投影：ToolHost 契约未定（宪章 §10.2），命令不自动投影。
-- 不测 ``scope`` / ``approval_required`` / ``cancel_supported`` 的**语义**：
-  它们目前只是声明字段，Scope Authority 落地前没有任何分派含义。
+- 不测 ``approval_required`` / ``cancel_supported`` 的**语义**：它们目前只是
+  声明字段，命令面不据此改变分派。``scope`` 只在宿主注入 ScopePolicy 后参与
+  分派（未注入不做过滤），其"谁能自称 human"由通道类型守卫钉住。
 - 不测命令体内部实现的正确性（判据只钉契约与副作用痕迹）。
 """
 
@@ -51,7 +55,7 @@ from mecha.commands import (  # noqa: E402
     AUDIT_KEY_PREFIX, CommandRegistry, CommandResult, CommandSpec, define_command,
 )
 from mecha.errors import MechaError  # noqa: E402
-from mecha.gate import accept_all  # noqa: E402
+from mecha.gate import Channel, accept_all  # noqa: E402
 from mecha.scopes import ScopePolicy  # noqa: E402
 from mecha.surface import Engine, ExecutionContext  # noqa: E402
 
@@ -570,6 +574,74 @@ def check_readonly_bypasses_gate(out: list[str]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# E2 通道类型：side 只认真正的 Channel（P1-2 反向断言）
+# ---------------------------------------------------------------------------
+
+def check_channel_authority_is_typed(out: list[str]) -> None:
+    """scope 的 side 不许由"调用方自称"决定：鸭子类型通道必须被拒。
+
+    第三轮审查 P1-2 实测 ``class FakeCh: side="human"`` 能拿到人类 scope。
+    这里钉反向：伪通道 → ``bad_channel`` 结构化失败、handler 未进、无审计；
+    同时保真通道照旧放行（不误伤），并拒 ``object.__setattr__`` 篡改的 side。
+    """
+    reached: list[str] = []
+
+    class FakeChannel:
+        """鸭子类型通道：字段形状与 Channel 一模一样，但不是 Channel。"""
+
+        def __init__(self, side: str) -> None:
+            self.side = side
+            self.actor = side
+
+    def handler(context, text):
+        reached.append(text)
+        return {"ok": True, "stored_key": text}
+
+    with _with_software() as sw:
+        sw.authority.switch_mode(Mode.HUMAN, side="human")
+        policy = ScopePolicy()
+        policy.grant("human", "state")          # 人类侧全权；AI 侧一无所有
+        sw.commands.bind_scope_policy(policy)
+        sw.commands.register(_note_cmd(), handler)
+        before = len(sw.history.events())
+        r = sw.commands.invoke("record_note", {"text": "hu"}, context=_Ctx(),
+                               gate=sw.gate, channel=FakeChannel("human"))
+        if (_fail_shape(r, "bad_channel") and "hu" not in reached
+                and len(sw.history.events()) == before):
+            _ok("伪通道自称 side='human' 被拒（bad_channel），无副作用、无审计")
+        else:
+            _fail(out, f"伪通道竟过 scope：{r} reached={reached} "
+                       f"events+={len(sw.history.events()) - before}")
+        # 不误报：真 Channel 的同侧调用照旧放行
+        r2 = sw.commands.invoke("record_note", {"text": "real"}, context=_Ctx(),
+                                gate=sw.gate, channel=sw.channels["human"])
+        if not r2.get("is_error") and "real" in reached:
+            _ok("真 Channel(human) 照旧放行（类型守卫不误伤正常路径）")
+        else:
+            _fail(out, f"真 human 通道被误拒：{r2}")
+        # 绕过构造器伪造的 side 也不认（白名单校验，不只查类型）
+        forged = Channel("ai", "ai")
+        object.__setattr__(forged, "side", "root")
+        r3 = sw.commands.invoke("record_note", {"text": "root"}, context=_Ctx(),
+                                gate=sw.gate, channel=forged)
+        if _fail_shape(r3, "bad_channel") and "root" not in reached:
+            _ok("side 越出 human/ai 白名单即拒（伪造实例也拦）")
+        else:
+            _fail(out, f"非法 side 竟可用：{r3}")
+        # 不注入 ScopePolicy 时同样校验：通道合法性不依赖 policy 是否在场
+        with _with_software() as sw2:
+            sw2.authority.switch_mode(Mode.HUMAN, side="human")
+            sw2.commands.register(_note_cmd(), handler)
+            r4 = sw2.commands.invoke("record_note", {"text": "nopolicy"},
+                                     context=_Ctx(), gate=sw2.gate,
+                                     channel=FakeChannel("ai"))
+            if _fail_shape(r4, "bad_channel") and "nopolicy" not in reached:
+                _ok("未注入 ScopePolicy 时伪通道同样被拒（校验无条件）")
+            else:
+                _fail(out, f"无 policy 时伪通道未被拒：{r4}")
+
+
+# ---------------------------------------------------------------------------
 # F 投影不泄漏 handler
 # ---------------------------------------------------------------------------
 
@@ -635,6 +707,7 @@ def main() -> int:
     check_side_effect_audit(out)
     check_result_ref_audit(out)
     check_scope_policy(out)
+    check_channel_authority_is_typed(out)
     check_readonly_bypasses_gate(out)
     check_projection(out)
     check_no_false_alarm(out)

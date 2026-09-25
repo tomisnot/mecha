@@ -10,9 +10,12 @@ Job Contract 是第二个宿主（ML Toolbox）逼出的通用机制：训练与
     ``result`` 保留返回值，``command`` 与 ``result_ref`` 可读。
   B 失败：fn 抛错 → state=failed + error 有类型/消息，result_ref 为空，
     异常不逃出注册表。
-  C 取消：fn 在取消后自行退出 → state=cancelled（取消是显式字段，不是杀线程）。
+  C 取消：fn 在取消后自行退出 → state=cancelled（取消是显式字段，不是杀线程）；
+    取消的 job **不写 result_ref**——哪怕函数忽略 ``ctx.cancelled`` 照样跑完
+    （终态与引用同源，ADR「失败/取消的 job 不伪造引用」）。
   D 并发写史安全：多个 job 并发 append History，seq 仍严格单调无重复
-    （History 的进程内写口互斥；跨进程仍靠写租约）。
+    （History 的进程内写口互斥；跨进程仍靠写租约）；并发 submit 下反复
+    ``list()`` 零异常（读侧取锁快照，P1-1 回归）。
   E 不许误报（L7）：合规 job 全绿；list/status 形状稳定。
 
 用法：python checks/phase7_job_contract_selfcheck.py
@@ -167,6 +170,108 @@ def check_concurrent_history(out: list[str]) -> None:
                        f"唯一 {len(set(seqs))}，单调={seqs == sorted(seqs)}")
 
 
+def check_cancel_has_no_ref(out: list[str]) -> None:
+    """P1-3 回归：取消的 job 不得带 result_ref（哪怕函数跑完了）。
+
+    构造：fn **故意不看** ``ctx.cancelled``，并且返回前等一个信号——保证
+    cancel 一定发生在 fn 返回之前（不是靠 sleep 赌时序），于是终态必然是
+    cancelled，而 fn 也确实跑完了。这种"取消后照样跑完"的 job 若还挂引用，
+    就是取消态携带成功态引用（ADR 明文禁止）。
+    """
+    with _with_software() as sw:
+        started = threading.Event()
+        release = threading.Event()
+
+        def runs_to_completion(ctx):
+            started.set()
+            release.wait(5)                 # 故意忽略 ctx.cancelled
+            return {"ok": True, "run_ids": ["r-1"]}
+
+        def ref_fn(res):
+            return {"kind": "toy_result", "run_ids": res["run_ids"]}
+
+        # 对照组（同一条 ref_fn，不取消）：证明引用本身是能提取的，
+        # 下面的 result_ref is None 不是因为 ref 机制坏了（不许放宽成"可能为 None"）。
+        good = sw.jobs.submit(runs_to_completion, command="cancel_target",
+                             result_ref_fn=ref_fn)
+        started.wait(2)
+        release.set()
+        good.wait(5)
+        if good.state is JobState.DONE \
+                and good.result_ref == {"kind": "toy_result", "run_ids": ["r-1"]}:
+            _ok("未取消的同类 job 照旧带 result_ref（对照片，防断言空转）")
+        else:
+            _fail(out, f"对照片不符：{good.to_dict()}")
+
+        started.clear()
+        release.clear()
+        job = sw.jobs.submit(runs_to_completion, command="cancel_target",
+                             result_ref_fn=ref_fn)
+        started.wait(2)
+        sw.jobs.cancel(job.id)              # fn 仍阻塞在 release 上 ⇒ 取消必先到
+        release.set()                       # 放行：fn 跑完，但 job 已被取消
+        if not job.wait(5):
+            _fail(out, "取消的 job 未结束")
+            return
+        d = job.to_dict()
+        if job.state is JobState.CANCELLED:
+            _ok("忽略 cancelled 的函数跑完 ⇒ 终态仍是 cancelled")
+        else:
+            _fail(out, f"终态不是 cancelled：{d}")
+        if job.result_ref is None and "result_ref" not in d:
+            _ok("取消的 job 无 result_ref（不伪造引用；结果照留但不挂引用）")
+        else:
+            _fail(out, f"取消的 job 竟带 ref：{d}")
+
+
+def check_list_under_concurrent_submit(out: list[str]) -> None:
+    """P1-1 回归：并发 submit 时反复 list() 不得抛 RuntimeError。
+
+    有界：submit 次数固定（2×300），reader 到点即停，不写成 1.5s 长跑。
+    未加锁的 ``self._jobs.values()`` 迭代在这个量级下必然抛
+    ``dictionary changed size during iteration``（已用修复前实现双击验证）。
+    """
+    with _with_software() as sw:
+        errors: list[str] = []
+        stop = threading.Event()
+        deadline = time.time() + 10.0
+        per_submitter = 300
+
+        def reader():
+            while not stop.is_set() and time.time() < deadline:
+                try:
+                    sw.jobs.list()
+                except Exception as e:  # noqa: BLE001 - 抓的就是并发迭代异常
+                    errors.append(f"{type(e).__name__}: {e}")
+
+        def submitter():
+            for _ in range(per_submitter):
+                if stop.is_set():
+                    return
+                sw.jobs.submit(lambda ctx: None, command="poll_target")
+
+        readers = [threading.Thread(target=reader, daemon=True) for _ in range(3)]
+        subs = [threading.Thread(target=submitter, daemon=True) for _ in range(2)]
+        for t in readers + subs:
+            t.start()
+        for t in subs:
+            t.join(20)
+        stop.set()
+        for t in readers:
+            t.join(5)
+        listed = sw.jobs.list()
+        if errors:
+            _fail(out, f"并发 submit 时 list() 抛异常 {len(errors)} 次，"
+                       f"例：{errors[0]}")
+        elif len(listed) < per_submitter * 2:
+            _fail(out, f"list() 少 job：{len(listed)} < {per_submitter * 2}")
+        elif len({j["id"] for j in listed}) != len(listed):
+            _fail(out, "list() 出现重复 id（快照不是注册表的投影）")
+        else:
+            _ok(f"并发 submit（{per_submitter * 2} 个）下 list() 零异常，"
+                f"快照完整（{len(listed)} 条）")
+
+
 def check_no_false_alarm(out: list[str]) -> None:
     with _with_software() as sw:
         ok_job = sw.jobs.submit(lambda ctx: "ok", command="noop")
@@ -184,6 +289,8 @@ def main() -> int:
     check_submit_and_ref(out)
     check_failure(out)
     check_cancel(out)
+    check_cancel_has_no_ref(out)
+    check_list_under_concurrent_submit(out)
     check_concurrent_history(out)
     check_no_false_alarm(out)
     if out:
