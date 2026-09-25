@@ -22,10 +22,11 @@ mecha/          稳定脊椎：gate / history / surface / monitor / authority /
                 roles / format_version / data_layout / errors /
                 artifacts（宿主产物托管）+ assembly（具名装配点）
 mecha/providers/  Provider 层（dsh 的 churn 关在这里）：log_local / jobs /
-                spill / approval / skills / codeact —— local 是出厂默认
+                approval / skills / codeact —— local 是出厂默认
 checks/         判据（见下）+ 门禁；python checks/run_all.py 一条跑全
 docs/v2/        架构总纲（规范源：为什么这么设计）+ 架构详解（建成态导览：代码
-                现在长什么样）+ 遗留登记 + ADR 制度 + notes/（ADR 四态树）
+                现在长什么样）+ 框架准入线（改动纪律 R 系列）+ 操作陷阱（工具与
+                测量层面的坑）+ 遗留登记 + ADR 制度 + notes/（ADR 四态树）
 docs/capabilities.md  生成的 capability map（禁止手改，改了判据红）
 scripts/        gen_capability_map.py（map 生成器）
 ```
