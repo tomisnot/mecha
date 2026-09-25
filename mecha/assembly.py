@@ -116,13 +116,16 @@ def declare_roles(roles: RoleRegistry, *, engine_name: str, project: str) -> Non
     roles.register("provider.toolhost.local", Role.PROVIDER, provider="in-process")
     # 工具面的 MCP 传输 Provider（住 extra `mecha.providers.mcp`）：核心不 import
     # 它，装配点只声明"这个 Provider 存在"（capability map 的诚实性）。
+    # 消费者 = AI 操作面：下游把它接成宿主里的 MCP 服务端，AI 经它调工具。
     roles.register("provider.toolhost.mcp", Role.PROVIDER,
-                   provider="mcp-streamable-http")
+                   provider="mcp-streamable-http", consumer="adapter.ai")
     # 监控端点的传输 seam（与 provider.toolhost 同款分工：Definition 归我们，
     # local 出厂实现是"回环 HTTP、只读、无鉴权"）。Monitor 此前只有读面没有传输，
     # 补上它不新增权限面（可见性归 visibility、写权归 gate）。
+    # 消费者 = 人类监控面（adapter.gui）：面板轮询这个只读端点。
     roles.register("monitor.transport", Role.DEFINITION, provider=project)
-    roles.register("monitor.transport.local", Role.PROVIDER, provider="http-loopback")
+    roles.register("monitor.transport.local", Role.PROVIDER,
+                   provider="http-loopback", consumer="adapter.gui")
     # 通用命令面（命令是注册项：Surface.commands / Software.commands 同一对象；
     # 具体 command:<name> 能力行由注册时动态登记，不进出厂 map）
     roles.register("commands.registry", Role.CONSUMER, consumer="adapter.ai",

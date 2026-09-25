@@ -1,13 +1,16 @@
 """Jobs Provider：一次长计算是一个 job（总纲 §5.2⑤ Jobs 行）。
 
-Definition：可轮询 / 可取消 / 断线可找回。local 实现用单线程串行队列——
-**单一注册表实例**（消 D-21：v1 双 JobRunner 会把另一实例正在跑的 job 翻成
-interrupted）。dsh 侧 Provider 注册到 ``ctx.jobs``（注入宿主句柄，本包不 import dsh）。
+Definition：可轮询 / 可取消 / 断线可找回。local 实现**每次 ``submit`` 新起一个
+daemon 线程**（不排队、不设并发上限）——**单一注册表实例**（消 D-21：v1 双
+JobRunner 会把另一实例正在跑的 job 翻成 interrupted）。dsh 侧 Provider 注册到
+``ctx.jobs``（注入宿主句柄，本包不 import dsh）。
 
 ## Known Limitations and Deferred Work
 
-- local 实现是**单 worker 串行**（线程），不是并发池——真实并发度归项目引擎
-  自己的线程模型（EL 的 SQLite 认线程是它的约束，不焊进库）。
+- local 实现**每次 ``submit`` 新起一个 daemon 线程**：既不排队也不限并发——真实
+  并发度归项目引擎自己的线程模型（EL 的 SQLite 认线程是它的约束，不焊进库）。
+  ⚠ 这条以前写作"单 worker 串行队列"，与实现不符，已按实现改正（台账 A4：文档
+  撒谎比代码缺陷更坏；改成串行会动行为且无消费者要求，故改文档）。
 - "断线可找回"这里只保证 job 状态在注册表存活期内可查；进程重启后的找回
   需要把 job 元数据落 History，等第二个项目有需求再做（n=1 推迟）。
 - 完成唤醒 idle owner 是 dsh ctx.jobs 的语义；local 用轮询 status() 代替。

@@ -13,7 +13,7 @@
 | `history` | definition | mecha | — |
 | `monitor` | definition | mecha | — |
 | `monitor.transport` | definition | mecha | — |
-| `monitor.transport.local` | provider | http-loopback | — |
+| `monitor.transport.local` | provider | http-loopback | adapter.gui |
 | `provider.approval` | definition | mecha | — |
 | `provider.approval.local` | provider | fail-closed | — |
 | `provider.artifacts` | definition | mecha | — |
@@ -28,7 +28,7 @@
 | `provider.spill.local` | provider | local-file | — |
 | `provider.toolhost` | definition | mecha | — |
 | `provider.toolhost.local` | provider | in-process | — |
-| `provider.toolhost.mcp` | provider | mcp-streamable-http | — |
+| `provider.toolhost.mcp` | provider | mcp-streamable-http | adapter.ai |
 | `surface` | definition | mecha | — |
 | `surface.engine` | provider | unconfigured | surface |
 | `tools.registry` | consumer | mecha | adapter.ai |

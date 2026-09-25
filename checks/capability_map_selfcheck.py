@@ -164,14 +164,6 @@ DEFERRED_PROVIDERS = frozenset({
     "provider.approval.local",    # 细粒度每次写问人待 ctx.approval 接线
     "provider.skills",            # skill 目录待宿主 skill 面接线
     "provider.toolhost.local",    # 工具定义→宿主传输待可注入 ctx.tools 的真宿主
-    # 监控端点传输：机制已在库内（mecha/cockpit.py），但两个下游**尚未**迁移为
-    # 薄壳 ⇒ 现在没有任何非判据代码 import 它。迁移窗口内**显式登记为推迟**，
-    # 不先写一个"消费方"标签假装有人用（D-28 的教训）。EL/ML 任一迁完
-    # （`monitor.transport.local` 有真实 import）即从本表移除。
-    "monitor.transport.local",
-    # MCP 传输 Provider（mecha/providers/mcp.py，extra）：同上——机制在，但两个
-    # 下游仍各揣一份自己的实现，尚未迁到它 ⇒ 无真实消费者，显式登记推迟。
-    "provider.toolhost.mcp",
 })
 
 #: 有真实消费者的 provider → (实现符号, 自身模块路径子串)。
