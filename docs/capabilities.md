@@ -32,4 +32,3 @@
 | `surface` | definition | mecha | — |
 | `surface.engine` | provider | unconfigured | surface |
 | `tools.registry` | consumer | mecha | adapter.ai |
-| `visibility.policy` | definition | mecha | — |

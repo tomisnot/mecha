@@ -27,8 +27,8 @@ Provider，核心不 import dsh，也不手抄工具名单。
 - 不测真 dsh/MCP ``ctx.tools`` 注册（本仓不 import dsh，dsh 侧 Provider 未实现；
   模块 Known Limitations 与 ADR 已绑触发）。这里验证形状与不变式在库内成立。
 - 不测跨进程/跨会话的工具面重建：宿主生命周期归部署期，n=0 不建。
-- 不测传输层权限（可见性归 ``visibility.py``、写权归 Gate）：ToolHost 只搬运，
-  测它新增权限检查反而是要求它越界。
+- 不测传输层权限（写权归 Gate；框架不做可见性分级——原 ``visibility.py`` 已删除）：
+  ToolHost 只搬运，测它新增权限检查反而是要求它越界。
 """
 from __future__ import annotations
 

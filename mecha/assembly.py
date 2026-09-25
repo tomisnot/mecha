@@ -33,7 +33,6 @@ from .roles import Role, RoleRegistry
 from .surface import Engine, Surface
 from .toolhost import LocalToolHost
 from .tools import ToolRegistry
-from .visibility import VisibilityPolicy
 
 
 @dataclass
@@ -57,7 +56,6 @@ class Software:
     #: 装配点这里多一个取用入口，是为了让宿主"只拿 Software 就能挂命令"，
     #: 而不必去摸 Surface 内部（L7 单一来源）。
     commands: CommandRegistry
-    visibility: VisibilityPolicy
     roles: RoleRegistry
     channels: dict[str, Channel]
     #: 出厂 LOCKED（nothing ships enabled 用在写权上）；人类通道经 switch_mode 开闸
@@ -121,7 +119,7 @@ def declare_roles(roles: RoleRegistry, *, engine_name: str, project: str) -> Non
                    provider="mcp-streamable-http", consumer="adapter.ai")
     # 监控端点的传输 seam（与 provider.toolhost 同款分工：Definition 归我们，
     # local 出厂实现是"回环 HTTP、只读、无鉴权"）。Monitor 此前只有读面没有传输，
-    # 补上它不新增权限面（可见性归 visibility、写权归 gate）。
+    # 补上它不新增权限面（框架不做可见性分级；写权归 gate）。
     # 消费者 = 人类监控面（adapter.gui）：面板轮询这个只读端点。
     roles.register("monitor.transport", Role.DEFINITION, provider=project)
     roles.register("monitor.transport.local", Role.PROVIDER,
@@ -130,7 +128,9 @@ def declare_roles(roles: RoleRegistry, *, engine_name: str, project: str) -> Non
     # 具体 command:<name> 能力行由注册时动态登记，不进出厂 map）
     roles.register("commands.registry", Role.CONSUMER, consumer="adapter.ai",
                    provider=project)
-    roles.register("visibility.policy", Role.DEFINITION, provider=project)
+    # 注：``visibility.policy`` 角色行随 ``mecha/visibility.py`` 于 2026-09-25 收口轮
+    # 删除（零消费者；见 ADR 两层传输上提的收口表）。**框架不做可见性分级**——
+    # 注册即可见，没有第二份"可见性真值"；升格触发条件见该表。
     # 编排与目录机制（consumer=真消费它的适配器层；spill/approval/skills 无
     # 真实消费者，进 DEFERRED_PROVIDERS 显式登记为诚实推迟）
     roles.register("provider.codeact", Role.PROVIDER, provider="actions-interp",
@@ -173,10 +173,9 @@ def assemble(*, root: Path, data_dir_name: str | None, engine: Engine,
     # 命令面 = Surface 上那一份（同一对象，非第二张表）：注册进它即可被
     # surface.commands.invoke 分派，capability map 也共用装配点角色表。
     commands = surface.commands
-    visibility = VisibilityPolicy()
     channels = {"human": Channel("human"), "ai": Channel("ai")}
     return Software(gate=gate, history=history, surface=surface, monitor=monitor,
                     jobs=jobs, spill=spill, artifacts=artifacts,
                     approval=approval, tools=tools, toolhost=toolhost,
-                    commands=commands, visibility=visibility, roles=roles,
+                    commands=commands, roles=roles,
                     channels=channels, authority=authority, layout=layout)

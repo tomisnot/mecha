@@ -358,7 +358,7 @@ def check_declaration_completeness(out: list[str]) -> None:
     单一来源 = `Software` 数据类字段（D-33 后装配点是唯一具名组装处，新机制
     必然出现在这里），不是手写清单（L8）。规则：每个字段名必须是某能力名的
     一个 token（按 `.`/`_` 切分）——`jobs`→`provider.jobs`、`tools`→
-    `tools.registry`、`visibility`→`visibility.policy`。
+    `tools.registry`、`commands`→`commands.registry`。
     豁免三个管线件（各自理由）：`roles`（map 机制自身，自我声明循环）、
     `channels`（Channel 的实例化，归 adapter.* 条目表达）、
     `layout`（路径解析管线，非能力 seam）。

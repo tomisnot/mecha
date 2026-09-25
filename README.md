@@ -17,7 +17,8 @@ GUI 平级——不是主子关系。软件不依附 dsh：dsh 消失时，数�
 
 ```
 mecha/          稳定脊椎：gate / history / surface / monitor / authority /
-                tools（工具形态层）/ toolhost（工具定义→宿主传输）/ visibility /
+                cockpit（Monitor 的只读传输）/ portfile（端口发现规则）/
+                tools（工具形态层）/ toolhost（工具定义→宿主传输）/
                 roles / format_version / data_layout / errors /
                 artifacts（宿主产物托管）+ assembly（具名装配点）
 mecha/providers/  Provider 层（dsh 的 churn 关在这里）：log_local / jobs /

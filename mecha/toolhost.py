@@ -22,8 +22,9 @@
 
 - 未实现 dsh/MCP Provider（本包不 import dsh）。**触发**：出现可注入
   ``ctx.tools`` 的真 dsh 宿主进程，且宿主需要工具面 opt-in 接线。
-- 未实现"传输层权限检查"：可见性过滤归 ``visibility.py``，写权归 Gate——
-  ToolHost 只是搬运，不新增第二套权限（加了就是 v1 的第二道门）。
+- 未实现"传输层权限检查"：写权归 Gate，而**框架不做可见性分级**（原
+  ``visibility.py`` 于 2026-09-25 收口轮删除——零消费者）——ToolHost 只是搬运，
+  不新增第二套权限（加了就是 v1 的第二道门）。
 - ``declare`` 不做注册表身份核对（local 实现拿到的 schemas 可能不是本实例
   registry 的产出）。**触发**：出现两个 registry 片交错的真实宿主。
 """

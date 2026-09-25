@@ -43,7 +43,7 @@ from mecha.providers.jobs import JobRegistry, JobState
 from mecha.providers.skills import SkillCatalog
 from mecha.providers.spill import LocalSpillStore
 from mecha.surface import Engine, EntryKind, ExecutionContext, Surface
-from mecha.visibility import ToolRestriction, VisibilityPolicy
+from mecha.tools import ToolRegistry, define_tool
 
 
 class ToyEngine(Engine):
@@ -178,39 +178,39 @@ def check_spill_opaque(out: list[str]) -> None:
                 _ok("未知定位符拒绝 + 教学 hint")
 
 
-def check_visibility_default_readable(out: list[str]) -> None:
-    pol = VisibilityPolicy()
-    pol.declare("my_query")
-    pol.declare("write_setting")
-    # 能抓坏的反面（L7）：未声明 restriction 的新动词默认可读（消 D-4）
-    if pol.is_visible("my_query"):
-        _ok("未声明的只读动词默认可见（不判 L3）")
+def check_registration_is_the_only_visibility(out: list[str]) -> None:
+    """D-4 的**实质承诺**：新项目自己发明的动词，注册即可用，不由任何第二份表判级。
+
+    （原 `visibility.py` 的 `ToolRestriction`/`VisibilityPolicy` 已于 2026-09-25 收口轮
+    删除——零消费者。**R10 自问**：那条旧断言验的是"可见性机制的语义"（declare /
+    restrict / 交集 / disposer），机制一删它就没有对象了；但它背后要保的承诺不是
+    "机制好用"，而是 **D-4 不复发**：没有任何东西能替项目把自有动词判成危险/隐藏。
+    所以这里换成**行为级**的同一承诺，而不是删掉了事。
+    """
+    surface = Surface(ToyEngine())
+    surface.register(EntryKind.QUERY, "my_query", lambda **kw: {"ok": True},
+                     called_by="check")
+    if [e.name for e in surface.entries(EntryKind.QUERY)] == ["my_query"] \
+            and surface.query("my_query") == {"ok": True}:
+        _ok("自有动词 register 即可分派（无需任何可见性声明——D-4 不复发）")
     else:
-        _fail(out, "新动词被默认拒绝（D-4 复发）")
-    # deny 单调 + disposer 恢复
-    dispose = pol.restrict(ToolRestriction(deny=["write_setting"]))
-    if not pol.is_visible("write_setting") and pol.is_visible("my_query"):
-        _ok("deny 只缩减可见集")
+        _fail(out, "新注册的动词不可用：可能又出现了第二份可见性真值")
+    if not any(hasattr(surface, name) for name in
+               ("visibility", "classify", "restrict", "visible")):
+        _ok("Surface 上没有可见性/分级 API（框架不做危险分级：注册即可见）")
     else:
-        _fail(out, "deny 语义不符")
-    dispose()
-    if pol.is_visible("write_setting"):
-        _ok("restriction disposer 撤销恢复可见（可逆副作用）")
+        _fail(out, "Surface 又长出了可见性或分级入口")
+
+    reg = ToolRegistry()
+    reg.register(define_tool(name="do_thing", description="中性检查用动作",
+                             parameters={},
+                             output_schema={"type": "object", "required": ["ok"]},
+                             execute=lambda: {"ok": True}))
+    if [s["name"] for s in reg.schemas()] == ["do_thing"] \
+            and reg.execute("do_thing", {})["is_error"] is False:
+        _ok("对偶：工具注册即可见可执行，schemas() 不做任何过滤（无第二份真值）")
     else:
-        _fail(out, "撤销 restriction 未恢复可见性")
-    # 交集：两层 restriction 取交
-    pol.restrict(ToolRestriction(allow=["my_query", "write_setting"]))
-    pol.restrict(ToolRestriction(deny=["my_query"]))
-    if pol.visible() == ["write_setting"]:
-        _ok("多层 restriction 取交集")
-    else:
-        _fail(out, f"交集不符：{pol.visible()}")
-    # 能抓坏：引用未知动词的 restriction 当场报错（fail loud at load）
-    try:
-        pol.restrict(ToolRestriction(deny=["typo_verb"]))
-        _fail(out, "拼错的动词名静默通过")
-    except ValueError:
-        _ok("未知动词名的 restriction 当场报错")
+        _fail(out, f"工具可见性被过滤：{reg.schemas()}")
 
 
 def check_skill_catalog_single_source(out: list[str]) -> None:
@@ -285,7 +285,7 @@ def main() -> int:
     check_jobs_single_owner(out)
     check_approval_fail_closed(out)
     check_spill_opaque(out)
-    check_visibility_default_readable(out)
+    check_registration_is_the_only_visibility(out)
     check_skill_catalog_single_source(out)
     check_codeact_logs_each_subcall(out)
     if out:
