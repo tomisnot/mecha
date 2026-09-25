@@ -28,6 +28,8 @@ docs/v2/        架构总纲（规范源：为什么这么设计）+ 架构详�
                 现在长什么样）+ 框架准入线（改动纪律 R 系列）+ 操作陷阱（工具与
                 测量层面的坑）+ 遗留登记 + ADR 制度 + notes/（ADR 四态树）
 docs/capabilities.md  生成的 capability map（禁止手改，改了判据红）
+docs/接入指南.md       新项目接入的**顺序表 + 每步验收 + 边界**（第一次接入先读它；
+                      也是 n=3 那个"陌生项目"的持久入口）
 scripts/        gen_capability_map.py（map 生成器）
 ```
 
@@ -36,6 +38,9 @@ scripts/        gen_capability_map.py（map 生成器）
 mecha 是**领域无关框架**——接入 = 实现 `Engine` 的四个必方法（schema/run/
 summary/estimate），经具名装配点 `assemble` 组装。下面是一个自包含的最小例子
 （不依赖任何外部项目，可直接跑）：
+
+> **要真接一个项目**（不只是跑这个最小例子）→ 走 [`docs/接入指南.md`](docs/接入指南.md)：
+> 六步顺序 + 每步验收 + 「该由谁提供」（**别把领域塞进框架**）+ n=3 要回答的四个问题。
 
 ```python
 from pathlib import Path
