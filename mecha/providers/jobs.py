@@ -17,7 +17,8 @@ from __future__ import annotations
 
 import itertools
 import threading
-from collections.abc import Callable
+import time
+from collections.abc import Callable, Mapping
 from enum import Enum
 
 from ..errors import MechaError
@@ -33,20 +34,45 @@ class JobState(str, Enum):
 
 
 class Job:
-    """一个后台 job 的句柄。"""
+    """一个后台 job 的句柄（Job Contract 的单位）。
 
-    def __init__(self, jid: int, fn: Callable[[ExecutionContext], object]) -> None:
+    ``result_ref`` 与命令面 ``CommandResult.result_ref`` 同语义：**不透明的
+    宿主结果引用**（对 ML 是 ``{"kind": "ml_command", "run_ids": [...]}``），
+    由宿主经 ``result_ref_fn`` 从 job 结果里提取。Job 自身不解释它。
+    """
+
+    def __init__(self, jid: int, fn: Callable[[ExecutionContext], object], *,
+                 command: str = "") -> None:
         self.id = f"job-{jid}"
+        self.command = command
         self._fn = fn
         self.state = JobState.PENDING
         self.result: object = None
+        self.result_ref: Mapping[str, object] | None = None
         self.error: str = ""
         self.context = ExecutionContext()
+        self.started_at: float | None = None
+        self.finished_at: float | None = None
+        self._result_ref_fn = None
         self._done = threading.Event()
 
     def status(self) -> dict:
-        return {"id": self.id, "state": self.state.value,
-                "progress": self.context.progress()}
+        return self.to_dict()
+
+    def to_dict(self) -> dict:
+        out = {"id": self.id, "state": self.state.value,
+               "progress": self.context.progress()}
+        if self.command:
+            out["command"] = self.command
+        if self.result_ref is not None:
+            out["result_ref"] = dict(self.result_ref)
+        if self.error:
+            out["error"] = self.error
+        if self.started_at is not None:
+            out["started_at"] = self.started_at
+        if self.finished_at is not None:
+            out["finished_at"] = self.finished_at
+        return out
 
     def wait(self, timeout: float | None = None) -> bool:
         return self._done.wait(timeout)
@@ -60,9 +86,18 @@ class JobRegistry:
         self._ids = itertools.count(1)
         self._lock = threading.Lock()
 
-    def submit(self, fn: Callable[[ExecutionContext], object]) -> Job:
+    def submit(self, fn: Callable[[ExecutionContext], object], *,
+               command: str = "",
+               result_ref_fn: Callable[[object], Mapping[str, object] | None]
+               | None = None) -> Job:
+        """提交一个后台 job。
+
+        ``result_ref_fn`` 从 job 结果提取不透明结果引用；提取自身抛错归
+        job 的 ``error``（只影响引用，不影响 job 结果——引用是可选的）。
+        """
         with self._lock:
-            job = Job(next(self._ids), fn)
+            job = Job(next(self._ids), fn, command=command)
+            job._result_ref_fn = result_ref_fn
             self._jobs[job.id] = job
         t = threading.Thread(target=self._run, args=(job,), daemon=True)
         t.start()
@@ -70,6 +105,7 @@ class JobRegistry:
 
     def _run(self, job: Job) -> None:
         job.state = JobState.RUNNING
+        job.started_at = time.time()
         try:
             if job.context.cancelled:
                 job.state = JobState.CANCELLED
@@ -77,10 +113,19 @@ class JobRegistry:
                 job.result = job._fn(job.context)
                 job.state = (JobState.CANCELLED if job.context.cancelled
                              else JobState.DONE)
+                ref_fn = getattr(job, "_result_ref_fn", None)
+                if ref_fn is not None:
+                    try:
+                        ref = ref_fn(job.result)
+                        if ref is not None:
+                            job.result_ref = dict(ref)
+                    except Exception as e:  # noqa: BLE001 - 引用失败不改 job 结果
+                        job.error = f"result_ref 提取失败：{type(e).__name__}: {e}"
         except Exception as e:  # noqa: BLE001 - 记录后归为 failed，不外抛
             job.error = f"{type(e).__name__}: {e}"
             job.state = JobState.FAILED
         finally:
+            job.finished_at = time.time()
             job._done.set()
 
     def get(self, jid: str) -> Job:
@@ -90,8 +135,14 @@ class JobRegistry:
                              hint="用 submit 返回的 Job.id")
         return job
 
+    def wait(self, jid: str, timeout: float | None = None) -> dict:
+        """等待 job 结束并返回状态（local 实现是轮询替代 dsh 的唤醒语义）。"""
+        job = self.get(jid)
+        job.wait(timeout)
+        return job.to_dict()
+
     def cancel(self, jid: str) -> None:
         self.get(jid).context.request_cancel()
 
     def list(self) -> list[dict]:
-        return [j.status() for j in self._jobs.values()]
+        return [j.to_dict() for j in self._jobs.values()]

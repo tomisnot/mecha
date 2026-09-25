@@ -33,6 +33,7 @@ CHECKS = [
     "checks/vocabulary_selfcheck.py",
     "checks/l8_prose_count_selfcheck.py",
     "checks/phase6_command_surface_selfcheck.py",
+    "checks/phase7_job_contract_selfcheck.py",
     "checks/phase5_el_selfcheck.py",
     "checks/phase5_hub_selfcheck.py",
     "checks/phase5_bridge_selfcheck.py",

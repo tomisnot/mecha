@@ -18,6 +18,7 @@ append-only：只追加、永不改写；seq 单调递增；可从盘上续。�
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
@@ -79,6 +80,9 @@ class History:
         self._events: list[Event] = []
         self._seq = 0
         self._subs: list[Callable[[Event], None]] = []
+        # 同一进程内的写口互斥：Job Contract 让命令在后台线程里跑，没有这把锁
+        # 两个线程会各自 ++seq，破坏"seq 单调"不变量（跨进程仍靠写租约）。
+        self._lock = threading.RLock()
         if sink is not None:
             self._resume(sink)
 
@@ -93,12 +97,14 @@ class History:
         if not key.strip():
             raise MechaError("事件 key 不能为空", kind="bad_event",
                              hint="append 必须带非空 key")
-        self._seq += 1
-        ev = Event(self._seq, key, value, actor, reason, call_id)
-        self._events.append(ev)
-        if self._sink is not None:
-            self._sink.append(ev.to_record())
-        for cb in list(self._subs):        # 快照迭代：回调里可退订
+        with self._lock:
+            self._seq += 1
+            ev = Event(self._seq, key, value, actor, reason, call_id)
+            self._events.append(ev)
+            if self._sink is not None:
+                self._sink.append(ev.to_record())
+            subs = list(self._subs)      # 快照迭代：回调里可退订
+        for cb in subs:
             try:
                 cb(ev)
             except Exception:              # noqa: BLE001 - 一个坏订阅者不拖垮写口
@@ -124,11 +130,13 @@ class History:
 
     @property
     def last_seq(self) -> int:
-        return self._seq
+        with self._lock:
+            return self._seq
 
     def events(self) -> list[Event]:
         """只读副本（append-only：外部拿不到可改的内部列表）。"""
-        return list(self._events)
+        with self._lock:
+            return list(self._events)
 
     def close(self) -> None:
         """关停：释放 sink 的写租约（若有）。宿主关停/租约交接用；幂等。"""
@@ -137,4 +145,5 @@ class History:
             closer()
 
     def snapshot(self) -> dict[str, object]:
-        return fold(self._events)
+        with self._lock:
+            return fold(self._events)
