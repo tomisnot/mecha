@@ -4,7 +4,8 @@
    ——v1 的 D-21。判据：构造"第二个 registry 接管同一 job 集"必须失败（注册表
    实例即所有权，无共享可变状态）。
 2. Approval fail closed：无决策器 → 拒绝；决策器抛错 → 拒绝（不静默放行）。
-3. Spill 定位符不透明：retrieve 只认 put 返回值；消费者拼路径必须失败。
+3. 「落盘 + 不透明定位符」只有一套：原 Spill 已删（零消费者且无发起方）；其
+   "消费者不得拼路径、未知句柄必须失败"的承诺由 artifacts 承接（phase8 覆盖）。
 4. 可见性默认可读（消 D-4）：新动词不声明任何 restriction 即可见；deny 单调、
    撤销后恢复；引用未知动词的 restriction 当场报错（fail loud）。
 5. Skill 目录单一来源：未注册先 declare → 红；注册后目录自动含该项（消 16→18 漂移）。
@@ -17,7 +18,7 @@
 
 ## Known Limitations and Deferred Work
 
-- dsh 侧 Provider（ctx.jobs/spillStore/approval 注入形态）无真宿主可测，
+- dsh 侧 Provider（ctx.jobs/approval 注入形态）无真宿主可测，
   其接线判据归 Phase 5；这里测 local 出厂默认 + Definition 语义。
 - Jobs 判据测的是"所有权模型"（实例即注册表），不是线程正确性（竞态压测
   超出判据范围，归真实引擎接入时）。
@@ -41,7 +42,6 @@ from mecha.providers.approval import LocalApproval
 from mecha.providers.codeact import Action, CodeAct
 from mecha.providers.jobs import JobRegistry, JobState
 from mecha.providers.skills import SkillCatalog
-from mecha.providers.spill import LocalSpillStore
 from mecha.surface import Engine, EntryKind, ExecutionContext, Surface
 from mecha.tools import ToolRegistry, define_tool
 
@@ -150,26 +150,32 @@ def check_approval_fail_closed(out: list[str]) -> None:
         _ok("每次请求都重新问（无规则记忆）")
 
 
-def check_spill_opaque(out: list[str]) -> None:
-    with tempfile.TemporaryDirectory() as td:
-        layout = resolve_data_dir(Path(td), "projdata")
-        store = LocalSpillStore(layout, threshold_bytes=10)
-        # 不许误报：小载荷不 spill
-        if store.should_spill("tiny"):
-            _fail(out, "小载荷被判需 spill（阈值失效）")
-        else:
-            _ok("阈值以下不 spill")
-        big = "x" * 100
-        loc = store.put(big)
-        if store.retrieve(loc) == big:
-            _ok("locator 取回一致")
-        else:
-            _fail(out, "spill 取回不符")
-        # 能抓坏：消费者拼路径（假设本地布局）必须失败
-        if loc.startswith("$") and str(layout.data_dir) not in loc:
-            _ok("定位符不透明（不含路径）")
-        else:
-            _fail(out, f"定位符泄漏路径：{loc}")
+def check_provider_layer_has_one_locator(out: list[str]) -> None:
+    """「落盘 + 不透明定位符」这套语义在本层**只有一套**（原 Spill 已删除）。
+
+    **R10/R13 复查**：原 ``check_spill_opaque``（阈值 + `$id` 取回 + 不含路径）随
+    ``providers/spill.py`` 一起删除，但它守的承诺**不是**"spill 存在"——是
+    "**不透明定位符：消费者不得拼路径，未知/畸形句柄必须失败**"。这条承诺**已由
+    artifacts 承接并被 phase8 完整覆盖**（`phase8_artifact_contract_selfcheck.py`
+    的 `:9` locator 不含路径分隔符、`:14` 未知/畸形 ⇒ `bad_artifact_locator`、
+    `:100` `check_opaque_locator`、`:193` 非教学错误即红）。
+    ⇒ 删它**不留真空**。本组只做一条**便宜的重复面核对**：模块级不再有第二套
+    "带阈值的落盘"入口（谁要造第三套，得先有具名消费者 + ADR；R13：不写"那个
+    东西必须不存在"的实现痕迹守卫，只核对**可观测的服务面**）。
+    """
+    import mecha.providers as providers
+
+    names = [n for n in dir(providers) if not n.startswith("_")]
+    if not any("spill" in n.lower() for n in names):
+        _ok("Provider 层不再导出任何 spill 形态的服务（唯一落盘机制是 artifacts）")
+    else:
+        _fail(out, f"Provider 层又出现 spill 形态的服务：{names}")
+    # 对偶（不许误报）：正经那套还在，且没被这条核对误伤
+    try:
+        from mecha.artifacts import LocalArtifactStore  # noqa: F401
+        _ok("对偶：artifacts（唯一的不透明定位符机制）仍在且可取用")
+    except ImportError as exc:                       # pragma: no cover
+        _fail(out, f"artifacts 不可用（过度删除）：{exc}")
         try:
             store.retrieve("$nonexistent")
             _fail(out, "假定位符竟取回成功")
@@ -284,7 +290,7 @@ def main() -> int:
     print("Phase 3 装配判据：")
     check_jobs_single_owner(out)
     check_approval_fail_closed(out)
-    check_spill_opaque(out)
+    check_provider_layer_has_one_locator(out)
     check_registration_is_the_only_visibility(out)
     check_skill_catalog_single_source(out)
     check_codeact_logs_each_subcall(out)

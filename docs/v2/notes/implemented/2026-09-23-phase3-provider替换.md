@@ -58,3 +58,12 @@ Decision 里"autonomy op 名表 → ToolRestriction"那一条**不再成立**—
   不是把覆盖一起删掉。
 - **升格触发**：出现"同一宿主要对不同 actor 暴露不同工具集"的真实需求时再加（届时写 ADR）。
 - 记录在 ADR `两层传输上提` 的收口表第 4 行。
+
+**`Spill` 也已删除**（同一天，收口表第 6 行，裁决 (c)）：`providers/spill.py` 零消费者，
+且**连发起方都没有**（框架内没有一处会问 `should_spill` 再 `put`；EL 只有两条"待接线"
+注释、ML 零命中）。本篇 Decision 里"**Spill**：`LocalSpillStore` 回不透明定位符 `$id`"
+那一条**不再成立**——被撤销的同样是**机制**：它要保的"不透明定位符 + 消费者不得拼路径"
+承诺由核心 `artifacts` 承接，判据覆盖在 `checks/phase8_artifact_contract_selfcheck.py`。
+原 `check_spill_opaque` 随之删除（R10/R13：换判据不留真空，也不写"那个东西必须不存在"
+的实现痕迹守卫）。代价是**放弃"核心自产大文本截断落盘"这个能力位**——将来真要它，正确
+形态是调用方自己决定要不要 `artifacts.put(text.encode())`。

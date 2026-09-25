@@ -17,15 +17,13 @@
 | `provider.approval` | definition | mecha | — |
 | `provider.approval.local` | provider | fail-closed | — |
 | `provider.artifacts` | definition | mecha | — |
-| `provider.artifacts.local` | provider | local-file | — |
+| `provider.artifacts.local` | provider | local-file | adapter.ai |
 | `provider.codeact` | provider | actions-interp | adapter.ai |
 | `provider.jobs` | definition | mecha | — |
 | `provider.jobs.local` | provider | thread | tools.registry |
 | `provider.log` | definition | mecha | — |
 | `provider.log.local` | provider | jsonl | history |
 | `provider.skills` | provider | catalog | — |
-| `provider.spill` | definition | mecha | — |
-| `provider.spill.local` | provider | local-file | — |
 | `provider.toolhost` | definition | mecha | — |
 | `provider.toolhost.local` | provider | in-process | — |
 | `provider.toolhost.mcp` | provider | mcp-streamable-http | adapter.ai |

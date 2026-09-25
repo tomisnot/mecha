@@ -28,7 +28,6 @@ from .monitor import Monitor, Summarizer
 from .providers.approval import LocalApproval
 from .providers.jobs import JobRegistry
 from .providers.log_local import JsonlLogSink
-from .providers.spill import LocalSpillStore
 from .roles import Role, RoleRegistry
 from .surface import Engine, Surface
 from .toolhost import LocalToolHost
@@ -44,8 +43,9 @@ class Software:
     surface: Surface
     monitor: Monitor
     jobs: JobRegistry
-    spill: LocalSpillStore
-    #: 宿主产物托管（不透明 locator；与 spill 分工见 artifacts 模块 docstring）
+    #: 宿主产物托管（不透明 locator）——**核心唯一的"落盘 + 句柄"机制**：
+    #: 原 ``spill``（带体积阈值的文本投递）已于 2026-09-25 收口轮删除（零消费者
+    #: 且无发起方）；"该不该截断"是调用方的策略，不是 seam 的职责。
     artifacts: LocalArtifactStore
     approval: LocalApproval
     tools: ToolRegistry
@@ -90,18 +90,19 @@ def declare_roles(roles: RoleRegistry, *, engine_name: str, project: str) -> Non
     # 操作者适配器（平级，不是主子）
     roles.register("adapter.gui", Role.CONSUMER, consumer="human", provider=project)
     roles.register("adapter.ai", Role.CONSUMER, consumer="ai", provider=project)
-    # Provider 层四 seam（consumer 写真实消费它的能力；"是否真有人引用"由
+    # Provider 层 seam（consumer 写真实消费它的能力；"是否真有人引用"由
     # capability_map 守卫 grep 实现符号独立证明——见 check_real_consumers）。
     roles.register("provider.log", Role.DEFINITION, provider=project)
     roles.register("provider.log.local", Role.PROVIDER, provider="jsonl", consumer="history")
     roles.register("provider.jobs", Role.DEFINITION, provider=project)
     roles.register("provider.jobs.local", Role.PROVIDER, provider="thread", consumer="tools.registry")
-    roles.register("provider.spill", Role.DEFINITION, provider=project)
-    roles.register("provider.spill.local", Role.PROVIDER, provider="local-file")
-    # 宿主产物托管：Definition 归我们，local 写文件；无内置消费者（宿主拿 locator
-    # 自行落进 result_ref / History），进 capability_map_selfcheck 的推迟登记。
+    # 宿主产物托管：Definition 归我们，local 写文件。消费者 = AI 操作面（ML 真消费：
+    # ml_mecha/assembly.py 把它接进 history 事件写入，大结果只留不透明 locator）。
+    # （原 ``provider.spill`` / ``provider.spill.local`` 两行随 ``providers/spill.py``
+    # 于 2026-09-25 收口轮删除：零消费者且无发起方。）
     roles.register("provider.artifacts", Role.DEFINITION, provider=project)
-    roles.register("provider.artifacts.local", Role.PROVIDER, provider="local-file")
+    roles.register("provider.artifacts.local", Role.PROVIDER, provider="local-file",
+                   consumer="adapter.ai")
     roles.register("provider.approval", Role.DEFINITION, provider=project)
     roles.register("provider.approval.local", Role.PROVIDER, provider="fail-closed")
     # 工具形态层与可见性
@@ -131,7 +132,7 @@ def declare_roles(roles: RoleRegistry, *, engine_name: str, project: str) -> Non
     # 注：``visibility.policy`` 角色行随 ``mecha/visibility.py`` 于 2026-09-25 收口轮
     # 删除（零消费者；见 ADR 两层传输上提的收口表）。**框架不做可见性分级**——
     # 注册即可见，没有第二份"可见性真值"；升格触发条件见该表。
-    # 编排与目录机制（consumer=真消费它的适配器层；spill/approval/skills 无
+    # 编排与目录机制（consumer=真消费它的适配器层；approval/skills 无
     # 真实消费者，进 DEFERRED_PROVIDERS 显式登记为诚实推迟）
     roles.register("provider.codeact", Role.PROVIDER, provider="actions-interp",
                    consumer="adapter.ai")
@@ -165,7 +166,6 @@ def assemble(*, root: Path, data_dir_name: str | None, engine: Engine,
     surface = Surface(engine, roles=roles)
     monitor = Monitor(history.events, summarizer)
     jobs = JobRegistry()
-    spill = LocalSpillStore(layout)
     artifacts = LocalArtifactStore(layout)
     approval = LocalApproval(approval_decider)
     tools = ToolRegistry()
@@ -175,7 +175,7 @@ def assemble(*, root: Path, data_dir_name: str | None, engine: Engine,
     commands = surface.commands
     channels = {"human": Channel("human"), "ai": Channel("ai")}
     return Software(gate=gate, history=history, surface=surface, monitor=monitor,
-                    jobs=jobs, spill=spill, artifacts=artifacts,
+                    jobs=jobs, artifacts=artifacts,
                     approval=approval, tools=tools, toolhost=toolhost,
                     commands=commands, roles=roles,
                     channels=channels, authority=authority, layout=layout)
