@@ -28,4 +28,5 @@ __all__ = [
     "commands",
     "scopes",
     "artifacts",
+    "toolhost",
 ]

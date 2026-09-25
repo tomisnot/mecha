@@ -24,6 +24,8 @@
 | `provider.skills` | provider | catalog | — |
 | `provider.spill` | definition | mecha | — |
 | `provider.spill.local` | provider | local-file | — |
+| `provider.toolhost` | definition | mecha | — |
+| `provider.toolhost.local` | provider | in-process | — |
 | `surface` | definition | mecha | — |
 | `surface.engine` | provider | unconfigured | surface |
 | `tools.registry` | consumer | mecha | adapter.ai |

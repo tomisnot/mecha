@@ -31,6 +31,7 @@ from .providers.log_local import JsonlLogSink
 from .providers.spill import LocalSpillStore
 from .roles import Role, RoleRegistry
 from .surface import Engine, Surface
+from .toolhost import LocalToolHost
 from .tools import ToolRegistry
 from .visibility import VisibilityPolicy
 
@@ -49,6 +50,9 @@ class Software:
     artifacts: LocalArtifactStore
     approval: LocalApproval
     tools: ToolRegistry
+    #: 工具面的宿主传输 seam（local 出厂 = 进程内直调；dsh/MCP 是另一个
+    #: Provider）。托管的就是上面那份 ``tools``（同一对象，非第二张表）。
+    toolhost: LocalToolHost
     #: 通用命令面。**同一对象**即 ``surface.commands``（不是第二张注册表）：
     #: 装配点这里多一个取用入口，是为了让宿主"只拿 Software 就能挂命令"，
     #: 而不必去摸 Surface 内部（L7 单一来源）。
@@ -104,6 +108,12 @@ def declare_roles(roles: RoleRegistry, *, engine_name: str, project: str) -> Non
     roles.register("provider.approval.local", Role.PROVIDER, provider="fail-closed")
     # 工具形态层与可见性
     roles.register("tools.registry", Role.CONSUMER, consumer="adapter.ai", provider=project)
+    # 工具面的宿主传输 seam（定义与传输分开）：Definition 归我们，local 出厂
+    # 实现是进程内直调；dsh/MCP 侧注册进 ctx.tools 的是另一个 Provider。
+    # provider.toolhost.local 目前无内置消费者（声明/投影/调用由适配器层取用），
+    # 进 capability_map_selfcheck 的推迟登记（不许沉默推迟）。
+    roles.register("provider.toolhost", Role.DEFINITION, provider=project)
+    roles.register("provider.toolhost.local", Role.PROVIDER, provider="in-process")
     # 通用命令面（命令是注册项：Surface.commands / Software.commands 同一对象；
     # 具体 command:<name> 能力行由注册时动态登记，不进出厂 map）
     roles.register("commands.registry", Role.CONSUMER, consumer="adapter.ai",
@@ -147,6 +157,7 @@ def assemble(*, root: Path, data_dir_name: str | None, engine: Engine,
     artifacts = LocalArtifactStore(layout)
     approval = LocalApproval(approval_decider)
     tools = ToolRegistry()
+    toolhost = LocalToolHost(tools)
     # 命令面 = Surface 上那一份（同一对象，非第二张表）：注册进它即可被
     # surface.commands.invoke 分派，capability map 也共用装配点角色表。
     commands = surface.commands
@@ -154,6 +165,6 @@ def assemble(*, root: Path, data_dir_name: str | None, engine: Engine,
     channels = {"human": Channel("human"), "ai": Channel("ai")}
     return Software(gate=gate, history=history, surface=surface, monitor=monitor,
                     jobs=jobs, spill=spill, artifacts=artifacts,
-                    approval=approval, tools=tools,
+                    approval=approval, tools=tools, toolhost=toolhost,
                     commands=commands, visibility=visibility, roles=roles,
                     channels=channels, authority=authority, layout=layout)

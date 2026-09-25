@@ -163,6 +163,7 @@ DEFERRED_PROVIDERS = frozenset({
     "provider.artifacts.local",   # 宿主产物托管待 ML 宿主真实接入（无内置消费者）
     "provider.approval.local",    # 细粒度每次写问人待 ctx.approval 接线
     "provider.skills",            # skill 目录待宿主 skill 面接线
+    "provider.toolhost.local",    # 工具定义→宿主传输待可注入 ctx.tools 的真宿主
 })
 
 #: 有真实消费者的 provider → (实现符号, 自身模块路径子串)。
