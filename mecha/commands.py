@@ -50,8 +50,9 @@
 - Gate 审计键 ``command.<name>`` 要求宿主的 ``validate`` 接受该前缀；宿主
   validator 若拒绝未知键，审计写入会 fail loud（``command_audit_denied``），
   框架不替宿主放行——这是刻意的，见 ADR 的 Consequences。
-- ``approval_required`` / ``cancel_supported`` 目前**只是声明**：命令面不据此
-  改变分派（审批归宿主 validator、取消归 Job Provider）。``scope`` 已可由
+- ``approval_required`` 目前**只是声明**：命令面不据此改变分派（审批归宿主
+  validator）。``cancel_supported`` 已由宿主从声明面取给 Job Provider 消费
+  （``JobRegistry`` 对不可取消的 job 拒绝 ``cancel``）；``scope`` 已可由
   ``bind_scope_policy`` 注入的 ScopePolicy 消费（不注入则不做过滤）。
 - 不内置并发控制：同命令并发 invoke 的串行化归宿主 Job Provider（n=1 无此压力）。
 - 不校验 handler 形参与 ``parameters`` 声明的**逐字一致**：只校验调用时**传进来

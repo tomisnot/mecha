@@ -15,6 +15,8 @@ interrupted）。dsh 侧 Provider 注册到 ``ctx.jobs``（注入宿主句柄，
   "收尾时 ``state`` 最后一次写"（见 ``JobRegistry._run``）⇒ 读到终态即
   ``error``/``result_ref``/``finished_at`` 已定稿。``to_dict()`` 仍不是跨字段
   事务快照（``progress`` 与 ``state`` 可能取自不同瞬间）。
+- ``cancel_supported`` 只钉"注册表拒不拒绝取消请求"：它**不保证**声明可取消
+  的命令真能在运行中被打断（协作式检查点归宿主；本层不杀线程）。
 """
 
 from __future__ import annotations
@@ -48,12 +50,18 @@ class Job:
     ``state=FAILED`` 的原因；``ref_error`` 只说"可选引用没提取出来"，此时
     job 可能是 ``state=DONE``。消费者用 ``if error:`` 判 job 失败不会被
     引用提取失败误伤——一个字段不许同时表示两件事。
+
+    ``cancel_supported`` 是**从命令声明带过来的事实**（宿主的
+    ``CommandSpec.cancel_supported``），不是本层猜的：False 的 job 调
+    ``JobRegistry.cancel`` 会被结构化拒绝（``job_not_cancellable``），
+    不静默接受一个做不到的取消（第三轮审查：声明必须被消费才算契约）。
     """
 
     def __init__(self, jid: int, fn: Callable[[ExecutionContext], object], *,
-                 command: str = "") -> None:
+                 command: str = "", cancel_supported: bool = True) -> None:
         self.id = f"job-{jid}"
         self.command = command
+        self.cancel_supported = cancel_supported
         self._fn = fn
         self.state = JobState.PENDING
         self.result: object = None
@@ -71,6 +79,7 @@ class Job:
 
     def to_dict(self) -> dict:
         out = {"id": self.id, "state": self.state.value,
+               "cancel_supported": self.cancel_supported,
                "progress": self.context.progress()}
         if self.command:
             out["command"] = self.command
@@ -107,6 +116,7 @@ class JobRegistry:
 
     def submit(self, fn: Callable[[ExecutionContext], object], *,
                command: str = "",
+               cancel_supported: bool = True,
                result_ref_fn: Callable[[object], Mapping[str, object] | None]
                | None = None) -> Job:
         """提交一个后台 job。
@@ -114,9 +124,14 @@ class JobRegistry:
         ``result_ref_fn`` 从 job 结果提取不透明结果引用；提取自身抛错写 job 的
         ``ref_error``（只影响可选引用，不影响 job 结果与 ``error``——后者只说
         job 失败）。
+
+        ``cancel_supported`` 由宿主从该命令的声明面取来（本层不认识命令面，
+        只保管这个事实）：False ⇒ 该 job 的 ``cancel`` 被结构化拒绝。默认
+        True 保持旧调用零改动。
         """
         with self._lock:
-            job = Job(next(self._ids), fn, command=command)
+            job = Job(next(self._ids), fn, command=command,
+                      cancel_supported=cancel_supported)
             job._result_ref_fn = result_ref_fn
             self._jobs[job.id] = job
         t = threading.Thread(target=self._run, args=(job,), daemon=True)
@@ -189,8 +204,24 @@ class JobRegistry:
     def cancel(self, jid: str) -> None:
         """请求取消。取句柄经 ``get``（持锁读），真正的取消是
         ``context.request_cancel()``——``threading.Event`` 自身线程安全，
-        不需要注册表锁；注册表锁只保护 ``_jobs`` 这张表。"""
-        self.get(jid).context.request_cancel()
+        不需要注册表锁；注册表锁只保护 ``_jobs`` 这张表。
+
+        ``cancel_supported=False`` 的 job **拒收**取消：抛
+        ``MechaError(kind="job_not_cancellable")``，且**不**置位
+        ``context.cancel_event``——静默接受一个做不到的取消会让调用方以为
+        "已经停了"，是最坏的一类失败（第三轮审查：声明不被消费就只是注释）。
+        """
+        job = self.get(jid)
+        if not job.cancel_supported:
+            where = f"命令 {job.command!r} 的" if job.command else "该 job 的"
+            raise MechaError(
+                f"job {jid!r} 不可取消：{where}声明是 cancel_supported=False",
+                kind="job_not_cancellable",
+                hint="这个 job 没有取消点（中断不安全或内部不可打断）；"
+                     "取消请求已被拒绝，它的取消标志未被置位",
+                suggest="用 wait/status 轮询到终态再读结果，不要反复重试 cancel",
+            )
+        job.context.request_cancel()
 
     def list(self) -> list[dict]:
         """列出全部 job 状态（轮询面）。

@@ -19,6 +19,10 @@ Job Contract 是第二个宿主（ML Toolbox）逼出的通用机制：训练与
     （History 的进程内写口互斥；跨进程仍靠写租约）；并发 submit 下反复
     ``list()`` 零异常（读侧取锁快照，P1-1 回归）。
   E 不许误报（L7）：合规 job 全绿；list/status 形状稳定。
+  F 可取消性是真契约（第三轮审查）：``cancel_supported=False`` 的 job 调
+    ``cancel`` 必须抛 ``MechaError(kind="job_not_cancellable")`` 且**不得静默
+    取消**（``ctx.cancelled`` 保持 False、job 照常跑到 done、结果完整）；
+    ``cancel_supported=True`` 照旧可取消（旧断言不回归）。
 
 用法：python checks/phase7_job_contract_selfcheck.py
 退出码：0 全绿；1 有失败。
@@ -29,6 +33,9 @@ Job Contract 是第二个宿主（ML Toolbox）逼出的通用机制：训练与
   要跨重启时再做，ADR 里登记）。
 - 不测真实并发池/优先级/GPU 队列：local 仍是"每 job 一个 daemon 线程"，
   并发度归宿主自己的线程模型。
+- ``cancel_supported`` 只钉"注册表拒不拒绝取消"这一层：**不保证**被声明为可
+  取消的命令真的能在运行中被打断（那是协作式检查点的事，归宿主；见 ML 侧的
+  取消语义判据）。
 """
 from __future__ import annotations
 
@@ -42,6 +49,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from mecha.assembly import assemble  # noqa: E402
+from mecha.errors import MechaError  # noqa: E402
 from mecha.gate import accept_all  # noqa: E402
 from mecha.providers.jobs import JobState  # noqa: E402
 from mecha.surface import Engine  # noqa: E402
@@ -331,6 +339,101 @@ def check_no_false_alarm(out: list[str]) -> None:
             _fail(out, f"合规 job 被误报：{ok_job.to_dict()}")
 
 
+def check_cancel_supported_is_a_real_contract(out: list[str]) -> None:
+    """F：``cancel_supported=False`` 必须真拒取消，且不打断 job。
+
+    构造用"忽略 ``ctx.cancelled``、等信号才返回"的函数（不是 sleep 赌时序）：
+    取消请求一定发生在 fn 返回之前。若注册表静默接受取消，终态会变成
+    ``cancelled``，本判据当场红；修复前 ``submit`` 根本收不下这个参数（TypeError），
+    同样是红——判据不是哑的。
+
+    对照片用**同一条 fn**、只把声明翻成可取消，证明下面那条"拒绝取消"不是
+    因为取消机制整体坏了。
+    """
+    with _with_software() as sw:
+        release = threading.Event()
+        started = threading.Event()
+
+        def runs_until_released(ctx):
+            started.set()
+            release.wait(10)                # 故意不查 ctx.cancelled
+            return {"ok": True, "value": 1}
+
+        job = sw.jobs.submit(runs_until_released, command="uncancellable",
+                             cancel_supported=False)
+        if not started.wait(5):
+            _fail(out, "声明不可取消的 job 未启动")
+            release.set()
+            return
+        d = job.to_dict()
+        if d.get("cancel_supported") is False:
+            _ok("轮询面可见 cancel_supported=False（能不能取消不用猜）")
+        else:
+            _fail(out, f"cancel_supported=False 在 job 状态里不可见：{d}")
+
+        rejected: MechaError | None = None
+        try:
+            sw.jobs.cancel(job.id)
+        except MechaError as e:
+            rejected = e
+        if rejected is not None and rejected.kind == "job_not_cancellable":
+            _ok("cancel(不可取消的 job) ⇒ MechaError(kind=job_not_cancellable)")
+        else:
+            _fail(out, f"不可取消的 job 取消没被结构化拒绝：{rejected!r}")
+        if rejected is not None and rejected.hint.strip():
+            _ok("拒绝带教学 hint（L4：错误消息是模型/人的 UI）")
+        else:
+            _fail(out, f"job_not_cancellable 没有可读 hint：{rejected!r}")
+        if job.context.cancelled is False:
+            _ok("拒绝是**不静默**的：ctx.cancelled 未被置位（没有半取消）")
+        else:
+            _fail(out, "取消被拒了，但取消标志已置位（静默取消）")
+
+        release.set()
+        if not job.wait(10):
+            _fail(out, "不可取消的 job 未结束")
+            return
+        if job.state is JobState.DONE and job.result == {"ok": True, "value": 1}:
+            _ok("被拒取消的 job 照常跑到 done，结果完整（拒绝 ≠ 打断）")
+        else:
+            _fail(out, f"被拒取消改坏了 job 终态：{job.to_dict()}")
+
+        # --- 对照片：同一条 fn，声明可取消 ⇒ 照旧可取消（旧断言不回归）---
+        release.clear()
+        started.clear()
+        ok_job = sw.jobs.submit(runs_until_released, command="cancellable",
+                                cancel_supported=True)
+        if not started.wait(5):
+            _fail(out, "对照片：可取消的 job 未启动")
+            release.set()
+            return
+        if ok_job.to_dict().get("cancel_supported") is True:
+            _ok("对照片：声明可取消的 job 状态里 cancel_supported=True")
+        else:
+            _fail(out, f"对照片 cancel_supported 不符：{ok_job.to_dict()}")
+        try:
+            sw.jobs.cancel(ok_job.id)
+        except MechaError as e:
+            _fail(out, f"声明可取消的 job 取消竟被拒：{e}")
+            release.set()
+            return
+        release.set()
+        if ok_job.wait(10) and ok_job.state is JobState.CANCELLED:
+            _ok("对照片：可取消的 job 照旧可取消（终态 cancelled）")
+        else:
+            _fail(out, f"可取消路径回归：{ok_job.to_dict()}")
+
+        # 默认值向后兼容：不传 cancel_supported 的 job 仍可取消
+        plain = sw.jobs.submit(runs_until_released, command="default_flag")
+        if plain.cancel_supported is True:
+            _ok("未声明时的默认仍是可取消（旧调用零改动，不静默变严）")
+        else:
+            _fail(out, "默认值变了：未声明的 job 变成不可取消（向后不兼容）")
+        sw.jobs.cancel(plain.id)
+        release.set()
+        plain.wait(10)
+
+
 def main() -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -341,6 +444,7 @@ def main() -> int:
     check_ref_extraction_error(out)
     check_cancel(out)
     check_cancel_has_no_ref(out)
+    check_cancel_supported_is_a_real_contract(out)
     check_list_under_concurrent_submit(out)
     check_concurrent_history(out)
     check_no_false_alarm(out)
