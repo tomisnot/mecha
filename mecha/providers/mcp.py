@@ -436,6 +436,40 @@ def _register_tool(server: MCPServer, registry: ToolRegistry,
     _override_declared_schema(server, name, input_schema)
 
 
+def _check_toolhost_reach(registry: ToolRegistry, toolhost: ToolHost) -> None:
+    """便宜且确定的一档守卫：**工具列得出来、却调不动**。
+
+    端点暴露的工具来自 ``registry.schemas()``，而每次调用都经 ``toolhost.call``。
+    两者若不是同一张注册表，就会出现"``tools/list`` 看着正常、调用全报未知工具"
+    ——EL 真踩过（2026-09-25）：把 ``assemble()`` 建出的**空** ``sw.tools``（经
+    ``sw.toolhost``）传了进来，于是工具面列得出、调不动，且 journal 不落盘。
+
+    ⛔ **只查"非空 vs 零"这一档**，不做集合严格相等：``toolhost`` 暴露的可能是
+    暴露面的**子集**（例如只报它本地能处理的那部分、其余经远端转发），那是合法
+    设计，集合相等会把合法设计判红。而"端点多于零、toolhost 恰好零"没有任何合法
+    解释——它就是绑错了注册表。查这一档既便宜又确定。
+    """
+    exposed = registry.schemas()
+    if not exposed:
+        return
+    try:
+        reachable = toolhost.schemas()
+    except Exception:            # noqa: BLE001
+        # 取不到就"不知道"，**不**把宿主自己的异常转成这条守卫的结论（那是另一件事，
+        # 会在真正的调用路径上响亮失败）。本守卫只判"零"这一档。
+        return
+    if reachable:
+        return
+    raise MechaError(
+        f"工具列得出来、调不动：端点暴露 {len(exposed)} 个工具，"
+        f"而 toolhost 暴露 0 个",
+        kind="toolhost_registry_mismatch",
+        hint="多半是 toolhost 绑的不是同一个注册表（EL 踩过：把 assemble() 建出的"
+             "空 sw.tools 传了进来）——tools/list 看起来正常，调用会全部报未知工具",
+        suggest="不传 toolhost，让框架缺省用 LocalToolHost(端点暴露的那个注册表)",
+    )
+
+
 def build_mcp_server(registry: ToolRegistry, *, server_name: str,
                      instructions: str, toolhost: ToolHost | None = None,
                      required_source: RequiredSource | None = None) -> MCPServer:
@@ -444,11 +478,17 @@ def build_mcp_server(registry: ToolRegistry, *, server_name: str,
     ``toolhost=None`` ⇒ 用出厂 ``LocalToolHost(registry)``（进程内直调）。
     服务名与说明由宿主给（框架不设领域默认值）；说明的体积在构造期就校验。
 
+    构造期还做一次**绑表核对**（:func:`_check_toolhost_reach`）：显式给的
+    ``toolhost`` 若一个工具都暴露不出来、而端点却有工具 ⇒ 当场响亮报错。这一档
+    只在**服务起来之前**查，所以误配不会变成"跑起来但调不动"的静默故障。
+
     这里**不再**复校 ``registry.schemas()`` 的白名单形状：``schemas()`` 本身就是
     从 ``MODEL_VISIBLE_FIELDS`` 机械投影出来的唯一来源，再校验一遍是并行实现
     （且要跨模块 import 私有函数）。声明形状的守卫留在 ``ToolHost.declare`` 那一处。
     """
     check_instructions(instructions)
+    if toolhost is not None:
+        _check_toolhost_reach(registry, toolhost)
     server = MCPServer(name=server_name, instructions=instructions)
     host = toolhost if toolhost is not None else LocalToolHost(registry)
     for schema in registry.schemas():

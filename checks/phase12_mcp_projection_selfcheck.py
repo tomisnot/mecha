@@ -1,6 +1,6 @@
 """Phase 12 判据：MCP 投影 Provider（L6 装配级 + L7 对偶）。
 
-钉住 MCP 工具投影的冻结契约，七组：
+钉住 MCP 工具投影的冻结契约，八组：
 
   A 必填派生：注入来源优先 / 与签名漂移即红 / 无来源时回退签名 / 必填必须可填
   B ⭐ **无 ``type`` 声明 ⇒ 注解 ``Any``**（致死性）：声明没写 ``type`` 的参数，
@@ -15,6 +15,10 @@
     成功回执是 JSON 字符串
   G 端点生命周期：``build_server`` 纯构造 / ``port=0`` 回读真实端口 / ``/mcp`` 路径 /
     端口文件两条清理语义 / ``stop`` 幂等 / 重复 ``start`` fail loud
+  H **绑表核对**（台账 A10 升级）：端点多工具而 ``toolhost`` 绑的是**空注册表**
+    ⇒ 必须在**构造期**响亮报错（EL 真踩过：传了 ``assemble()`` 的空 ``sw.tools``，
+    表现为"工具列得出来、调不动"）。两个方向都验：致死性 + 不许误报（缺省路径 /
+    子集 / 两边都空 / 宿主 ``schemas()`` 抛错）
 
 用法：python checks/phase12_mcp_projection_selfcheck.py
 退出码：0 全绿；1 有失败（**含缺 mcp extra**——缺真依赖即红，不假绿）。
@@ -63,6 +67,7 @@ from mecha.providers.mcp import (  # noqa: E402
     synthesize_signature, tool_input_schema,
 )
 from mecha.providers.mcp import _make_handler  # noqa: E402  (判据刻意读私有面，见 Limitations)
+from mecha.toolhost import LocalToolHost  # noqa: E402
 from mecha.tools import ToolRegistry, define_tool  # noqa: E402
 
 INSTRUCTIONS = "先看有哪些动作，再按名字调用；结果用编号引用，大对象不内联返回。"
@@ -99,9 +104,15 @@ def _registry(*tools) -> ToolRegistry:
 
 
 class _SpyHost:
-    """只记录调用的 ToolHost：证明 handler 走的是传输 seam 而不是直调注册表。"""
+    """只记录调用的 ToolHost：证明 handler 走的是传输 seam 而不是直调注册表。
 
-    def __init__(self) -> None:
+    它同时**如实报出自己托管的那张注册表**——真实的 ToolHost 就是这么做的
+    （``LocalToolHost.schemas()`` 委托注册表）。报空表会被 H 组的绑表核对拦下，
+    而那正是 EL 踩过的形状；假替身若报空表就不再是"合法传输"了。
+    """
+
+    def __init__(self, registry: ToolRegistry | None = None) -> None:
+        self._registry = registry
         self.calls: list[tuple[str, dict]] = []
 
     def call(self, name, args=None):
@@ -112,7 +123,9 @@ class _SpyHost:
         pass
 
     def schemas(self) -> list:
-        return []
+        # 不给注册表 ⇒ 空表：只用于**不经** ``build_mcp_server`` 的用例（如直测
+        # ``_make_handler``）。拿它去 ``build_mcp_server`` 会被绑表核对正确地拦下。
+        return [] if self._registry is None else self._registry.schemas()
 
     def teardown(self) -> None:
         pass
@@ -347,8 +360,8 @@ def check_call_path_and_failure(out: list[str]) -> None:
     def _explode(**kwargs):
         raise AssertionError("注册表 execute 不该被 MCP 层直接调用")
 
-    spy = _SpyHost()
     reg = _registry(_tool("do_thing", {"alpha": {"type": "string"}}, _explode))
+    spy = _SpyHost(reg)
     server = build_mcp_server(reg, server_name="checkbox",
                               instructions=INSTRUCTIONS, toolhost=spy)
     handler = _handler_of(server, "do_thing")
@@ -464,6 +477,90 @@ def check_endpoint(out: list[str]) -> None:
             _fail(out, f"stop 收尾错：{ep.port} {read_port(port_file)}")
 
 
+def check_toolhost_reach(out: list[str]) -> None:
+    """H 组：**工具列得出来、却调不动**必须在构造期响亮报错（台账 A10 升级）。
+
+    消费者具名：刚刚真实发生的这次失效——EL 把 ``assemble()`` 建出的空 ``sw.tools``
+    （经 ``sw.toolhost``）传进 MCP 端点，于是 ``tools/list`` 看着正常、调用全报
+    ``unknown_tool``、journal 不落盘。
+    """
+    def _echo(**_kwargs):
+        return {"ok": True}
+
+    real = _registry(_tool("do_thing", {"alpha": {"type": "string"}}, _echo))
+    empty_host = LocalToolHost(ToolRegistry())     # ← EL 踩过的**真实形状**
+
+    if _raises(lambda: build_mcp_server(real, server_name="checkbox",
+                                       instructions=INSTRUCTIONS,
+                                       toolhost=empty_host),
+               "toolhost_registry_mismatch"):
+        _ok("⭐ 致死性：端点多工具 + toolhost 绑空注册表 ⇒ 构造期 "
+            "toolhost_registry_mismatch（不再是'列得出来、调不动'的静默故障）")
+    else:
+        _fail(out, "绑错注册表未被拒——会变成列得出、调不动的静默故障")
+
+    ep = McpEndpoint(real, server_name="checkbox", instructions=INSTRUCTIONS,
+                     toolhost=empty_host, port=0)
+    if _raises(ep.build_server, "toolhost_registry_mismatch"):
+        _ok("同一条守卫在**纯构造路径**（build_server：服务未起、无线程）上就触发")
+    else:
+        _fail(out, "纯构造路径未触发守卫（误配会拖到运行时才炸）")
+
+    # ---- 不许误报（L7）----
+    if build_mcp_server(real, server_name="checkbox",
+                        instructions=INSTRUCTIONS) is not None:
+        _ok("对偶：toolhost=None（框架缺省 LocalToolHost(同一注册表)）放行")
+    else:
+        _fail(out, "缺省路径异常")
+    subset = LocalToolHost(_registry(_tool("do_thing", {}, _echo)))
+    if build_mcp_server(real, server_name="checkbox", instructions=INSTRUCTIONS,
+                        toolhost=subset) is not None:
+        _ok("对偶：toolhost 暴露的是**子集**（非空）⇒ 放行"
+            "（子集是合法设计，所以只查'非空 vs 零'这一档）")
+    else:
+        _fail(out, "合法子集被误拒")
+    if build_mcp_server(ToolRegistry(), server_name="checkbox",
+                        instructions=INSTRUCTIONS,
+                        toolhost=LocalToolHost(ToolRegistry())) is not None:
+        _ok("对偶：两边都空 ⇒ 放行（空工具面是合法装配，不是误配）")
+    else:
+        _fail(out, "两边都空被误拒")
+
+    class _Broken:
+        """宿主自己的 ``schemas()`` 抛错：本守卫应判'不知道'，不越权定罪。"""
+
+        def schemas(self):
+            raise RuntimeError("宿主自己的问题")
+
+        def call(self, name, args=None):
+            return {"is_error": True}
+
+        def declare(self, schemas):
+            pass
+
+        def teardown(self):
+            pass
+
+    if build_mcp_server(real, server_name="checkbox", instructions=INSTRUCTIONS,
+                        toolhost=_Broken()) is not None:
+        _ok("对偶：toolhost.schemas() 抛错 ⇒ '不知道'，不由本守卫定罪（放行）")
+    else:
+        _fail(out, "宿主自身异常被本守卫误判")
+
+    try:
+        build_mcp_server(real, server_name="checkbox", instructions=INSTRUCTIONS,
+                         toolhost=empty_host)
+    except MechaError as exc:
+        text = exc.teaching_text()
+        if "toolhost" in text and "LocalToolHost" in text:
+            _ok("错误可教学：点明 toolhost 绑错，并给出'不传 toolhost / 缺省 "
+                "LocalToolHost'的替代")
+        else:
+            _fail(out, f"错误不可教学：{text}")
+    else:
+        _fail(out, "致死性用例竟未抛错（上一条断言是哑的）")
+
+
 def main() -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -475,6 +572,7 @@ def main() -> int:
     check_instruction_limit(out)
     check_call_path_and_failure(out)
     check_endpoint(out)
+    check_toolhost_reach(out)
     if out:
         print(f"phase12_mcp_projection_selfcheck: FAIL（{len(out)} 条）")
         return 1

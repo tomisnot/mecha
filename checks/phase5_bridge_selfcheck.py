@@ -228,7 +228,18 @@ def main() -> int:
         _ok(f"CacheProxy：主线程 cache.E_mhz 经引擎线程汇流成功（{e0:.1f} MHz）")
     else:
         _fail(out, f"CacheProxy 直通失败：{e0!r}")
-    srv_thread, server, port = br2.serve_mcp(port_file=tmp2 / ".mcp-port")
+    # 新契约（EL 迁移到框架 McpEndpoint 之后）：返回 ``(host, 实际端口)`` 二元组；
+    # 旧的三元组 ``(thread, server, port)`` 已随薄壳化退役。判据对齐新契约，而不是
+    # 要求下游保留旧形状——**判据该断言契约，不该断言下游的内部返回形状**。
+    # R10：解包成功本身**不算**"验到服务起来"；下面仍要真连一次 MCP 客户端并真调
+    # 一个工具（比 list_tools 更强），故断言强度不降。
+    mcp_host, port = br2.serve_mcp(port_file=tmp2 / ".mcp-port")
+    if getattr(mcp_host, "port", None) == port \
+            and str(getattr(mcp_host, "url", "")).endswith("/mcp"):
+        _ok(f"serve_mcp 返回 (host, 端口)：host 自报同一端口 {port}、url 以 /mcp 结尾")
+    else:
+        _fail(out, "serve_mcp 返回对象与端口不符："
+                   f"{getattr(mcp_host, 'port', None)!r} vs {port!r}")
     import asyncio
 
     async def ai_side():
@@ -267,7 +278,8 @@ def main() -> int:
         _ok("journal 同一条史里既有 ai 又有 gui 事件（人机同史，互引可查）")
     else:
         _fail(out, f"journal actor 不全：{actors}")
-    server_task = None  # daemon 线程随进程走；此处仅确认不炸
+    # （旧的 ``server_task = None`` 占位随三元组契约一起删：服务的存活现在由上面
+    # 那次**真往返**证明，daemon 线程随进程退出，不需要一个空变量作注脚。）
 
     # 10. Monitor 读面（第一交付物 §5.2④）：两层 + 可对账（硬纪律 5）
     from mecha.monitor import Claim, Monitor
