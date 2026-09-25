@@ -1,6 +1,11 @@
 """错误词汇（L4：错误消息是 LLM 的 UI，必须可教学）。
 
-形状对齐 dsh 的 ``ToolFailure {message, info}``（总纲 §7 Phase 4）：
+形状与 dsh 的 ``ToolFailure {message, info?}`` **形状类比**（总纲 §7 Phase 4），
+**不是字段级同构**：dsh 的 ``info`` 是它自己的 ``ToolErrorInfo {name, code, reason}``，
+我们的是 ``{kind, hint, suggest}``，两边不是同一份 schema。已核实：我们的正文经
+dsh 的 mcp 桥后**逐字成为**模型看到的失败消息正文（桥在 ``isError`` 为真时
+``throw new Error(text)``，harness 再投影成 ``ToolFailure.message``），而我们的
+``info`` **不进** dsh 的 ``ToolFailure.info``。
 ``kind`` 是机读分类，``hint`` 是给人/模型看的下一步指引，``suggest`` 是
 可选的替代操作名。构造即校验——坏错误比没有错误更坏（L3）。
 
@@ -32,7 +37,7 @@ class MechaError(Exception):
         super().__init__(self.message)
 
     def to_failure(self) -> dict[str, object]:
-        """对齐 ToolFailure {message, info} 的投影。"""
+        """投影成 ``ToolFailure`` **形状**的跨边界失败体（不是 dsh 字段级同构）。"""
         return {
             "message": self.message,
             "info": {"kind": self.kind, "hint": self.hint, "suggest": self.suggest},
@@ -82,9 +87,12 @@ class InvalidSpec(MechaError):
 
 @dataclass(frozen=True)
 class ToolFailure:
-    """对齐 dsh ``ToolFailure {message, info}`` 的失败形状（Phase 4）。
+    """``ToolFailure {message, info}`` 的**形状类比**（Phase 4；非字段级同构）。
 
     MechaError 是异常；ToolFailure 是它的**跨边界投影**（回执里的 dict）。
+    ``info`` 是 ``{kind, hint, suggest}``——**刻意不叫 dsh 的 ``code``**：
+    ``kind`` 已被本项目群的模型用法与判据钉住，改名是破坏性的且换不来对齐
+    （dsh 的 ``code`` 由它自己的错误分类产生，不是我们的字符串）。
     """
 
     message: str

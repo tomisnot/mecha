@@ -11,6 +11,11 @@ dependencies = []
 
 [project.optional-dependencies]
 # dsh 宿主接线（Phase 5 第 2 步）才需要；库本体零依赖是纪律（独立于 dsh）。
+# MCP 传输 Provider（``mecha.providers.mcp``）：核心**不 import** 它。
+# - ``uvicorn`` 被直接 import（不是仅传递依赖）⇒ 必须显式声明；
+# - ``MCPServer`` 与 ``_tool_manager.get_tool`` 是 mcp 2.2 的形状 ⇒ 下界 2.2、
+#   上界 <3（SDK 私有面垫片只隔离在一个函数里，升级时只改那一处）。
+mcp = ["mcp>=2.2,<3", "uvicorn>=0.30"]
 
 [tool.setuptools.packages.find]
 include = ["mecha*"]

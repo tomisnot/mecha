@@ -37,6 +37,8 @@ CHECKS = [
     "checks/phase8_artifact_contract_selfcheck.py",
     "checks/phase9_toolhost_selfcheck.py",
     "checks/phase10_monitor_contract_selfcheck.py",
+    "checks/phase11_cockpit_selfcheck.py",
+    "checks/phase12_mcp_projection_selfcheck.py",
     "checks/phase5_el_selfcheck.py",
     "checks/phase5_hub_selfcheck.py",
     "checks/phase5_bridge_selfcheck.py",

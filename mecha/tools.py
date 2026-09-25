@@ -9,7 +9,8 @@
   工具已在自己的命名空间里，前缀是实现词汇）。
 - 描述文体：只含任务相关概念，**不含 UI/transport/实现词汇**（守卫词表在
   checks 侧，模型可见文本逐字钉住是 L4）。
-- 错误：对齐 ``ToolFailure {message, info}``（MechaError.to_failure 即此形状）。
+- 错误：``ToolFailure {message, info}`` **形状**（MechaError.to_failure 即此形状；
+  与 dsh 是形状类比而非字段级同构，见 ``errors`` 模块 docstring）。
 - 投影：``schemas()`` 白名单——只有 name/description/parameters 进模型请求，
   execute/output/render 绝不泄漏（消 D-25：不维护手写 TOOL_NAMES）。
 
@@ -74,7 +75,7 @@ def check_tool_name(name: str, *, banned_prefixes: tuple[str, ...] = (OWN_PACKAG
 
 @dataclass(frozen=True)
 class ToolOutput:
-    """canonical 输出声明：schema + 纯投影（dsh ToolOutputDefinition 同形）。"""
+    """canonical 输出声明：schema + 纯投影（与 dsh ``ToolOutputDefinition`` 形状类比）。"""
 
     schema: Mapping[str, object]
     render: Callable[[Mapping[str, object], Mapping[str, object]], list[Mapping[str, object]]]
@@ -164,7 +165,7 @@ class ToolRegistry:
         return self._tools.get(name)
 
     def execute(self, name: str, args: Mapping[str, object]) -> dict:
-        """执行 + 回执校验 + 失败归一化（ToolFailure {message, info}）。"""
+        """执行 + 回执校验 + 失败归一化（``ToolFailure {message, info}`` 形状）。"""
         tool = self._tools.get(name)
         if tool is None:
             return {"is_error": True,
