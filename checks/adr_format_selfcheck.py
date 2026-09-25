@@ -3,12 +3,18 @@
 扫描 docs/v2/notes/{proposed,implemented,rejected}/ 下每篇 note：
 
   A  必填四节齐全；``Alternatives considered`` 非空且不是敷衍的"无"
+  A2 ``implemented/`` **新件**必须另含 ``Required verification``（文档纪律 D5 /
+     ADR制度 §3 规则 7）：这条决定**要求什么验证**。**旧件按祖父条款豁免、不许回填**
+     ——豁免名单是 ``checks/adr_legacy_exempt.txt``（规则生效时已存在的冻结快照）。
+     只对 ``implemented/`` 要求：``rejected/`` / ``proposed/`` 没有 shipped 变更，
+     要求它等于逼人写空话。
   B  头部字段（状态/作者/日期）合法；状态字面量与所在目录一致；
      文件名日期与头部日期一致且为真实日期
   C  proposed/ 的 note 不许被 mecha/ 或 src/ 的代码引用（防把提案当定论）
   D  rejected/ 每条必须含"重新考虑条件"（懒否决拒收）
   E  不许误报：合成一篇完全合规的 note 必须 0 命中；
-     另附违例语料，每种违例必须至少 1 命中（L7：守卫必须报告变化）
+     另附违例语料，每种违例必须至少 1 命中（L7：守卫必须报告变化）。
+     **A2 的对偶在此**：名单里的旧件缺该节**不许报**；非 ``implemented/`` 也**不许报**
 
 archived/ 是冻结区，本门禁跳过其内容（归档即冻结，制度 §3.4）。
 
@@ -26,6 +32,11 @@ archived/ 是冻结区，本门禁跳过其内容（归档即冻结，制度 §3
 - 组 B 不校验"取代必须继承全部 rationale"（制度 §3.3）——那是跨 note 的
   语义判断，机械不可判，留给人审。
 - "无"的判定口径是对 ADR制度 §5 字面（"不含无"）的收窄解释，理由见模块 docstring。
+- **组 A2 的豁免名单是手抄的冻结快照**（``checks/adr_legacy_exempt.txt``）：它只在"新增
+  一篇 legacy note"时才会过期，而那在语义上不可能发生。改名会让新名字**立刻**受要求
+  （红一次，显式）；删除只留下无害的空豁免。**不校验名单里有无死条目**——那需要一份
+  与树的一致性判据，而它守的是"名单整洁"而不是任何承诺（R13）。
+- 组 A2 只验"这一节在不在、空不空"，**不验它是否真的可重放**（机械不可判，人审）。
 """
 
 from __future__ import annotations
@@ -38,6 +49,12 @@ from pathlib import Path
 
 LIFECYCLES = ("proposed", "implemented", "rejected", "archived")
 REQUIRED_SECTIONS = ("Problem", "Decision", "Consequences", "Alternatives considered")
+#: `implemented/` **新件**额外必填的一节（文档纪律 D5 / ADR制度 §3 规则 7）：
+#: 这条决定要求什么验证。旧件按祖父条款豁免（名单见下），**不许回填**。
+VERIFICATION_SECTION = "Required verification"
+#: 祖父条款豁免名单（规则生效时已存在的 implemented note）。**相对本守卫自身解析**，
+#: 不相对被扫的树——它是"本仓历史"的属性，不是被扫树的属性（自测合成树里也走同一份）。
+LEGACY_EXEMPT_FILE = "checks/adr_legacy_exempt.txt"
 STATUS_RE = re.compile(r"^(proposed|implemented|rejected|archived)(\s+—.*)?$")
 FILENAME_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})-(.+)\.md$")
 STATUS_LINE_RE = re.compile(r"^>\s*\*\*状态\*\*\s*[:：]\s*(.+?)\s*$")
@@ -71,7 +88,25 @@ def _is_lazily_none(body: str) -> bool:
     return False
 
 
-def validate_note(path: Path, lifecycle: str) -> list[str]:
+def _legacy_exempt() -> frozenset[str]:
+    """读祖父条款豁免名单（一行一个文件名；`#` 起注释）。
+
+    **相对本守卫自身解析**（`:data:`LEGACY_EXEMPT_FILE` 在 `checks/` 下）：豁免是"本仓
+    历史"的属性，不是被扫那棵树的属性 ⇒ 自测的合成树也走**同一份**名单（否则测不出
+    "旧件不误报"这一半）。
+
+    读不到文件 ⇒ 返回空集（不豁免任何东西）：那是**更严**的方向，不会静默放行。
+    """
+    path = Path(__file__).resolve().parent.parent / LEGACY_EXEMPT_FILE
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return frozenset()
+    return frozenset(l.strip() for l in lines
+                     if l.strip() and not l.startswith("#"))
+
+
+def validate_note(path: Path, lifecycle: str, exempt: frozenset[str]) -> list[str]:
     """校验单篇 note，返回违例列表（'组别: 说明'）。"""
     v: list[str] = []
     text = path.read_text(encoding="utf-8")
@@ -125,6 +160,14 @@ def validate_note(path: Path, lifecycle: str) -> list[str]:
     if "Alternatives considered" in secs and _is_lazily_none(secs["Alternatives considered"]):
         v.append(f"A: 'Alternatives considered' 为空或敷衍的'无'：{path.name}")
 
+    # --- 组 A2：`implemented/` 新件必填 `Required verification`（D5；旧件祖父豁免）---
+    if lifecycle == "implemented" and path.name not in exempt:
+        if VERIFICATION_SECTION not in secs:
+            v.append(f"A2: 缺必填节 '## {VERIFICATION_SECTION}'（implemented/ 新件）："
+                     f"{path.name}")
+        elif _is_lazily_none(secs[VERIFICATION_SECTION]):
+            v.append(f"A2: '## {VERIFICATION_SECTION}' 为空或敷衍的'无'：{path.name}")
+
     # --- 组 D：rejected 必须有重新考虑条件 ---
     if lifecycle == "rejected" and "重新考虑条件" not in text:
         v.append(f"D: rejected note 缺'重新考虑条件'：{path.name}")
@@ -160,6 +203,7 @@ def check_proposed_not_referenced_by_code(repo_root: Path) -> list[str]:
 def validate_tree(repo_root: Path) -> list[str]:
     """校验一棵完整的 note 树，返回全部违例。"""
     v: list[str] = []
+    exempt = _legacy_exempt()          # 祖父条款：本仓历史属性，不从 repo_root 取
     notes_root = repo_root / "docs" / "v2" / "notes"
     if not notes_root.is_dir():
         return [f"A: note 树不存在：{notes_root}"]
@@ -171,7 +215,7 @@ def validate_tree(repo_root: Path) -> list[str]:
         if lifecycle == "archived":
             continue  # 归档即冻结，跳过格式校验
         for path in sorted(d.glob("*.md")):
-            v.extend(validate_note(path, lifecycle))
+            v.extend(validate_note(path, lifecycle, exempt))
     v.extend(check_proposed_not_referenced_by_code(repo_root))
     return v
 
@@ -181,7 +225,7 @@ def validate_tree(repo_root: Path) -> list[str]:
 # ---------------------------------------------------------------------------
 
 def _synth_note(title: str, status: str, date: str, alternatives: str,
-                extra_reject: bool = False) -> str:
+                extra_reject: bool = False, verification: bool = True) -> str:
     body = f"""# {title}
 
 > **状态**：{status}
@@ -200,6 +244,8 @@ def _synth_note(title: str, status: str, date: str, alternatives: str,
 ## Alternatives considered
 {alternatives}
 """
+    if verification:                    # implemented/ 新件的必填节（D5）
+        body += "\n## Required verification\n合成验证：跑 `python checks/run_all.py`。\n"
     if extra_reject:
         body += "\n**重新考虑条件**：合成条件。\n"
     return body
@@ -255,6 +301,16 @@ def run_selftest() -> list[str]:
         ("rejected", "rejected — 理由", "2026-09-23-懒否决.md",
          _synth_note("懒否决", "rejected — 理由", "2026-09-23", "**否决：X。** 理由：Y。", False),
          ["D: rejected note"]),
+        # implemented/ **新件**缺 `Required verification` ⇒ 必抓（D5；文件名不在豁免名单里）
+        ("implemented", "implemented", "2026-09-26-缺验证.md",
+         _synth_note("缺验证", "implemented", "2026-09-26", "**否决：X。** 理由：Y。",
+                     verification=False),
+         ["A2: 缺必填节 '## Required verification'"]),
+        # 同一缺陷写成空节也要抓（别让"有标题没内容"混过去）
+        ("implemented", "implemented", "2026-09-26-空验证.md",
+         _synth_note("空验证", "implemented", "2026-09-26", "**否决：X。** 理由：Y。",
+                     ).replace("合成验证：跑 `python checks/run_all.py`。", "无。"),
+         ["A2: '## Required verification' 为空"]),
     ]
     for lifecycle, status, filename, content, expected in cases:
         with tempfile.TemporaryDirectory() as td:
@@ -263,6 +319,25 @@ def run_selftest() -> list[str]:
             for prefix in expected:
                 if not any(h.startswith(prefix) or prefix in h for h in hits):
                     failures.append(f"E-: 违例 {filename!r} 未被抓到（期望含 {prefix!r}），实际：{hits}")
+
+    # L7 对偶（**不许误报**）：祖父条款名单里的旧 implemented note 缺该节 ⇒ 不该报
+    # （用**真实豁免名单里的真名**，因为豁免集相对守卫自身解析、与被扫树无关）
+    with tempfile.TemporaryDirectory() as td:
+        root = build(Path(td), "implemented", "2026-09-23-phase1-定主权.md",
+                     _synth_note("定主权", "implemented", "2026-09-23",
+                                 "**否决：X。** 理由：Y。", verification=False))
+        hits = [h for h in validate_tree(root) if h.startswith("A2:")]
+        if hits:
+            failures.append(f"L7: 祖父条款豁免的旧件被误报：{hits}")
+    # L7 对照：非 implemented 的生命周期**不**要求该节（rejected/ 无 shipped 变更）
+    with tempfile.TemporaryDirectory() as td:
+        root = build(Path(td), "rejected", "2026-09-26-拒案无验证.md",
+                     _synth_note("拒案", "rejected — 理由", "2026-09-26",
+                                 "**否决：X。** 理由：Y。", extra_reject=True,
+                                 verification=False))
+        hits = [h for h in validate_tree(root) if h.startswith("A2:")]
+        if hits:
+            failures.append(f"L7: rejected/ note 被误要求验证节：{hits}")
 
     # 组 C 违例：proposed note 被代码引用必须红
     with tempfile.TemporaryDirectory() as td:

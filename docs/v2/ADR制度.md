@@ -31,7 +31,8 @@ proposed ──落地──▶ implemented ──被完全取代──▶ archiv
 
 **文件名**：`YYYY-MM-DD-短名.md`（日期 = 首次提出日，落地后不改名）。
 
-**必填四节**（缺一节 = 格式不过，见 §5）：
+**必填四节**（缺一节 = 格式不过，见 §5）；
+**`implemented/` 的「新件」另必填第五节 `Required verification`**（见 §3 规则 7）：
 
 ```markdown
 # <标题>
@@ -52,6 +53,10 @@ proposed ──落地──▶ implemented ──被完全取代──▶ archiv
 ## Alternatives considered
 <认真考虑过并被否决的方案，每个附否决理由。
  ⚠️ 这一节是整份 ADR 最有价值的部分，不许写"无"。>
+
+## Required verification        ← 仅 implemented/ 新件必填（§3 规则 7）
+<这条决定**要求什么验证**——可重放、可评审的具体动作（跑哪条判据、
+ 用什么命令、看什么证据）。不许写"已验证"了事。>
 ```
 
 ## 3. 五条硬规则
@@ -74,6 +79,15 @@ proposed ──落地──▶ implemented ──被完全取代──▶ archiv
    记录**——否则"推迟"沦为"遗忘"的合法外衣（本仓最该防的假绿变体）。回登是人的
    里程碑动作（Phase 关门由人判定），不建机械门禁；但推迟项登记 note 每条须含
    `**触发**` 标记，缺则视为懒推迟。
+7. **`implemented/` 必须写 `## Required verification`**（2026-09-25 补，文档纪律 D5）：
+   记下**这条决定要求什么验证**——可重放、可评审的具体动作（跑哪条判据、什么命令、
+   看什么证据）。**为什么**：本轮删 `McpToolHost` / `spill` / `VisibilityPolicy` 时，
+   note 只记了 Decision 与 Alternatives，**没有一处写"它要求什么验证"** ⇒ 删 `spill`
+   那次漏改 `README`（R14 实例）本可以是被要求的验证项之一。
+   ⚠ **只对生效日之后新写的 `implemented/` note 生效；既有 note 不许回填**——回填等于
+   改历史，而历史记录的价值恰恰是"它当时是什么样"。豁免名单：
+   `checks/adr_legacy_exempt.txt`（规则生效时已存在的冻结快照）。
+   **只对 `implemented/` 要求**：`rejected/`、`proposed/` 没有 shipped 变更，要求它等于逼人写空话。
 
 ## 4. 什么时候必须写（清单）
 
@@ -86,15 +100,16 @@ proposed ──落地──▶ implemented ──被完全取代──▶ archiv
 
 ## 5. 机械门禁（Phase 0 交付，之后长期跑）
 
-一条判据 `checks/adr_format_selfcheck.py`，五组：
+一条判据 `checks/adr_format_selfcheck.py`，六组：
 
 | 组 | 断言 |
 |---|---|
 | A | 每篇 note 有必填四节；`Alternatives considered` 非空且不含"无" |
+| A2 | **`implemented/` 新件**另含 `Required verification`（非空、不敷衍）；**旧件按 `checks/adr_legacy_exempt.txt` 祖父豁免**，非 `implemented/` 不要求（§3 规则 7） |
 | B | 状态字面量合法；文件名日期与 front matter 一致 |
 | C | `proposed/` 里的 note 没被 `implemented/` 的代码引用（防把提案当定论） |
 | D | `rejected/` 每条有"重新考虑条件" |
-| E | **不许误报**：合成一篇完全合规的 note 必须 0 命中（防哑守卫） |
+| E | **不许误报**：合成一篇完全合规的 note 必须 0 命中（防哑守卫）；含 A2 的两向对偶（新件缺节必抓、旧件缺节不报） |
 
 ## 6. 和 dsh 的差异（我们刻意简化的）
 
