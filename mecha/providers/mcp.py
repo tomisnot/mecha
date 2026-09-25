@@ -58,11 +58,16 @@ output schema——声明"这个工具返回 ``{result: string}``"，而工具**
   **没有外部消费者**（只有判据在用）⇒ 按"每条新增必须有具名消费者"删掉，登记在
   ADR 的收口轮。**升格触发**：出现"Python 侧要经 MCP 调用远程 mecha 工具"的真实
   消费者时再加（那时 ``ToolHost`` 的远程 Provider 才有意义）。
-- ⛔ **进程内 ``MCPServer.call_tool()`` 在它自己的 handler 上不可用**（实测抛
-  ``UnexpectedToolError``；**同一工具走真 HTTP 正常**）。⇒ 消费者必须走真链路，
-  **不许假设进程内直调可用**；判据也不要用 ``call_tool`` 做直调，否则会莫名其妙红。
-  本模块不修 SDK，只把这个边界写下来（要测 handler 就按 ``phase12`` 的做法从注册表
-  取 handler 本体直接调）。
+- ⛔ **不得假设 ``MCPServer.call_tool()`` 可在进程内直调**。根因（mcp 2.2 实测）：
+  进程内 ``call_tool`` 造的 ``Context`` **没有 ``request_context``**；读它会抛
+  ``ValueError("Context is not available outside of a request")``，而
+  ``Context.request_id`` 正是读它 ⇒ handler 用 ``getattr(ctx, "request_id", None)``
+  取 call_id 时，**``getattr`` 只吞 ``AttributeError``，``ValueError`` 会直接穿出**，
+  被 SDK 包成 ``UnexpectedToolError``。
+  ⇒ **消费者必须走真实传输链路**（HTTP / streamable-http）；判据 / 测试不得依赖进程内
+  直调（本模块 handler 取 call_id 仍保留那个容错写法——它在真链路上是对的）。已裁定
+  **不为此加分支持、不加判据**：今天零消费者，而且"成功但 ``call_id`` 为空"的无归因写
+  比响亮失败更坏。要测 handler 就按 ``phase12`` 的做法从注册表取 handler 本体直接调。
 - ``_override_declared_schema`` 依赖 mcp 2.2 的 ``MCPServer._tool_manager`` 与
   ``Tool.parameters``；SDK 升级破坏时只改那一个函数，不改调用方。
 - 本模块顶层 import ``mcp`` ⇒ ``import mecha.providers.mcp`` 需要装 extra
@@ -379,6 +384,13 @@ def _make_handler(toolhost: ToolHost, tool_name: str,
         # null，让真默认生效（否则"说明书说默认 X，但客户端必须显式传"）。
         args = {k: v for k, v in kwargs.items()
                 if not (v is None and k in defaulted)}
+        # ``getattr(..., None)`` 是**刻意**的容错写法，别"修"：真链路（HTTP /
+        # streamable-http）上 ``ctx.request_context`` 存在、``request_id`` 正常可得。
+        # 而进程内直调时 ``Context.request_context`` 缺失会抛 ``ValueError``
+        # （**不是** ``AttributeError``）⇒ ``getattr`` 的默认值吞不住，会穿出去被
+        # SDK 包成 ``UnexpectedToolError``。那是"进程内直调不可用"的表现（见模块
+        # Known Limitations），不是这里的缺陷。已裁定：**不为此加分支持、不加判据**
+        # ——"成功但 ``call_id`` 为空"的无归因写比响亮失败更坏。
         request_id = None if ctx is None else getattr(ctx, "request_id", None)
         token = CURRENT_CALL_ID.set("" if request_id is None else str(request_id))
         try:
