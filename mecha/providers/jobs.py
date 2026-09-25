@@ -83,7 +83,14 @@ class Job:
 
 
 class JobRegistry:
-    """单一 job 注册表（local 实现）。"""
+    """单一 job 注册表（local 实现）。
+
+    线程安全边界：``_lock`` 只保护 ``_jobs`` 这张表——``submit``（写）、
+    ``get``/``list``/``cancel``（读）都经它，所以并发 submit 下轮询/取句柄
+    不会被字典迭代撕裂。锁内**不做回调、不做 IO、不读 Job 字段**（只取快照），
+    因此不存在重入或锁序问题；``Job`` 自身的字段由 job 线程写（见模块
+    Known Limitations 的收尾顺序保证）。
+    """
 
     def __init__(self) -> None:
         self._jobs: dict[str, Job] = {}
@@ -165,6 +172,9 @@ class JobRegistry:
         return job.to_dict()
 
     def cancel(self, jid: str) -> None:
+        """请求取消。取句柄经 ``get``（持锁读），真正的取消是
+        ``context.request_cancel()``——``threading.Event`` 自身线程安全，
+        不需要注册表锁；注册表锁只保护 ``_jobs`` 这张表。"""
         self.get(jid).context.request_cancel()
 
     def list(self) -> list[dict]:
