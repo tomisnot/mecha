@@ -17,6 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from .artifacts import LocalArtifactStore
 from .authority import Authority, DEFAULT_MODE, Mode
 from .commands import CommandRegistry
 from .data_layout import DataLayout, resolve_data_dir
@@ -44,6 +45,8 @@ class Software:
     monitor: Monitor
     jobs: JobRegistry
     spill: LocalSpillStore
+    #: 宿主产物托管（不透明 locator；与 spill 分工见 artifacts 模块 docstring）
+    artifacts: LocalArtifactStore
     approval: LocalApproval
     tools: ToolRegistry
     #: 通用命令面。**同一对象**即 ``surface.commands``（不是第二张注册表）：
@@ -93,6 +96,10 @@ def declare_roles(roles: RoleRegistry, *, engine_name: str, project: str) -> Non
     roles.register("provider.jobs.local", Role.PROVIDER, provider="thread", consumer="tools.registry")
     roles.register("provider.spill", Role.DEFINITION, provider=project)
     roles.register("provider.spill.local", Role.PROVIDER, provider="local-file")
+    # 宿主产物托管：Definition 归我们，local 写文件；无内置消费者（宿主拿 locator
+    # 自行落进 result_ref / History），进 capability_map_selfcheck 的推迟登记。
+    roles.register("provider.artifacts", Role.DEFINITION, provider=project)
+    roles.register("provider.artifacts.local", Role.PROVIDER, provider="local-file")
     roles.register("provider.approval", Role.DEFINITION, provider=project)
     roles.register("provider.approval.local", Role.PROVIDER, provider="fail-closed")
     # 工具形态层与可见性
@@ -137,6 +144,7 @@ def assemble(*, root: Path, data_dir_name: str | None, engine: Engine,
     monitor = Monitor(history.events, summarizer)
     jobs = JobRegistry()
     spill = LocalSpillStore(layout)
+    artifacts = LocalArtifactStore(layout)
     approval = LocalApproval(approval_decider)
     tools = ToolRegistry()
     # 命令面 = Surface 上那一份（同一对象，非第二张表）：注册进它即可被
@@ -145,6 +153,7 @@ def assemble(*, root: Path, data_dir_name: str | None, engine: Engine,
     visibility = VisibilityPolicy()
     channels = {"human": Channel("human"), "ai": Channel("ai")}
     return Software(gate=gate, history=history, surface=surface, monitor=monitor,
-                    jobs=jobs, spill=spill, approval=approval, tools=tools,
+                    jobs=jobs, spill=spill, artifacts=artifacts,
+                    approval=approval, tools=tools,
                     commands=commands, visibility=visibility, roles=roles,
                     channels=channels, authority=authority, layout=layout)

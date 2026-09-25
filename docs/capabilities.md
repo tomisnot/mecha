@@ -14,6 +14,8 @@
 | `monitor` | definition | mecha | — |
 | `provider.approval` | definition | mecha | — |
 | `provider.approval.local` | provider | fail-closed | — |
+| `provider.artifacts` | definition | mecha | — |
+| `provider.artifacts.local` | provider | local-file | — |
 | `provider.codeact` | provider | actions-interp | adapter.ai |
 | `provider.jobs` | definition | mecha | — |
 | `provider.jobs.local` | provider | thread | tools.registry |

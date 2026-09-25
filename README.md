@@ -18,7 +18,8 @@ GUI 平级——不是主子关系。软件不依附 dsh：dsh 消失时，数�
 ```
 mecha/          稳定脊椎：gate / history / surface / monitor / authority /
                 tools（工具形态层）/ visibility / roles / format_version /
-                data_layout / errors + assembly（具名装配点）
+                data_layout / errors / artifacts（宿主产物托管）+
+                assembly（具名装配点）
 mecha/providers/  Provider 层（dsh 的 churn 关在这里）：log_local / jobs /
                 spill / approval / skills / codeact —— local 是出厂默认
 checks/         判据（见下）+ 门禁；python checks/run_all.py 一条跑全

@@ -160,6 +160,7 @@ def check_merge_ready(out: list[str]) -> None:
 #: 加新 provider 若不进这里又不声明 consumer ⇒ 守卫红（逼"推迟不许沉默"）。
 DEFERRED_PROVIDERS = frozenset({
     "provider.spill.local",       # 大载荷回程待 dsh spillStore 接线
+    "provider.artifacts.local",   # 宿主产物托管待 ML 宿主真实接入（无内置消费者）
     "provider.approval.local",    # 细粒度每次写问人待 ctx.approval 接线
     "provider.skills",            # skill 目录待宿主 skill 面接线
 })

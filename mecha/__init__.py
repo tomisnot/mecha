@@ -27,4 +27,5 @@ __all__ = [
     "monitor",
     "commands",
     "scopes",
+    "artifacts",
 ]
