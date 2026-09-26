@@ -34,6 +34,11 @@ export interface PanelConfig {
   PORT_FILE: string
   /** 面板标题。 */
   TITLE: string
+  /**
+   * 标准页的**页签文案覆盖**（可选）。不填则用共享默认（`飞行记录仪` / `配置态`）。
+   * ⚠ 只有标准两页能这样覆盖；**项目的附加页**文案写在它自己的**附加页声明**里。
+   */
+  TABS?: { rec?: string; cfg?: string }
 }
 
 export const PANEL_CONFIG: PanelConfig = {
