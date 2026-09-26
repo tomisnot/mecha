@@ -70,6 +70,12 @@ node --test mecha/dsh-panel/*.test.ts
 Node ≥ 22.6 **原生剥类型**，不需要 `tsx`、不需要 `npm install`（老版本加
 `--experimental-strip-types`）。测试用 `node:test` + `node:assert/strict`，只用内建模块。
 
+⭐ **框架已经替你跑它**：`checks/dsh_panel_selfcheck.py` 已挂进 `checks/run_all.py`
+⇒ **mecha 的完整门禁现在是硬依赖 `node` 的**（缺 node **即红**，不软跳过——软跳过就是
+"存在但从不执行"的假绿）。**为什么必须挂（R10）**：这份资产是**三份副本的源头**，框架
+自己不跑它的自测 ⇒ 参考实现写错了，**三份副本一起错**，而"逐字一致"那条判据还会
+**强制**那个错。本仓早有同族硬依赖（`phase5_*` 需要 EL 仓），这不是新先例。
+
 ## R1 的诚实立场（**这一句是刻意的**）
 
 > **参考实现没有运行时消费者**：它的消费者是**三个项目的插件源码**（它们持有副本），

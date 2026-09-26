@@ -6,6 +6,10 @@
 ## Known Limitations and Deferred Work
 
 - 串行跑（判据总耗时秒级，并行是过早优化）。
+- **两条硬外部依赖**（缺即红，都不假绿）：① `phase5_*` 需要 **EL 仓**在位
+  （它们直接 import `mecha_v2`）；② `dsh_panel_selfcheck` 需要 **`node`**
+  （跑 `mecha/dsh-panel/` 这份共享资产的 TS 自测，Node ≥22.6 原生剥类型）。
+  ⇒ **跑完 `run_all` 需要 EL 仓 + node**。
 - Phase 6 命令面判据用中性假宿主（命令名与状态键都是判据自己的中性值），
   不依赖任何真宿主的 adapter；真宿主的命令表对齐归各宿主自己的判据。
 - Phase 5 的 EL 侧判据（el/hub/bridge）在列——EL 领域实现住本仓外的 EL 项目
@@ -39,6 +43,10 @@ CHECKS = [
     "checks/phase10_monitor_contract_selfcheck.py",
     "checks/phase11_cockpit_selfcheck.py",
     "checks/phase12_mcp_projection_selfcheck.py",
+    # dsh 面板参考实现（共享资产）的共享自测。⚠ **硬依赖 node**：缺 node 即红
+    # （不软跳过）——理由见该脚本 docstring（R10：资产是三份副本的源头，
+    # 框架不跑它的自测 ⇒ 三份一起错，而"逐字一致"判据还会强制那个错）。
+    "checks/dsh_panel_selfcheck.py",
     "checks/phase5_el_selfcheck.py",
     "checks/phase5_hub_selfcheck.py",
     "checks/phase5_bridge_selfcheck.py",

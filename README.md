@@ -24,6 +24,7 @@ mecha/          稳定脊椎：gate / history / surface / monitor / authority /
 mecha/providers/  Provider 层（dsh 的 churn 关在这里）：log_local / jobs /
                 approval / skills / codeact —— local 是出厂默认
 checks/         判据（见下）+ 门禁；python checks/run_all.py 一条跑全
+                （硬依赖 EL 仓 + node，见「验证」节）
 docs/v2/        架构总纲（规范源：为什么这么设计）+ 架构详解（建成态导览：代码
                 现在长什么样）+ 框架准入线（改动纪律 R 系列）+ 操作陷阱（工具与
                 测量层面的坑）+ 遗留登记 + ADR 制度 + notes/（ADR 四态树）
@@ -73,8 +74,13 @@ GUI 纯本地 / AI 经 dsh），详见 `docs/v2/notes/implemented/` 下 `两模�
 ## 验证
 
 ```
-python checks/run_all.py     # 全部门禁（含真引擎端到端，需 EL 仓在位）
+python checks/run_all.py     # 全部门禁（含真引擎端到端，需 EL 仓在位 + node 在 PATH）
 ```
+
+**两条硬外部依赖**（**缺即红，不假绿**）：
+1. **EL 仓在位**——`phase5_*` 直接 import EL 的 `mecha_v2`；
+2. **`node` 在 PATH**——`dsh_panel_selfcheck` 跑 `mecha/dsh-panel/` 那份**共享资产**的
+   TS 自测（Node ≥22.6 原生剥类型，零 npm 依赖）。⇒ **本仓的完整门禁需要 node**。
 
 判据纪律：测装配不测单元（L6）；每条"能抓坏"配"不许误报"对偶（L7）；
 缺真依赖即红不假绿。
