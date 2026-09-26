@@ -133,7 +133,7 @@ test('⭐ loadPanel：四态各走一次，且**注入的 doFetch 真的被调�
     if (p === '/config') return jsonRes(200, { groups: { f: [] }, has_schema: true })
     return jsonRes(404, {})
   })
-  const st = await loadPanel(good.f)
+  const { state: st } = await loadPanel(good.f)
   assert.equal(st.kind, 'ok')
   assert.equal(st.kind === 'ok' && st.stats.events, 2)
   assert.equal(st.kind === 'ok' && st.stats.configFamilies, 1)
@@ -143,15 +143,35 @@ test('⭐ loadPanel：四态各走一次，且**注入的 doFetch 真的被调�
   assert.ok(good.calls.length >= 3)
 
   const addrFail = fakeFetch(() => jsonRes(503, { error: '监控端点未知' }))
-  assert.equal((await loadPanel(addrFail.f)).kind, 'address')
+  assert.equal((await loadPanel(addrFail.f)).state.kind, 'address')
 
   const offline = fakeFetch((p) =>
     p === PANEL_CONFIG.ROUTE_PATH ? jsonRes(200, { base: 'http://127.0.0.1:1' }) : jsonRes(500, {}))
-  assert.equal((await loadPanel(offline.f)).kind, 'offline')
+  assert.equal((await loadPanel(offline.f)).state.kind, 'offline')
 
   const empty = fakeFetch((p) =>
     p === PANEL_CONFIG.ROUTE_PATH ? jsonRes(200, { base: 'http://127.0.0.1:1' })
       : p === '/config' ? jsonRes(200, { groups: {}, has_schema: true })
         : jsonRes(200, { events: [] }))
-  assert.equal((await loadPanel(empty.f)).kind, 'empty')
+  assert.equal((await loadPanel(empty.f)).state.kind, 'empty')
+})
+
+test('⭐ 附加页：各自取数；**附加路由失败不牵连标准两页**', async () => {
+  const { f, calls } = fakeFetch((p) => {
+    if (p === PANEL_CONFIG.ROUTE_PATH) return jsonRes(200, { base: 'http://127.0.0.1:1' })
+    if (p.startsWith('/history')) return jsonRes(200, { events: [{ seq: 1 }] })
+    if (p === '/config') return jsonRes(200, { groups: { f: [] }, has_schema: true })
+    if (p.startsWith('/extra-ok')) return jsonRes(200, { rows: [{ a: 1 }] })
+    return jsonRes(500, {})
+  })
+  const { state, extras } = await loadPanel(f, [
+    { id: 'ok', path: '/extra-ok?limit=1' },
+    { id: 'bad', path: '/extra-bad' },
+  ])
+  assert.equal(state.kind, 'ok', '附加路由失败**不许**把整个面板打成 route 档（那会吃掉标准两页）')
+  assert.equal(extras.ok.ok, true)
+  assert.equal(extras.bad.ok, false)
+  assert.equal(extras.bad.ok === false && extras.bad.failure.tier, 'route')
+  assert.ok(calls.some((c) => c.includes('/extra-ok?limit=1')), '附加路由按声明里的路径取')
+  assert.deepEqual((await loadPanel(f, [])).extras, {}, '没声明附加页 ⇒ 空对象')
 })

@@ -12,6 +12,7 @@ import {
   badgeHtml,
   cfgPageHtml,
   esc,
+  extraPageHtml,
   fmtVal,
   recPageHtml,
   tabsHtml,
@@ -99,5 +100,64 @@ test('TAB_CSS：只用**中性前缀**（共享资产里不许有项目前缀）
   assert.ok(TAB_CSS.includes('.mecha-ev'))
   for (const prefix of ['.mltb', '.re0']) {   // 这两个前缀只作为**反面语料**出现
     assert.ok(!TAB_CSS.includes(prefix), `CSS 里混进了项目前缀 ${prefix}`)
+  }
+})
+
+// ---------------------------------------------------------------- 项目附加页
+
+/** 一份**中性的**附加页声明（判据自己的词，不是任何项目的词）。 */
+const SPEC = {
+  id: 'extra',
+  label: '附加页',
+  path: '/extra?limit=2',
+  title: '附加数据',
+  columns: [
+    { label: '编号', cell: (r: unknown) => String((r as { id?: unknown }).id ?? '') },
+    { label: '得分', cell: (r: unknown) => String((r as { score?: unknown }).score ?? '') },
+  ],
+  emptyText: '这里还没有记录',
+  unreadableText: '读不到附加数据',
+  summaryLine: (p: unknown) => `共 ${((p as { rows?: unknown[] })?.rows ?? []).length} 条`,
+  note: '空不等于没跑过',
+}
+const okRes = (d: unknown) => ({ ok: true as const, data: d })
+
+test('⭐ extraPageHtml：有行 ⇒ 表头 + 各行 cell；`summaryLine` 生效', () => {
+  const html = extraPageHtml(SPEC, okRes({ rows: [{ id: 'r1', score: 9 }, { id: 'r2', score: 8 }] }))
+  for (const marker of ['附加数据', '编号', '得分', 'r1', '9', 'r2', '8', '共 2 条', '空不等于没跑过']) {
+    assert.ok(html.includes(marker), `缺 ${marker}：${html.slice(0, 240)}`)
+  }
+})
+
+test('⭐ extraPageHtml：**读不到 ≠ 空表**（这一档必须画可读错误，不是空表）', () => {
+  const html = extraPageHtml(SPEC, { ok: false, failure: { tier: 'route', detail: '500' } })
+  assert.match(html, /读不到附加数据/)
+  assert.match(html, /500/)
+  assert.ok(!html.includes('<tbody'), '失败时不该画表')
+  const empty = extraPageHtml(SPEC, okRes({ rows: [] }))
+  assert.match(empty, /这里还没有记录/)
+  assert.notEqual(html, empty, '两种情形必须可区分')
+})
+
+test('⭐ extraPageHtml：声明的函数**换了结果就变**（R17：cell / summaryLine 必须是活的）', () => {
+  const rows = [{ id: 'r1', score: 9 }]
+  const a = extraPageHtml(SPEC, okRes({ rows }))
+  const b = extraPageHtml({ ...SPEC, columns: SPEC.columns.slice(0, 1) }, okRes({ rows }))
+  assert.notEqual(a, b, '换掉 columns 结果没变 ⇒ 声明是死的')
+  const c = extraPageHtml({ ...SPEC, summaryLine: () => '另一句概括' }, okRes({ rows }))
+  assert.notEqual(a, c, '换掉 summaryLine 结果没变 ⇒ 声明是死的')
+  assert.match(c, /另一句概括/)
+})
+
+test('extraPageHtml：每条分支都返回**非空**可读 HTML（不空白）', () => {
+  for (const res of [
+    okRes({ rows: [{ id: 'x', score: 1 }] }),
+    okRes({ rows: [] }),
+    okRes({}),                                   // 没有 rows 键 ⇒ 按空处理（不是崩、不是空白）
+    { ok: false as const, failure: { tier: 'route' as const, detail: 'x' } },
+  ]) {
+    const html = extraPageHtml(SPEC, res)
+    assert.ok(html.length > 0)
+    assert.match(html, /mecha-page/)
   }
 })

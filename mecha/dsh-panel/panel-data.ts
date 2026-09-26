@@ -25,6 +25,7 @@ import {
   panelState,
   readJson,
   statsLine,
+  type FetchResult,
   type PanelState,
 } from './monitor-client.ts'
 import { PANEL_CONFIG } from './panel-config.ts'
@@ -55,17 +56,35 @@ export function tabLabel(id: string): string {
 }
 
 /**
- * 一拍取数：地址 → 两条基础路由 → 归约。
+ * 一拍取数：地址 → 两条基础路由 → 归约（+ 可选的**附加页**取数）。
  *
  * ⚠ **地址拿不到时不再 fetch 任何东西**：不拿空 base 去拼相对路径，否则
  * "软件没在 AI 模式跑"会被显示成"连上了但面板空白"。
+ *
+ * ⚠ **附加页的失败不牵连标准两页**：它们各自的 `FetchResult` 单独返回，由各自那一页
+ * 渲染可读错误（`unreadableText`）。若把它们塞进 `panelState` 的 `extra`，一处附加路由
+ * 失败会把**整个面板**打成 `route` 档——那会把"记录仪/配置态本来是好的"也一起吃掉。
  */
-export async function loadPanel(doFetch: typeof fetch = fetch): Promise<PanelState> {
+export interface ExtraRoute { id: string; path: string }
+
+export interface PanelLoad {
+  state: PanelState
+  /** 附加页各自的取数结果（按 `id`）。没有声明附加页时是空对象。 */
+  extras: Record<string, FetchResult<unknown>>
+}
+
+export async function loadPanel(doFetch: typeof fetch = fetch,
+                                extraRoutes: ExtraRoute[] = []): Promise<PanelLoad> {
   const base = await fetchMonitorBase(doFetch, PANEL_CONFIG.ROUTE_PATH)
-  if (base.ok !== true) return panelState({ base })
+  if (base.ok !== true) return { state: panelState({ base }), extras: {} }
   const history = await readJson(base.data, HISTORY_PATH, doFetch)
   const config = await readJson(base.data, CONFIG_PATH, doFetch)
-  return panelState({ base, basic: { [HISTORY_ROUTE]: history, [CONFIG_ROUTE]: config } })
+  const state = panelState({ base, basic: { [HISTORY_ROUTE]: history, [CONFIG_ROUTE]: config } })
+  const extras: Record<string, FetchResult<unknown>> = {}
+  for (const r of extraRoutes) {
+    extras[r.id] = await readJson(base.data, r.path, doFetch)
+  }
+  return { state, extras }
 }
 
 /** 状态 → **可读文案**（`ok` 档返回空串：那一档要画数据，不画文案）。 */

@@ -15,6 +15,7 @@
  * 2. **类名中性**（`mecha-` 前缀）：本目录是**共享资产**，不许出现任何项目前缀或项目字面量
  *    （词表守卫在扫 `.ts`/`.tsx`/`.md`）。
  */
+import type { FetchResult } from './monitor-client.ts'
 
 /** 一条写事件（框架 History 的 wire 形状）。 */
 export interface Ev {
@@ -150,6 +151,84 @@ export function cfgPageHtml(cfg: ConfigWire | undefined, isOpen: IsOpen): string
       ).join('')}</table>`
     : ''
   return `<div class="mecha-page"><h4>配置态</h4>${noSchema}${tree}${orphanTable}</div>`
+}
+
+// ---------------------------------------------------------------- 项目附加页（声明式）
+
+/**
+ * 附加页的**一列**：`cell` 由**项目**给（取值 + 格式化）⇒ 领域词留在项目里。
+ */
+export interface ExtraColumn {
+  label: string
+  cell: (row: unknown) => string
+}
+
+/**
+ * **项目的附加页声明**（声明式列表，**不是插件/hook 框架**）。
+ *
+ * ## 它的存在理由（不是"为将来"）
+ *
+ * 并入某个项目的面板时，它那份"运行记录"页含**该项目自己的领域词**（方法名、指标名…）。
+ * 原样搬进资产 ⇒ **领域词静默进了框架**（L5），而**词表拦不住**（词表是另一套领域值）。
+ * ⇒ **声明式**是唯一能让"能力并入、领域词不进"的结构性答案。
+ *
+ * ## 数据契约（**共享面板定 wire 形状**）
+ *
+ * 附加路由**必须**回 `{ rows: [...], ... }`：表格行取 `payload.rows`；其余键由
+ * `summaryLine` 自己解释（它拿到整个 payload）。⇒ 这样 spec 不需要"行提取器"字段。
+ *
+ * ## 字段冻结在 **8 个**
+ *
+ * 再加字段要**先有第二个页面型消费者**（今天只有一家）——否则就是在为一个消费者把 spec 撑大。
+ */
+export interface ExtraPageSpec {
+  /** 页签标识（项目词，只在本项目内唯一）。 */
+  id: string
+  /** 页签文案（项目词）。 */
+  label: string
+  /** 附加路由的**请求路径**（含查询串，如 `/runs?limit=50`）。**资产里不许出现这个字面量。** */
+  path: string
+  /** 页内标题（项目词）。 */
+  title: string
+  /** 表格列（项目给 cell）。 */
+  columns: ExtraColumn[]
+  /** 空表文案（项目词）。⚠ **必须与"读不到"分开**。 */
+  emptyText: string
+  /** 读不到时的文案（项目词）。**面板必画它**，不许渲染成空表。 */
+  unreadableText: string
+  /** 顶部概括**一行**（可选；不声明就不画）。项目自己的词与拼法都在这个函数里。 */
+  summaryLine?: (payload: unknown) => string
+  /** 常驻脚注（可选；如"存档为空不等于没跑过"）。 */
+  note?: string
+}
+
+/** 附加页：**这一页自己的**失败只影响这一页（不牵连标准两页）。 */
+export function extraPageHtml(spec: ExtraPageSpec, result: FetchResult<unknown>): string {
+  const head = `<h4>${esc(spec.title)}</h4>`
+  const note = spec.note ? `<div class="mecha-hint">${esc(spec.note)}</div>` : ''
+  if (result.ok !== true) {
+    // ⭐ **读不到 ≠ 空表**：把真因摆成人能读的文本，并明说"这一格不是空的"。
+    return `<div class="mecha-page">${head}` +
+      `<div class="mecha-msg">${esc(spec.unreadableText)}：${esc(result.failure.detail)}</div>` +
+      note + '</div>'
+  }
+  const payload = result.data as { rows?: unknown[] } | null
+  const rows = Array.isArray(payload?.rows) ? payload!.rows! : []
+  const summary = spec.summaryLine ? spec.summaryLine(payload) : ''
+  const headLine = summary
+    ? `<div class="mecha-headline">${esc(summary)}</div>`
+    : ''
+  if (!rows.length) {
+    return `<div class="mecha-page">${head}${headLine}` +
+      `<div class="mecha-hint">${esc(spec.emptyText)}</div>${note}</div>`
+  }
+  const table = '<table>' + rows.map((r) =>
+    '<tr>' + spec.columns.map((c, i) =>
+      `<td class="${i ? '' : 'key'}">${esc(c.cell(r))}</td>`).join('') + '</tr>').join('') +
+    '</table>'
+  const header = '<table><tr>' + spec.columns.map((c) =>
+    `<td class="muted">${esc(c.label)}</td>`).join('') + '</tr></table>'
+  return `<div class="mecha-page">${head}${headLine}${header}${table}${note}</div>`
 }
 
 /** 面板样式（**布局本体**；中性前缀，随资产发货）。 */
