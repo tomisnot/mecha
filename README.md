@@ -77,10 +77,14 @@ GUI 纯本地 / AI 经 dsh），详见 `docs/v2/notes/implemented/` 下 `两模�
 python checks/run_all.py     # 全部门禁（含真引擎端到端，需 EL 仓在位 + node 在 PATH）
 ```
 
-**两条硬外部依赖**（**缺即红，不假绿**）：
+**三条硬外部依赖**（**缺即红，不假绿**）：
 1. **EL 仓在位**——`phase5_*` 直接 import EL 的 `mecha_v2`；
 2. **`node` 在 PATH**——`dsh_panel_selfcheck` 跑 `mecha/dsh-panel/` 那份**共享资产**的
-   TS 自测（Node ≥22.6 原生剥类型，零 npm 依赖）。⇒ **本仓的完整门禁需要 node**。
+   TS 自测（Node ≥22.6 原生剥类型，零 npm 依赖）；
+3. **一份可用的 `tsc`**——同一判据**借接入项目装的那份**（`<项目>/dsh/node_modules/typescript`；
+   `MECHA_TSC_ROOT` 可覆盖）做**类型检查**：`node --test` **只剥类型**，看不见**只在类型位置**
+   的错（真实缺口：资产漏了一个 `import type` ⇒ 自测全绿，而消费者一跑 `npm run typecheck` 就红）。
+   ⇒ **本仓的完整门禁需要 EL 仓 + node + 一份可用的 `tsc`**。
 
 判据纪律：测装配不测单元（L6）；每条"能抓坏"配"不许误报"对偶（L7）；
 缺真依赖即红不假绿。
