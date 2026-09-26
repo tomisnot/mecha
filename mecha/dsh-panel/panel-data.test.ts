@@ -92,19 +92,31 @@ test('⭐ eventsOf / configOf：用**基础路由键**（不是带查询串的�
   assert.equal(configOf(null), undefined)
 })
 
-test('tabLabel：共享默认；参数块覆盖后**结果就变**（R17）', () => {
-  assert.equal(tabLabel('rec'), '飞行记录仪')
-  assert.equal(tabLabel('cfg'), '配置态')
-  assert.equal(tabLabel('whatever'), 'whatever')
+test('tabLabel：**共享默认**（用"临时清空"测）与**覆盖后结果就变**（R17）', () => {
+  // ⚠ 这里**不许假定"项目没填 TABS"**：`TABS` 是文档允许项目填的可选参数，
+  // 任何照文档填了的项目都会让"写死中性默认"的断言变红（真实发生过：某项目填了
+  // `{rec: …}` ⇒ 共享自测 pass 41 / fail 1）。
+  // ⇒ 正确做法：**临时清空**参数块来测默认那一半，覆盖那一半另测。
   const original = PANEL_CONFIG.TABS
   try {
+    delete PANEL_CONFIG.TABS
+    assert.equal(tabLabel('rec'), '飞行记录仪')
+    assert.equal(tabLabel('cfg'), '配置态')
+    assert.equal(tabLabel('whatever'), 'whatever', '未知 id 原样返回')
+
     PANEL_CONFIG.TABS = { rec: '甲', cfg: '乙' }
     assert.equal(tabLabel('rec'), '甲')
     assert.equal(tabLabel('cfg'), '乙')
+
+    // 只覆盖一个 ⇒ 另一个仍取共享默认
+    PANEL_CONFIG.TABS = { rec: '操作流水' }
+    assert.equal(tabLabel('rec'), '操作流水')
+    assert.equal(tabLabel('cfg'), '配置态')
   } finally {
     PANEL_CONFIG.TABS = original
   }
-  assert.equal(tabLabel('rec'), '飞行记录仪')
+  assert.equal(tabLabel('rec'), original?.rec ?? '飞行记录仪',
+    '恢复后应与参数块现状一致（消费者填过就跟着它）')
 })
 
 // ---------------------------------------------------------------- loadPanel
@@ -169,9 +181,15 @@ test('⭐ 附加页：各自取数；**附加路由失败不牵连标准两页**
     { id: 'bad', path: '/extra-bad' },
   ])
   assert.equal(state.kind, 'ok', '附加路由失败**不许**把整个面板打成 route 档（那会吃掉标准两页）')
-  assert.equal(extras.ok.ok, true)
-  assert.equal(extras.bad.ok, false)
-  assert.equal(extras.bad.ok === false && extras.bad.failure.tier, 'route')
+  // ⚠ 严格 tsconfig（noUncheckedIndexedAccess）下 `extras.ok` 是 `FetchResult | undefined`
+  // ⇒ 先取出来再断言（这条是被**类型检查守卫**当场抓到的：`node --test` 看不见）。
+  const okExtra = extras['ok']
+  const badExtra = extras['bad']
+  assert.ok(okExtra, '声明过的附加页必须有结果')
+  assert.ok(badExtra, '声明过的附加页必须有结果')
+  assert.equal(okExtra.ok, true)
+  assert.equal(badExtra.ok, false)
+  assert.equal(badExtra.ok === false && badExtra.failure.tier, 'route')
   assert.ok(calls.some((c) => c.includes('/extra-ok?limit=1')), '附加路由按声明里的路径取')
   assert.deepEqual((await loadPanel(f, [])).extras, {}, '没声明附加页 ⇒ 空对象')
 })

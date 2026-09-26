@@ -29,6 +29,12 @@ import {
   type PanelState,
 } from './monitor-client.ts'
 import { PANEL_CONFIG } from './panel-config.ts'
+// ⚠ 这两个只在**类型位置**用（`eventsOf` / `configOf` 的返回类型）⇒ 运行时被剥掉，
+// 但**类型检查需要它们被 import**：漏了会报 `TS2304: Cannot find name 'Ev'`，
+// 而**框架自己的 `node --test` 看不见**（类型剥离不做检查）。
+// ⇒ 这正是"资产发布了框架无法类型检查的代码、第一个消费者付账"那个缺口；
+// 现在由 `checks/dsh_panel_selfcheck.py` 的**类型检查守卫**兜住（缺 tsc 即红）。
+import type { ConfigWire, Ev } from './panel-view.ts'
 
 /**
  * 路由与请求路径。
