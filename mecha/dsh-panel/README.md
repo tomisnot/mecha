@@ -102,9 +102,23 @@ Python 代码 import 它）。它随包分发的方式是 `pyproject.toml` 的 `
 三个项目按序采纳：**先迁"今天是坏的"那家**（迁完立刻可验），另两家后迁且**行为应不变**
 （其中一家的"两级地址来源"要收敛成单级——那是**已申报的行为变更**）。
 
-## 未验证（明确不宣称）
+## 出包实测（2026-09-26 · **已验证**）
 
-* **没有跑过 `pip wheel` 验证 package-data 真的把本目录打进包**（本工程的执行环境禁
-  `pip install`）⇒ `pyproject.toml` 的声明**未经出包实测**，属于"读代码看不出来"的
-  那类事实（D-24 的教训正在于此）。
+`pip wheel . -w %TEMP%\… --no-deps` 构建成功（`mecha-0.2.0-py3-none-any.whl`），
+**用 `zipfile` 逐名核对**（不是肉眼看输出）：wheel 里**确实含**本目录全部 6 个文件
+（5 个 `.ts` + `README.md`），**无缺、无多** ⇒ `pyproject.toml` 的 `package-data`
+声明**经实测成立**。（D-24：这条只有真出包才能证，读代码看不出来。）
+
+⚠ **实测顺带抓到一条**：`pip wheel` 会在**仓内**留下 `build/`（`build/lib/mecha/…`）。
+它是 **gitignore 的**（`.gitignore:11`）⇒ **`git status` 看不见它**——"仓内无残留"若只按
+`git status` 判，就是**假绿**。本工程已被 gitignore 骗过两次，**这是第三次，而且发生在
+我们自己的验收动作里** ⇒ 结论：**核验残留必须直接看文件系统**。
+本轮已清掉 `build/`；`mecha.egg-info/`（先前就存在、同样被 ignore）被构建刷新了内容，
+属无害缓存，保留。
+
+另：本地缺 `wheel` 包时，`--no-build-isolation` 会以 `invalid command 'bdist_wheel'`
+失败——那是**环境缺口**，不是 `pyproject` 的问题（用默认的构建隔离即可）。
+
+## 仍未验证（明确不宣称）
+
 * 本目录的实现**没有在任何真实 dsh 实例里跑过**（它只在 Node 里过了单测）。
