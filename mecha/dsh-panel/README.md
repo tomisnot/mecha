@@ -28,13 +28,55 @@ client 半 fetch 同源路由拿到地址。本目录就是这一层 + 取数骨
 
 ## 目录内容
 
-| 文件 | 是什么 |
-|---|---|
-| `panel-config.ts` | ⭐ **唯一允许项目专有的文件**（参数块）。复制后**只改这里** |
-| `monitor-url.ts` | host 侧地址路由：`resolveMonitorBase` / `sendJson` / `makeMonitorUrlHandler` |
-| `monitor-client.ts` | client 侧取数骨架：同源取址 `fetchMonitorBase` + `readJson` + **错误档位** + **R8 非退化自证** + **`panelState` 归约（让空白不可表达）** |
-| `*.test.ts` | **共享单测**（随实现一起复制；模板来自本工程跑得最久的那份实现） |
-| `README.md` | 本文件（约定与纪律） |
+| 文件 | 是什么 | 浏览器安全？ |
+|---|---|---|
+| `panel-config.ts` | ⭐ **唯一允许项目专有的文件**（参数块）。复制后**只改这里** | ✅ 是 |
+| `routes.ts` | **浏览器安全的共享常量**：`DEFAULT_ROUTE_PATH` / `BASIC_ROUTES` | ✅ 是 |
+| `monitor-client.ts` | client 侧取数骨架：同源取址 `fetchMonitorBase` + `readJson` + **错误档位** + **R8 非退化自证** + **`panelState` 归约（让空白不可表达）** | ✅ 是 |
+| `monitor-url.ts` | host 侧地址路由：`resolveMonitorBase` / `sendJson` / `makeMonitorUrlHandler` | ⛔ **否（node-only）** |
+| `*.test.ts` | **共享单测**（随实现一起复制；模板来自本工程跑得最久的那份实现） | —（Node 侧跑） |
+| `README.md` | 本文件（约定与纪律） | — |
+
+## ⭐⭐ 谁能在浏览器里 import：**这条边界是硬约束**
+
+> **client 半（浏览器 bundle）只许 import：`monitor-client.ts`、`panel-config.ts`、`routes.ts`。**
+> **`monitor-url.ts` 是 node-only**（顶层 `node:fs` / `node:path`）——**client 半不许 import 它**，
+> 也**不许**从它取值导入常量。
+
+**为什么把这条写成硬约束**（2026-09-26 的真实缺陷，原生消费者报回来的）：
+`monitor-client.ts` 原先从 `monitor-url.ts` 取值导入 `BASIC_ROUTES`，于是**浏览器 bundle 里
+进了 `node:fs` ⇒ 加载即失败**（`esbuild --bundle --platform=browser` 直接
+`Could not resolve "node:fs"`，指到 `monitor-url.ts`）。
+
+⚠ **另一个消费者当时没炸，是工具链的运气，不是资产的性质**（它的原话：
+"**我的安全是『碰巧没用那几个导出』换来的，不是结构保证的**"）。实测：**同一个缺陷下，
+用 esbuild 打一个"完全不用那条链"的入口，一样红**（`node:fs` / `node:path` 都解析不了）——
+它当时之所以绿，是它的打包器**把常量内联、把整个模块摇掉了**。⇒ **不要依赖树摇**。
+
+**这条边界有机械守卫**（不靠打包器的聪明）：`monitor-client.test.ts` 里有一条
+**导入闭包检查**——从 client 半的两个入口出发，沿相对 import 走一遍，断言闭包里
+**没有任何 `node:`**（类型导入不算，它会被剥掉），并**自证闭包真的走过了若干文件**、
+以及**node 半确实仍依赖 node**（否则这条检查没有可抓之物）。红证：把旧 import 放回去
+⇒ 该检查**必红**（实测消息：`monitor-url.ts → node:fs、monitor-url.ts → node:path`）。
+
+## ⭐ 严格 tsconfig 下**必须能过**（可移植性，不是风格）
+
+**资产要能在最严的消费者 tsconfig 下编译**——**不许让项目为它放松类型严格度**。
+真实代价（2026-09-26）：`classifyRoute` 里的 `path.split('?')[0]` 在
+**`noUncheckedIndexedAccess`** 下是 `string | undefined` ⇒ 报 **TS2345**；
+**`exclude` 挡不住**（TypeScript 仍会检查被 import 到的文件，而 client 半必须 import 它）
+⇒ 一个消费者**只能**在"改资产"与"关掉那个旗标"之间选，**它关了**（并在注释里写了恢复条件）。
+
+**现在的状态（已实测）**：用消费者装的 `tsc` 跑
+`--strict --noUncheckedIndexedAccess --allowImportingTsExtensions`（ESM + bundler 解析）
+⇒ **0 错误**；把 `?? ''` 拿掉 ⇒ **复现 TS2345**（两向都自证过扰动落上）。
+
+**同类隐患的纪律**：**越界索引（`x[0]` / `m[1]` / `split(...)[0]`）一律写 `?? ''`**
+（本目录已扫过一遍：实现与单测各有一处，都已修）。
+
+⚠ 一条**约束**（如实写）：**共享单测要求 ESM**——它用 `import.meta.url` 定位自身目录。
+若某个消费者的 tsconfig 把 `src/panel/` 当 **CommonJS** 编译，会报 `TS1470`。
+（两个消费者的 dsh 插件都是 ESM，实测无此问题；这里写清是因为它是**口径依赖**，不是资产缺陷。）
 
 ## ⭐ 复制约定：「除参数块之外逐字一致」
 
@@ -193,9 +235,11 @@ Python 代码 import 它）。它随包分发的方式是 `pyproject.toml` 的 `
 ## 出包实测（2026-09-26 · **已验证**）
 
 `pip wheel . -w %TEMP%\… --no-deps` 构建成功（`mecha-0.2.0-py3-none-any.whl`），
-**用 `zipfile` 逐名核对**（不是肉眼看输出）：wheel 里**确实含**本目录全部 6 个文件
-（5 个 `.ts` + `README.md`），**无缺、无多** ⇒ `pyproject.toml` 的 `package-data`
+**用 `zipfile` 逐名核对**（不是肉眼看输出）：wheel 里**确实含**本目录全部 **7** 个文件
+（6 个 `.ts` + `README.md`），**无缺、无多** ⇒ `pyproject.toml` 的 `package-data`
 声明**经实测成立**。（D-24：这条只有真出包才能证，读代码看不出来。）
+⚠ 这条核对**顺手抓到过我自己的错**：一次探针把**真仓目录**当草稿目录，往 `mecha/dsh-panel/`
+写了两个入口文件，轮子清单当场从 7 变成 **9** ⇒ **出包核验是"另一层"，能抓到本层的脏**。
 
 ⚠ **实测顺带抓到一条**：`pip wheel` 会在**仓内**留下 `build/`（`build/lib/mecha/…`）。
 它是 **gitignore 的**（`.gitignore:11`）⇒ **`git status` 看不见它**——"仓内无残留"若只按
