@@ -19,17 +19,35 @@
 |---|---|---|
 | 缺 `node` | 「**环境缺硬依赖 node**（**不是框架 Python 故障**）」 | 环境 |
 | 自测红 | 「**资产自测失败**（不是框架 Python 故障）」+ 红掉的用例名 | 资产（参考实现或它的自测） |
-| 一个用例都没跑 | 「资产自测**一个用例都没跑**（守卫是空的）」 | 资产（自测被删/被跳过） |
+| 一个用例都没跑 | 「资产自测**一个用例都没跑**（守卫是空的）」 | 资产（自测被删） |
+| **跑起来了但没有用例真的跑** | 「**跑起来了但没有用例真的跑**（skipped=N）」 | 资产（自测被 **skip** 掉） |
 | 本脚本自己抛异常 | 带 Python 栈 | **框架** |
+
+## ⚠ R16 的一个新实例（本判据自己踩的，留注释防复发）
+
+**我一度确信"守卫的空洞已被堵住"，其实只堵了一半。**
+第一版只解析 `tests/pass/fail`，通过条件是 `tests > 0 且 fail == 0`，并自认为
+"`tests == 0` 视为红 ⇒ 空守卫挡住了"。**实测**：把副本里的用例**全改成 `test.skip`**
+⇒ node 报 `tests 21 / pass 0 / fail 0 / skipped 21 / exit 0` ⇒ **本判据判 PASS，
+而且它自己那行就打印着 `0/21`**（自己的输出在喊，判据没读）。
+
+⇒ R16 在本判据上的形态**不是**"扰动没落上"，而是：**我确信我守住了某个东西，
+而它旁边有一个我没看的口子**。现在解析 **四个计数**并要求
+**`skipped == 0 且 pass > 0`**（规格取自 Get Paper 那份更严的判据：它显式断言
+`pass` / `fail 0` / `skipped 0`）。
 
 ## Known Limitations and Deferred Work
 
 - 只跑 **Node 原生剥类型**（Node ≥ 22.6）下的自测；**不验** `tsdown` 构建、**不验**
   真实 dsh 实例里跑起来（本仓 README 的"未验证"节与资产 README 都写了这两条）。
 - `check(panel_dir=…)` 的 `panel_dir` **可注入**：判据与红证可以喂一个**合成面板**
-  （比如故意让某个用例红的副本）来验"自测失败"这一支说话是否清楚。生产路径用默认值。
+  （比如故意让某个用例红的副本、或**全部 skip 的副本**）来验各支出口说话是否清楚。
+  生产路径用默认值。
 - 只按 `*.test.ts` 收集用例：**新增测试文件会被自动跑到**（不需要改本脚本，避免"手抄
-  清单"那类漂移，D4）。反过来，**删掉全部测试文件**会被"一个用例都没跑"这一支抓住。
+  清单"那类漂移，D4）。反过来，**删掉全部测试文件**会被"一个用例都没跑"这一支抓住，
+  **把用例全 skip** 会被"跑起来了但没有用例真的跑"这一支抓住。
+- 计数靠解析 `node --test` 的**报告文本**（`ℹ tests/pass/fail/skipped`）：报告格式若变，
+  解析会退化成"读不到计数"⇒ 那一支是**红**（不是静默放行）。
 """
 
 from __future__ import annotations
@@ -44,7 +62,7 @@ ROOT = Path(__file__).resolve().parent.parent
 PANEL_DIR = ROOT / "mecha" / "dsh-panel"
 TIMEOUT_SECONDS = 300
 
-_COUNT_RE = re.compile(r"^\u2139\s+(tests|pass|fail)\s+(\d+)\s*$", re.M)
+_COUNT_RE = re.compile(r"^\u2139\s+(tests|pass|fail|skipped)\s+(\d+)\s*$", re.M)
 _FAIL_RE = re.compile(r"^\u2716\s+(.+?)\s*\(\d", re.M)
 
 
@@ -53,7 +71,11 @@ def _node() -> str | None:
 
 
 def _counts(output: str) -> dict[str, int]:
-    """解析 `node --test` 的自证计数（`ℹ tests N` / `ℹ pass N` / `ℹ fail N`）。"""
+    """解析 `node --test` 的自证计数（`ℹ tests/pass/fail/skipped N`）。
+
+    ⚠ 四个都要：**只读 `tests/pass/fail` 会漏掉"全被 skip"**（那时 `tests>0`、
+    `fail=0`、`exit=0`，看着全绿而其实一个用例都没跑）——本判据自己踩过，见模块 docstring。
+    """
     return {name: int(n) for name, n in _COUNT_RE.findall(output)}
 
 
@@ -91,10 +113,12 @@ def check(panel_dir: Path = PANEL_DIR) -> tuple[int, list[str]]:
 
     out = (r.stdout or "") + (r.stderr or "")
     counts = _counts(out)
-    ran, passed, failed_n = counts.get("tests", 0), counts.get("pass", 0), counts.get("fail", 0)
-    # R8/R15 自证：**跑起来了**不等于**用例真的跑了**
+    ran, passed = counts.get("tests", 0), counts.get("pass", 0)
+    failed_n, skipped_n = counts.get("fail", 0), counts.get("skipped", 0)
+    # R8/R15 自证：**跑起来了**不等于**用例真的跑了** ⇒ 四个计数**都打出来**
     lines.append(f"[dsh_panel] 自证：测试文件 {len(tests)} 个；tests={ran} pass={passed} "
-                 f"fail={failed_n}（0 用例 ⇒ 视为红：守卫是空的）")
+                 f"fail={failed_n} skipped={skipped_n}"
+                 f"（要求 skipped=0 且 pass>0，否则视为红：跑起来了≠用例真的跑了）")
 
     if ran == 0:
         lines.append("dsh_panel_selfcheck: FAIL —— 资产自测**一个用例都没跑**"
@@ -111,7 +135,17 @@ def check(panel_dir: Path = PANEL_DIR) -> tuple[int, list[str]]:
                      f"（不是框架 Python 故障）：{failed_n or '有'} 用例红，见上方清单")
         return 1, lines
 
-    lines.append(f"dsh_panel_selfcheck: PASS（资产自测 {passed}/{ran}；node 硬依赖已满足）")
+    if skipped_n > 0 or passed == 0:
+        # ⚠ 这一支是本判据的**假绿修复**（R16 实例，见模块 docstring）：全被 skip 时
+        # `tests>0 / fail=0 / exit=0`，光看那三个计数会判 PASS，而**一个用例都没跑**。
+        lines.append("dsh_panel_selfcheck: FAIL —— 资产自测**跑起来了但没有用例真的跑**"
+                     f"（skipped={skipped_n} pass={passed}）"
+                     "：**不是**资产自测失败，是**它们被跳过了** ⇒ 守卫没有覆盖"
+                     "（软跳过就是「存在但从不执行」的假绿）")
+        return 1, lines
+
+    lines.append(f"dsh_panel_selfcheck: PASS（资产自测 {passed}/{ran}，skipped=0；"
+                 "node 硬依赖已满足）")
     return 0, lines
 
 
