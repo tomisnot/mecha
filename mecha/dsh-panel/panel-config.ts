@@ -21,7 +21,11 @@
  *   `resolve_data_dir(root, dir_name)` 的纪律：不给就报错）。留空时
  *   `resolveMonitorBase` 会**当场抛错**（响亮失败，不是静默用默认名）。
  * * `TITLE`：面板标题（纯展示；模型不读它）。
+ *
+ * ⚠ **本模块必须浏览器安全**（client 半会 import 它）⇒ 只许 import `./routes.ts`
+ * 这类零 `node:*` 的模块。
  */
+import { DEFAULT_ROUTE_PATH } from './routes.ts'
 
 export interface PanelConfig {
   /** host 半注册的只读路由路径（client 半用同一字符串 fetch）。 */
@@ -33,7 +37,11 @@ export interface PanelConfig {
 }
 
 export const PANEL_CONFIG: PanelConfig = {
-  ROUTE_PATH: '/mecha/monitor-url',
+  // 参考实现的中性默认（唯一来源是 `routes.ts` 的 `DEFAULT_ROUTE_PATH`）。
+  // ⚠ **复制到项目后请直接写成该项目自己的路由字面量**（host 半注册它、client 半 fetch 它）；
+  //    换成本项目的值之后，上面那行 import 若不再被用到，**就把它删掉**
+  //    （R17：不留声明了不用的东西）。
+  ROUTE_PATH: DEFAULT_ROUTE_PATH,
   // ⚠ 复制到项目后**必须**填成该项目权威实际写的那个文件名。
   //    留空 ⇒ 路由一律 503 并给出"端口文件未配置"的可读错误（这是刻意的）。
   PORT_FILE: '',
