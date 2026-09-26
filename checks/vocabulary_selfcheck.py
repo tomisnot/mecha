@@ -31,7 +31,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 WORDLIST = ROOT / "checks" / "vocabulary.txt"
 SCAN_DIRS = ("mecha", "checks")
-ASSET_SUFFIXES = (".py", ".html", ".js", ".css", ".json", ".yaml", ".yml", ".toml")
+ASSET_SUFFIXES = (".py", ".html", ".js", ".css", ".json", ".yaml", ".yml", ".toml",
+                  # dsh 面板参考实现（mecha/dsh-panel/）是**共享资产**：TS 源码与
+                  # 它的 README 同样受词表管辖（"参考实现里不许出现项目字面量"，
+                  # 见 vocabulary.txt 末节与 mecha/dsh-panel/README.md）。
+                  ".ts", ".tsx", ".md")
 #: EL 消费配置判据：它们的**职责**就是拿 EL 领域键跑端到端（ADR 领域参考实现
 #: 搬回所属项目）。与 docs/ 排除同理——禁的是"库/通用判据写死项目值"，不是
 #: "项目自己的接线判据引用项目值"。豁免是显式白名单，新增文件不会静默获免。

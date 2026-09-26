@@ -27,3 +27,15 @@ src.adapter
 # 物理量键名（最终验收审查抓到 monitor.py docstring 残留；核心与通用判据禁止，
 # EL 消费配置判据 checks/phase5_*.py 显式豁免，见 vocabulary_selfcheck.py）
 B_gauss
+
+# —— 以下来自"dsh 面板参考实现"这条纪律（mecha/dsh-panel/ 是**共享资产**）——
+# 参考实现要能被三个项目逐字复制，**它的正文里不许出现任何项目字面量**；
+# 项目专有的值只许出现在参数块 mecha/dsh-panel/panel-config.ts 里（见该目录 README）。
+# 这些词在 mecha/ 与 checks/ 里都不该出现（唯一一处历史提及在 phase5_hub_selfcheck.py，
+# 该文件已在 EXEMPT_FILES 里）。
+re0-mecha
+ml-toolbox
+.monitor-port
+.ml-monitor-port
+.cockpit-port
+
