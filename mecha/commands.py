@@ -75,7 +75,7 @@ import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 
-from .errors import MechaError, ToolFailure, UnknownOp
+from .errors import GateDenied, MechaError, ToolFailure, UnknownOp
 from .roles import Disposer, Role, RoleRegistry
 
 #: 命令名守卫：snake_case、非空、无项目前缀。
@@ -164,6 +164,10 @@ class CommandSpec:
     scope: tuple[str, ...] = ()
     estimate_sec: float | Callable[..., float] = 0.0
     cancel_supported: bool = False
+    #: **真的拦**（不是"只是声明"）：为真时 `invoke` 会在**任何副作用之前**要一次
+    #: one-shot 授权（`approval.request(...)`）；**没接审批通道时拒绝**（fail closed）。
+    #: ⚠ 旧情况：这个字段当年只是声明、不分派 ⇒ 项目写了"需要人工批准"就**以为被保护**，
+    #: 而它照跑不误（比没有这个字段更坏：**制造虚假安全感**）。
     approval_required: bool = False
     #: handler 是否需要知道「**这单是谁交的**」（**显式 opt-in**）。
     #:
@@ -377,7 +381,8 @@ class CommandRegistry:
 
     def invoke(self, name: str, args: Mapping[str, object], *, context: object,
                gate: object | None = None,
-               channel: object | None = None) -> dict:
+               channel: object | None = None,
+               approval: object | None = None) -> dict:
         """统一调用口：契约校验 → 命令体 → 回执契约 →（有副作用则）Gate 审计。
 
         返回归一化回执（``is_error`` / ``value`` / ``error``）。任何失败都以
@@ -386,8 +391,12 @@ class CommandRegistry:
         参数纪律：``args`` 必须与 ``spec.parameters`` **双向吻合**——声明的必填
         键缺一即拒，未声明的键多一也拒（除非 ``parameters.additionalProperties``
         显式为真）。后者抓的是"声明漂移"：拼错的参数名不该被 handler 的
-        ``**kwargs`` 静默吞掉。``RESERVED_ARGS``（reason / call_id）是框架抽给
-        Gate 的调用元数据，命令体若要自己用必须在 ``parameters`` 里显式声明。
+        ``**kwargs`` 静默吞掉。
+        ⚠ **``RESERVED_ARGS``（``reason`` / ``call_id``）会被框架抽走**（送进审计事件），
+        **handler 在默认情况下收不到它**；命令体要自己用它，就把它**显式列进
+        ``parameters.required``**（GP 的做法，实测有效）。
+        ``spec.approval_required`` 为真时，调用方**必须**注入 ``approval=``
+        （one-shot 授权；**没接审批通道即拒绝**，fail closed）。
         """
         spec = self._specs.get(name)
         if spec is None:
@@ -426,6 +435,40 @@ class CommandRegistry:
             except MechaError as e:
                 return _failure(e)
         meta = {k: args.get(k) for k in RESERVED_ARGS if k in args}
+        # 审批闸也在**任何副作用之前**（与 authority 前置检查同一处）。声明了
+        # `approval_required` 就是要一次 one-shot 授权；**没接审批通道时拒绝**
+        # （fail closed）——照跑等于"声明了治理、实际不拦"，那比没有这个字段更坏
+        # （**制造虚假安全感**）。
+        if spec.approval_required:
+            actor = (channel or _default_channel(spec.name)).actor   # type: ignore[attr-defined]
+            if approval is None:
+                return _failure(GateDenied(
+                    f"命令 {spec.name!r} 声明了需要审批，但当前没有接审批通道",
+                    kind="approval_denied",
+                    hint="审批是 one-shot（没有 allow-always、不记忆）。两条出路："
+                         "① 给 invoke 注入 approval=（如 LocalApproval(decider)）；"
+                         "② 这条命令其实不需要人工批准 ⇒ 去掉 approval_required 声明",
+                    suggest="invoke(..., approval=sw.approval)",
+                ))
+            try:
+                verdict = approval.request(                              # type: ignore[attr-defined]
+                    actor, spec.name, str(meta.get("reason", "") or ""))
+            except MechaError as e:
+                return _failure(e)
+            except Exception as e:                                       # noqa: BLE001
+                return _failure(GateDenied(
+                    f"命令 {spec.name!r} 的审批决策器异常，按拒绝处理：{e}",
+                    kind="approval_denied",
+                    hint="决策器抛错时**不放行**（fail closed，与 LocalApproval 同款）",
+                ))
+            if not getattr(verdict, "allowed", False):
+                return _failure(GateDenied(
+                    f"命令 {spec.name!r} 未获审批："
+                    f"{getattr(verdict, 'reason', '') or '审批未通过'}",
+                    kind="approval_denied",
+                    hint="审批是一次性的；要持续放行请由人类通道切 mode"
+                         "（Authority.switch_mode）",
+                ))
         declared = spec.parameters.get("required", [])
         declared_set = set(declared) if _is_name_sequence(declared) else set()
         body_args = {k: v for k, v in args.items()

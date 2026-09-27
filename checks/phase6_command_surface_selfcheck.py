@@ -59,6 +59,7 @@ from mecha.commands import (  # noqa: E402
 from mecha.errors import MechaError  # noqa: E402
 from mecha.gate import Channel, accept_all  # noqa: E402
 from mecha.scopes import ScopePolicy  # noqa: E402
+from mecha.providers.approval import LocalApproval  # noqa: E402
 from mecha.surface import Engine, ExecutionContext  # noqa: E402
 
 
@@ -728,6 +729,75 @@ def _external_handler(context, text):
     return {"ok": True, "stored_key": "note"}
 
 
+def check_approval_required(out: list[str]) -> None:
+    """声明了 ``approval_required`` ⇒ **真的拦**（one-shot、fail closed）。
+
+    为什么必须有它：``scope`` 真拦（scopes.py）、``cancel_supported`` 真被 Job 用，
+    而 ``approval_required`` 当年**只是声明**——项目写了「这命令需要人工批准」就**以为
+    被保护**，而它**照跑不误**（**比没有这个字段更坏：制造虚假安全感**）。
+    """
+    calls = {"n": 0}
+
+    def h(context, text):
+        calls["n"] += 1
+        return {"ok": True, "stored_key": "note"}
+
+    with _with_software() as sw:
+        sw.authority.switch_mode(Mode.AI, side="human")
+        sw.commands.register(_note_cmd(approval_required=True, scope=()), h)
+        # ① 没接审批通道 ⇒ **拒绝**（fail closed）：handler 零调用、域零改动、无审计
+        calls["n"] = 0
+        r1 = sw.commands.invoke("record_note", {"text": "a"}, context=_Ctx(),
+                                gate=sw.gate, channel=sw.channels["ai"])
+        audit1 = [e for e in sw.history.events() if e.key.startswith(AUDIT_KEY_PREFIX)]
+        if (_fail_shape(r1, "approval_denied") and calls["n"] == 0
+                and not audit1 and not sw.gate.snapshot):
+            _ok("声明需审批但**没接审批通道** ⇒ 拒绝 + handler 零调用 + 域零改动 + 无审计")
+        else:
+            _fail(out, f"未接审批通道却放行：{r1} 调用={calls['n']} 审计={len(audit1)}")
+        hint = str((r1.get("error") or {}).get("info", {}).get("hint", ""))
+        if "approval" in hint and "去掉" in hint:
+            _ok("失败文案可教学：给出两条出路（接审批人 / 去掉声明）")
+        else:
+            _fail(out, f"审批失败文案没有出路指引：{hint!r}")
+
+        # ② 对偶：接「点头」决策器 ⇒ **正常执行**（否则「永远拒绝」也能过上面所有条）
+        calls["n"] = 0
+        sw.commands.register(_note_cmd(name="record_note_ok", approval_required=True,
+                                       scope=()), h)
+        r2 = sw.commands.invoke("record_note_ok", {"text": "b"}, context=_Ctx(),
+                                gate=sw.gate, channel=sw.channels["ai"],
+                                approval=LocalApproval(lambda *a: True))
+        audit2 = [e for e in sw.history.events()
+                  if e.key.startswith(AUDIT_KEY_PREFIX + "record_note_ok")]
+        if not r2.get("is_error") and calls["n"] == 1 and len(audit2) == 1:
+            _ok("对偶：接「点头」决策器 ⇒ 正常执行（副作用 1 次 + 审计 1 条）")
+        else:
+            _fail(out, f"点头却没放行：{r2} 调用={calls['n']} 审计={len(audit2)}")
+
+        # ③ 接「摇头」决策器 ⇒ 拒绝，且 handler **不再被调用**
+        calls["n"] = 0
+        sw.commands.register(_note_cmd(name="record_note_no", approval_required=True,
+                                       scope=()), h)
+        r3 = sw.commands.invoke("record_note_no", {"text": "c"}, context=_Ctx(),
+                                gate=sw.gate, channel=sw.channels["ai"],
+                                approval=LocalApproval(lambda *a: False))
+        if _fail_shape(r3, "approval_denied") and calls["n"] == 0:
+            _ok("接「摇头」决策器 ⇒ 拒绝且 handler 零调用")
+        else:
+            _fail(out, f"摇头却放行：{r3} 调用={calls['n']}")
+
+        # ④ 未声明的命令：**不传 approval** 也照常（行为一字不变）
+        calls["n"] = 0
+        sw.commands.register(_note_cmd(name="record_note_free", scope=()), h)
+        r4 = sw.commands.invoke("record_note_free", {"text": "d"}, context=_Ctx(),
+                                gate=sw.gate, channel=sw.channels["ai"])
+        if not r4.get("is_error") and calls["n"] == 1:
+            _ok("未声明 approval_required 的命令：不传 approval 也照常（不破坏）")
+        else:
+            _fail(out, f"未声明的命令被审批闸影响：{r4}")
+
+
 def check_handler_sees_channel(out: list[str]) -> None:
     """handler 想知「**这单是谁交的**」⇒ **声明 `wants_channel=True`**（显式，不靠签名自省）。
 
@@ -802,6 +872,7 @@ def main() -> int:
     check_side_effect_audit(out)
     check_result_ref_audit(out)
     check_scope_policy(out)
+    check_approval_required(out)
     check_handler_sees_channel(out)
     check_channel_authority_is_typed(out)
     check_readonly_bypasses_gate(out)
