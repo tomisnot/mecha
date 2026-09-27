@@ -88,6 +88,12 @@ def declare_roles(roles: RoleRegistry, *, engine_name: str, project: str) -> Non
     # 写权模式机（审查完整性守卫抓出的漏声明：脊椎件却不在表里）
     roles.register("authority", Role.DEFINITION, provider=project)
     # 操作者适配器（平级，不是主子）
+    # ⚠ `adapter.gui` = **面向人的适配面**，**不要求它是一个独立 GUI**（2026-09-26 口径）：
+    # 人类面是**本地网页**的项目，那个网页**就是这个角色**。名字里的 `gui` 是历史叫法，
+    # **不改名**（改名会动能力图与既有消费者，换不来对齐）。
+    # ⚠ **没有面向人的适配面时，不要声明一个空角色**——空角色会让能力图声称一个
+    # **不存在**的能力（本仓"假绿"的那一类）。那时人类面就只有"轮询 HTTP 的端点页"
+    # 这种最小形态，或干脆没有。
     roles.register("adapter.gui", Role.CONSUMER, consumer="human", provider=project)
     roles.register("adapter.ai", Role.CONSUMER, consumer="ai", provider=project)
     # Provider 层 seam（consumer 写真实消费它的能力；"是否真有人引用"由

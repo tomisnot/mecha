@@ -47,9 +47,12 @@
   ``tools.define_tool`` 是宿主适配层的活，n=1 不预建。
 - ``estimate_sec`` 只做"声明存在 + 调用形状对"的守卫，**不校验估算准不准**
   （那是宿主域语义，机械不可判）。
-- Gate 审计键 ``command.<name>`` 要求宿主的 ``validate`` 接受该前缀；宿主
-  validator 若拒绝未知键，审计写入会 fail loud（``command_audit_denied``），
-  框架不替宿主放行——这是刻意的，见 ADR 的 Consequences。
+  ⚠ **建议**对 ``side_effect=True`` 的命令填**非零**预估：填 ``0`` 会让 AI
+  **没法判断"要不要挂后台"**。⚠ 只是建议——框架**不强制、不校验**（本地的快命令
+  不该被误伤）。
+- Gate 审计键 ``command.<name>`` **只记史、不改快照**（``Gate.record``，2026-09-26 起）：
+  ⇒ **它不再经过宿主 validator**（所以宿主**不必**再给 ``command.`` 前缀开白名单）。
+  ⚠ 承诺不变：审计写不进去 ⇒ **fail loud**（``command_audit_denied``），不静默放行。
 - ``approval_required`` **真的拦**（2026-09-26 起）：为真时 ``invoke`` 在**任何副作用
   之前**要一次 one-shot 授权，**没接审批通道即拒绝**（fail closed）。⚠ 它此前只是
   声明、不分派 ⇒ 项目写了"需要批准"就以为被保护而照跑（**制造虚假安全感**）。
