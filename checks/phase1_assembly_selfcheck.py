@@ -203,6 +203,139 @@ def check_seed_also_validates(out: list[str]) -> None:
             _fail(out, f"seed 被拒却留下痕迹：{gate.snapshot} seq={memhist.last_seq}")
 
 
+class _FlakySink(InMemorySink):
+    """可控失败替身：预检拒某个值 / 第 n 次 append 抛（模拟磁盘满那类**不可预见**失败）。"""
+
+    def __init__(self, *, fail_precheck_for=None, fail_append_at=None) -> None:
+        super().__init__()
+        self.fail_precheck_for = fail_precheck_for
+        self.fail_append_at = fail_append_at
+        self.appends = 0
+
+    def precheck(self, record: dict) -> None:
+        if (self.fail_precheck_for is not None
+                and record.get("value") == self.fail_precheck_for):
+            raise MechaError("值不可编码（替身）", kind="bad_event_value")
+
+    def append(self, record: dict) -> None:
+        self.appends += 1
+        if self.fail_append_at is not None and self.appends == self.fail_append_at:
+            raise OSError("磁盘满（替身）")
+        super().append(record)
+
+
+def check_write_all_or_nothing(out: list[str]) -> None:
+    """写口**全有或全无**：可预见失败被**预检**挡在落地前；不可预见失败靠**回滚**兜。
+
+    ⚠ 目标不是"批全落"（append-only 日志**撤不回**），而是 **快照 == fold(史)** ——
+    盲目"全回滚"会把这条不变量弄坏（快照会丢掉史里已经有的写）。
+    """
+    ai = Channel("ai")
+
+    # ① 预检（单键）：值不可编码 ⇒ 快照/史一个字节都不动
+    sink = _FlakySink(fail_precheck_for="BAD")
+    _, memhist, gate = _make_gate(Mode.AI, sink=sink)
+    gate.set(ai, "k", "ok", "r")
+    before = (dict(gate.snapshot), memhist.last_seq, len(sink._records))
+    try:
+        gate.set(ai, "k2", "BAD", "r")
+        _fail(out, "预检失败竟落地")
+    except MechaError:
+        pass
+    if (dict(gate.snapshot), memhist.last_seq, len(sink._records)) == before:
+        _ok("预检失败（可预见）⇒ 快照/史**一个字节都不动**（失败发生在落地之前）")
+    else:
+        _fail(out, f"预检失败仍留痕：{gate.snapshot} seq={memhist.last_seq}")
+
+    # ①b 预检（批量）：任一键不过 ⇒ **一个都不落地**
+    sink2 = _FlakySink(fail_precheck_for="BAD")
+    _, memhist2, gate2 = _make_gate(Mode.AI, sink=sink2)
+    try:
+        gate2.set_batch(ai, {"a": 1, "b": "BAD", "c": 3}, "r")
+        _fail(out, "批量预检失败竟落地")
+    except MechaError:
+        pass
+    if gate2.snapshot == {} and memhist2.last_seq == 0 and sink2._records == []:
+        _ok("批量预检失败 ⇒ **一个都不落地**（校验/预检阶段是原子的）")
+    else:
+        _fail(out, f"批量半落地：{gate2.snapshot} seq={memhist2.last_seq}")
+
+    # ② 回滚（批量）：第 3 次 append 抛 ⇒ `a`（第 2 次）已进史、`b`/`c` 回滚
+    #   ⚠ 计数要数准：`keep` 是第 1 次 ⇒ `fail_append_at=3` 落在 `b` 上
+    #   （我第一版写 2，结果失败落在 `a` 上，`a` 本来就该回滚——**是判据的期望错了**）
+    sink3 = _FlakySink(fail_append_at=3)
+    _, memhist3, gate3 = _make_gate(Mode.AI, sink=sink3)
+    gate3.set(ai, "keep", "v0", "r")
+    try:
+        gate3.set_batch(ai, {"a": 1, "b": 2, "c": 3}, "r")
+        _fail(out, "append 失败竟没抛")
+    except OSError:
+        pass
+    folded = {e.key: e.value for e in memhist3.events()}
+    if gate3.snapshot == folded:
+        _ok("落地期失败（不可预见）⇒ 快照 **== fold(史)**（不变量保住了）")
+    else:
+        _fail(out, f"快照与史不一致：snap={gate3.snapshot} fold={folded}")
+    if gate3.snapshot.get("a") == 1 and "b" not in gate3.snapshot:
+        _ok("回滚粒度对：已进史的 a 留着、没进史的 b/c 回滚（不是盲目全回滚）")
+    else:
+        _fail(out, f"回滚粒度不对：{gate3.snapshot}")
+
+    # ②b 回滚（单键·新键）：**真的不在**快照里（不是留个 None）+ 内存史未推进
+    sink4 = _FlakySink(fail_append_at=1)
+    _, memhist4, gate4 = _make_gate(Mode.AI, sink=sink4)
+    try:
+        gate4.set(ai, "brand_new", "v", "r")
+        _fail(out, "单键 append 失败竟没抛")
+    except OSError:
+        pass
+    if "brand_new" not in gate4.snapshot and memhist4.last_seq == 0:
+        _ok("单键回滚：新键**真的不在**快照里（不是留着 None）＋ 内存史未推进")
+    else:
+        _fail(out, f"单键回滚留下残迹：{gate4.snapshot} seq={memhist4.last_seq}")
+
+    # ②c 回滚（单键·覆盖写）：回到**旧值**（"本来没有"与"本来是 None"必须能区分）
+    sink5 = _FlakySink(fail_append_at=2)
+    _, _memhist5, gate5 = _make_gate(Mode.AI, sink=sink5)
+    gate5.set(ai, "k", "old", "r")
+    try:
+        gate5.set(ai, "k", "new", "r")
+        _fail(out, "覆盖写 append 失败竟没抛")
+    except OSError:
+        pass
+    if gate5.snapshot.get("k") == "old":
+        _ok("单键回滚：原有键**回到旧值**（哨兵区分「本来没有」与「本来是 None」）")
+    else:
+        _fail(out, f"旧值没复原：{gate5.snapshot}")
+
+    # ③ dry-run（A5）：两道闸都试、都不留痕
+    def only_ok(key, value):
+        if value == "BAD":
+            raise GateDenied("禁值", kind="validate", hint="h")
+
+    sink6 = _FlakySink(fail_precheck_for="UNSERIALIZABLE")
+    _, memhist6, gate6 = _make_gate(Mode.AI, validate=only_ok, sink=sink6)
+    passed = True
+    try:
+        gate6.validate_only("k", "fine")
+    except Exception:                                   # noqa: BLE001 - 替身不该抛
+        passed = False
+    if passed and gate6.snapshot == {} and memhist6.last_seq == 0 and not sink6._records:
+        _ok("validate_only 放行合法值：**不落地、不记史**（dry-run 无痕）")
+    else:
+        _fail(out, f"validate_only 留了痕：{gate6.snapshot} seq={memhist6.last_seq}")
+    caught = []
+    for label, val, exc in (("校验", "BAD", GateDenied),
+                            ("预检", "UNSERIALIZABLE", MechaError)):
+        try:
+            gate6.validate_only("k", val)
+            _fail(out, f"validate_only 没试出「{label}」那道闸")
+        except exc:
+            caught.append(label)
+    if len(caught) == 2:
+        _ok("validate_only **两道闸都试**（校验 + 预检），失败即抛、仍不留痕")
+
+
 def check_call_id_crossref(out: list[str]) -> None:
     """call-id 互引：set 带 call_id 落进 History。"""
     _, hist, gate = _make_gate(Mode.AI)
@@ -364,6 +497,7 @@ def main() -> int:
     check_gate_authority(out)
     check_gate_executor_not_wrapper(out)
     check_seed_also_validates(out)
+    check_write_all_or_nothing(out)
     check_call_id_crossref(out)
     check_history_append_only_resume(out)
     check_monitor_reconcile(out)

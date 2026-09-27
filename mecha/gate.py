@@ -36,6 +36,10 @@ from .history import Event, History
 
 Validator = Callable[[str, object], None]
 
+#: 快照里"**这个键本来不存在**"的哨兵。⚠ 不能用 `None` 代替：`None` 是**合法值**
+#: （EL 的"留空=回默认"就是写 `None`）⇒ 回滚时两者必须能区分。
+_MISSING = object()
+
 
 def accept_all(key: str, value: object) -> None:
     """显式"任何值都合法"的校验器哨兵（不传 validate 会报错，逼你表态）。"""
@@ -121,21 +125,45 @@ class Gate:
         """
         return self._history.append(key, value, actor, reason, call_id)
 
+    def validate_only(self, key: str, value: object) -> None:
+        """**dry-run**：这个值会被写口接受吗（校验 + 预检）——**不落地、不记史**。
+
+        用途：调用方想"先试再写"时**不必复刻宿主的校验规则**。
+        ⚠ 它**不检查写权**（那是 :meth:`check` 的事）——写权与"值合不合法"是两件事。
+        """
+        self._validate(key, value)
+        self._history.precheck(key, value)
+
     def set(self, channel: Channel, key: str, value: object, reason: str,
             call_id: str = "") -> Event:
-        """四步变更口。返回落地的 History 事件。
+        """四步变更口（**全有或全无**）。返回落地的 History 事件。
 
         ``call_id`` 是当次操作的调用标识（AI 侧来自 dsh 的 tool callId，人类
         侧来自 GUI），写进 History 供与操作者行为史双向互引（总纲 §5.2②）。
+
+        ⚠ **失败时序**（2026-09-26 起）：前三步（写权 / 校验 / 预检）都在**碰快照之前**
+        ⇒ 它们的失败**一个字节都不动**；第 4 步（记史）万一失败 ⇒ **快照回滚**到本次
+        之前再抛（否则快照会与史不一致——而"快照必须能从史折叠出来"是硬不变量）。
         """
         # 1) authority.gate —— 写权看 side（human/ai），不看请求内容；actor 标签不扩权
         self.check(channel)
         # 2) validate —— 在落地之前，失败则快照一字节不动
         self._validate(key, value)
-        # 3) 落到执行器 —— 快照是 Gate 私有，只有这里能改
+        # 3) 预检（可预见的落地期失败，如"值不可序列化"）—— 同样在落地之前
+        self._history.precheck(key, value)
+        # 4) 落到执行器 —— 快照是 Gate 私有，只有这里能改
+        prev = self._snapshot.get(key, _MISSING)
         self._snapshot[key] = value
-        # 4) History.append —— 落地之后才记，带当次 call_id 供互引
-        return self.record(key, value, channel.actor, reason, call_id)
+        try:
+            # 5) History.append —— 落地之后才记，带当次 call_id 供互引
+            return self.record(key, value, channel.actor, reason, call_id)
+        except BaseException:
+            # 写口"全有或全无"：记史没成 ⇒ 快照回到本次之前（含"本来没这个键"）
+            if prev is _MISSING:
+                self._snapshot.pop(key, None)
+            else:
+                self._snapshot[key] = prev
+            raise
 
     def seed(self, key: str, value: object, actor: str, reason: str = "seed",
              call_id: str = "") -> Event:
@@ -156,19 +184,43 @@ class Gate:
 
     def set_batch(self, channel: Channel, items: dict[str, object], reason: str,
                   call_id: str = "") -> list[Event]:
-        """原子批量写：先全校验，再全落地（v1 存档恢复教训，ADR set-batch-原子批量）。
+        """批量写（v1 存档恢复教训，ADR set-batch-原子批量）。整批共用一个 call_id。
 
-        任一键非法 ⇒ 一个都不落地（不留半拉子状态）。整批共用一个 call_id ⇒
-        History 里可识别"这一批本该一起"。与 set 的区别：set 是单键四步事务；
-        set_batch 是"批量校验阶段 + 批量落地阶段"两段，校验阶段不碰快照。
+        ⚠ **"原子"覆盖到哪一层，如实说清**：
+        * **校验 + 预检阶段是原子的**：任一键非法或预检不过 ⇒ **一个都不落地**
+          （快照一个字节不动）；
+        * **落地阶段**：`append`-only 日志**撤不回** ⇒ 若第 k 项记史失败，**前 k-1 项
+          已经进了史**。此时**只回滚"史里还没有"的键**，让**快照 == fold(史)**；
+          ⚠ 盲目"全回滚"反而会把不变量弄坏（快照会丢掉史里已经有的那几笔写）。
+        * **不可预见**的进程级故障（磁盘满 / OOM）无从保证——进程状态本身已不可信；
+          预检（`History.precheck`）的作用是把**可预见**的那类挡在落地之前。
         """
         self._authority.gate(channel.side)
-        # 阶段一：全校验（不碰快照）
+        # 阶段一：全校验 + 全预检（都不碰快照）
         for key, value in items.items():
             self._validate(key, value)
-        # 阶段二：全落地（校验已全过）
-        events: list[Event] = []
         for key, value in items.items():
-            self._snapshot[key] = value
-            events.append(self._history.append(key, value, channel.actor, reason, call_id))
+            self._history.precheck(key, value)
+        # 阶段二：全落地（前面的闸都过了）
+        prevs = {k: self._snapshot.get(k, _MISSING) for k in items}
+        events: list[Event] = []
+        done: set[str] = set()
+        try:
+            for key, value in items.items():
+                self._snapshot[key] = value
+                events.append(self._history.append(key, value, channel.actor, reason,
+                                                   call_id))
+                done.add(key)
+        except BaseException:
+            # 只回滚"**史里还没有**"的键（史里已有的必须留着，否则快照与 fold(史) 不一致）
+            for key in items:
+                if key in done:
+                    continue
+                prev = prevs[key]
+                if prev is _MISSING:
+                    self._snapshot.pop(key, None)
+                else:
+                    self._snapshot[key] = prev
+            raise
+        return events
         return events

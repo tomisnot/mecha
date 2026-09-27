@@ -49,15 +49,28 @@ class JsonlLogSink:
 
     # ---- LogSink 四原语（总纲 §5.2⑤ Log 行）----
 
+    def _encode(self, record: dict) -> str:
+        """把一条记录编成落盘行（**格式知识只有这一处**：append 与 precheck 共用）。"""
+        return json.dumps({"format": f"v{FORMAT_VERSION}", **record},
+                          ensure_ascii=False, separators=(",", ":"))
+
     def append(self, record: dict) -> None:
         self._dir.mkdir(parents=True, exist_ok=True)
-        line = json.dumps({"format": f"v{FORMAT_VERSION}", **record},
-                          ensure_ascii=False, separators=(",", ":"))
+        line = self._encode(record)
         with self._path.open("a", encoding="utf-8") as f:
             f.write(line + "\n")
             f.flush()
         if self._records is not None:
             self._records.append(record)
+
+    def precheck(self, record: dict) -> None:
+        """**落地之前**的预检：值与 ``append`` 走**同一条编码路径**（格式知识只有一份）。
+
+        ⚠ 它只回答"**这个值能不能编码**"（JSON 可序列化）——磁盘满/权限这类要等真写
+        才知道，那些由 Gate 的**回滚**兜（写口"全有或全无"是这两层合起来的效果）。
+        ⚠ 它**不建目录、不写文件**（dry-run 不留痕）。
+        """
+        self._encode(record)
 
     def since(self, seq: int) -> Iterable[dict]:
         return [r for r in self._load() if r["seq"] > seq]

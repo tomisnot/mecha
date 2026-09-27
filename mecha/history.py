@@ -57,7 +57,15 @@ class Event:
 
 @runtime_checkable
 class LogSink(Protocol):
-    """落盘 seam（Definition）。Phase 3 提供 local JSONL / dsh 两个 Provider。"""
+    """落盘 seam（Definition）。Phase 3 提供 local JSONL / dsh 两个 Provider。
+
+    **可选能力** ``precheck(record) -> None``：**落地之前**的可预见失败预检
+    （如"这个值不可序列化"），失败即抛。**缺失视为"没有预检"**（与 ``close``
+    同款的**可选**能力，经 ``getattr`` 发现——本文件已有此先例）。
+
+    ⚠ 为什么预检归 sink：写口要做到"**全有或全无**"，而"这个值能不能落盘"的
+    **知识只有 sink 有**（格式归它）⇒ 由它回答，Gate 在**落地之前**问。
+    """
 
     def append(self, record: dict) -> None: ...
     def since(self, seq: int) -> Iterable[dict]: ...
@@ -92,17 +100,35 @@ class History:
         self._events.extend(existing)
         self._seq = sink.last_seq()
 
+    def precheck(self, key: str, value: object) -> None:
+        """**落地之前**的可预见失败预检：委托 sink 的可选 ``precheck``（缺失即跳过）。
+
+        ⚠ 为什么要有它：写口要"**全有或全无**"，而"这个值能不能落盘"的知识**只有 sink
+        有**（格式归它，如 JSONL 的 ``json.dumps``）⇒ 让 sink 自己回答，Gate 在**落地
+        之前**问一句，于是"可预见的失败"全都发生在**一个字节都没改**的时候。
+        """
+        if self._sink is None:
+            return
+        check = getattr(self._sink, "precheck", None)     # 可选能力（同 close 的先例）
+        if check is None:
+            return
+        check(Event(0, key, value, "", "").to_record())
+
     def append(self, key: str, value: object, actor: str, reason: str,
                call_id: str = "") -> Event:
         if not key.strip():
             raise MechaError("事件 key 不能为空", kind="bad_event",
                              hint="append 必须带非空 key")
         with self._lock:
-            self._seq += 1
-            ev = Event(self._seq, key, value, actor, reason, call_id)
-            self._events.append(ev)
+            seq = self._seq + 1
+            ev = Event(seq, key, value, actor, reason, call_id)
+            # ⚠ **先落盘、后推进内存**（2026-09-26 起）：反过来的话，sink 抛错时内存里
+            # 已经多了一条**盘上没有**的事件 ⇒ `events()` 与 journal 不一致，
+            # 而"快照必须能从史折叠出来"这条不变量正是建在这上面。
             if self._sink is not None:
                 self._sink.append(ev.to_record())
+            self._seq = seq
+            self._events.append(ev)
             subs = list(self._subs)      # 快照迭代：回调里可退订
         for cb in subs:
             try:
