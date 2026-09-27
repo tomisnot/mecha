@@ -36,6 +36,8 @@
 - 不测 ``approval_required`` / ``cancel_supported`` 的**语义**：它们目前只是
   声明字段，命令面不据此改变分派。``scope`` 只在宿主注入 ScopePolicy 后参与
   分派（未注入不做过滤），其"谁能自称 human"由通道类型守卫钉住。
+  （``wants_channel`` **不在此列**：它**参与分派**——声明后 handler 会收到本次的
+  ``channel=``，见 ``check_handler_sees_channel``。）
 - 不测命令体内部实现的正确性（判据只钉契约与副作用痕迹）。
 """
 
@@ -552,8 +554,13 @@ def check_readonly_bypasses_gate(out: list[str]) -> None:
             r3 = sw2.commands.invoke("record_note", {"text": "t"}, context=_Ctx(),
                                      gate=sw2.gate, channel=sw2.channels["ai"])
             audit3 = [e for e in sw2.history.events() if e.key.startswith(AUDIT_KEY_PREFIX)]
-            # 期望 kind 取 **authority 自己那道闸**的判词（`command_audit_denied` 是
-            # "检查迟到、在审计那一步才拒"的旧形状——那正是发现 7 要消掉的东西）。
+            # 期望 kind 取 **authority 自己那道闸**的判词。
+            # ⚠ **这里以前断言的是 `command_audit_denied`，那不是"更宽松/更严格"的差别，
+            # 而是"判据把缺陷钉住了"**：那条期望值描述的是「检查迟到、handler 先干完、
+            # 到审计那一步才被拒」——**副作用已经发生**。新断言描述的是「副作用根本没发生」。
+            # ⚠ 后来者**不要**把它"修回去"：看到期望值从 command_audit_denied 变成
+            # authority_locked 时，请先读这段——**是旧断言错了，不是守卫被放宽了**。
+            # （这个 bug 能活很久，正因为测试把错的行为写成了期望值，后来人看到绿就不怀疑顺序。）
             if _fail_shape(r3, "authority_locked") and _EXTERNAL["writes"] == 0:
                 _ok("LOCKED 下有副作用命令被写权门**在副作用之前**拦下（handler 零调用）")
             else:
@@ -659,7 +666,8 @@ def check_channel_authority_is_typed(out: list[str]) -> None:
 def check_projection(out: list[str]) -> None:
     field_names = set(CommandSpec.__dataclass_fields__)
     want = {"name", "description", "parameters", "output_schema", "side_effect",
-            "scope", "estimate_sec", "cancel_supported", "approval_required"}
+            "scope", "estimate_sec", "cancel_supported", "approval_required",
+            "wants_channel"}
     if field_names == want:
         _ok("声明字段 = 契约要求的集合（无多余实现字段可泄漏）")
     else:
@@ -720,6 +728,69 @@ def _external_handler(context, text):
     return {"ok": True, "stored_key": "note"}
 
 
+def check_handler_sees_channel(out: list[str]) -> None:
+    """handler 想知「**这单是谁交的**」⇒ **声明 `wants_channel=True`**（显式，不靠签名自省）。
+
+    ① 声明了：**两个通道共用同一张命令表**时，各自拿到的 side 与审计 actor 都对
+       （多操作者共享一张表 = AI 走 MCP、Web 走 human 的真实形状）；
+    ② **未声明**：handler 收到的参数与从前**一字不差**（不破坏）——用"签名里既没有
+       channel 也没有 **kwargs"的老式 handler 来证：多塞一个 kwarg 就会 TypeError。
+    """
+    with _with_software() as sw:
+        seen: list[str] = []
+
+        def h_optin(*, context, text, channel):
+            seen.append(str(getattr(channel, "side", None)))
+            return {"ok": True, "stored_key": "note"}
+
+        sw.commands.register(_note_cmd(wants_channel=True, scope=()), h_optin)
+        sw.authority.switch_mode(Mode.AI, side="human")
+        r_ai = sw.commands.invoke("record_note", {"text": "a"}, context=_Ctx(),
+                                  gate=sw.gate, channel=sw.channels["ai"])
+        sw.authority.switch_mode(Mode.HUMAN, side="human")
+        r_hu = sw.commands.invoke("record_note", {"text": "h"}, context=_Ctx(),
+                                  gate=sw.gate, channel=sw.channels["human"])
+        actors = [e.actor for e in sw.history.events()
+                  if e.key.startswith(AUDIT_KEY_PREFIX)]
+        if seen == ["ai", "human"]:
+            _ok("handler 拿到的是**本次**的通道（同一张命令表：ai 与 human 各自正确）")
+        else:
+            _fail(out, f"handler 看到的 side 不对：{seen}")
+        if actors == ["ai", "human"]:
+            _ok("审计 actor 与通道一致（**归因不撒谎**）")
+        else:
+            _fail(out, f"审计 actor 不对：{actors}")
+        if not (r_ai.get("is_error") or r_hu.get("is_error")):
+            _ok("两个通道各自调用都成功（对偶：不是「永不执行」）")
+        else:
+            _fail(out, f"调用失败：{r_ai} / {r_hu}")
+
+        # ② 不破坏：**未声明**的 handler —— 签名里既没有 channel 也没有 **kwargs
+        def h_plain(context, text):        # 与改动前的调用形状完全一致
+            return {"ok": True, "stored_key": "note"}
+
+        sw.commands.register(_note_cmd(name="record_note_plain", scope=()), h_plain)
+        r_plain = sw.commands.invoke("record_note_plain", {"text": "p"}, context=_Ctx(),
+                                     gate=sw.gate, channel=sw.channels["human"])
+        if not r_plain.get("is_error"):
+            _ok("未声明 wants_channel ⇒ handler 收到的参数与从前一字不差（不破坏）")
+        else:
+            _fail(out, f"未声明的 handler 被多塞了参数：{r_plain}")
+
+        # ③ 构造期就拒「声明了 wants_channel 又声明同名参数 channel」（可教学错误）
+        try:
+            _note_cmd(wants_channel=True,
+                      parameters={"type": "object",
+                                  "properties": {"channel": {"type": "string"}},
+                                  "required": ["channel"]})
+            _fail(out, "wants_channel 与同名参数 channel 并用没有被拒")
+        except MechaError as e:
+            if e.kind == "bad_command_flags":
+                _ok("wants_channel 与同名参数 'channel' 并用 ⇒ 构造期即拒（可教学）")
+            else:
+                _fail(out, f"拒因 kind 不符：{e.kind}")
+
+
 def main() -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -731,6 +802,7 @@ def main() -> int:
     check_side_effect_audit(out)
     check_result_ref_audit(out)
     check_scope_policy(out)
+    check_handler_sees_channel(out)
     check_channel_authority_is_typed(out)
     check_readonly_bypasses_gate(out)
     check_projection(out)

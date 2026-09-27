@@ -165,6 +165,14 @@ class CommandSpec:
     estimate_sec: float | Callable[..., float] = 0.0
     cancel_supported: bool = False
     approval_required: bool = False
+    #: handler 是否需要知道「**这单是谁交的**」（**显式 opt-in**）。
+    #:
+    #: 声明后 `invoke` 会把本次的 ``Channel`` 以 ``channel=`` 传进 handler
+    #: （多操作者共享一张命令表时——如 AI 走 MCP、Web 走 human——handler 才分得清）。
+    #: ⚠ **为什么是显式声明而不是签名自省**：本仓纪律是"**显式声明优先于魔法**"，
+    #: 而 ``CommandSpec`` 本就是声明面；自省会猜错包装/装饰过的签名。
+    #: ⚠ 不声明 ⇒ handler 收到的参数与从前**一字不差**（不破坏既有命令）。
+    wants_channel: bool = False
 
     def __post_init__(self) -> None:
         check_command_name(self.name)
@@ -194,12 +202,31 @@ class CommandSpec:
                 kind="bad_command_estimate",
                 hint="estimate_sec 是秒数（float）或接收本次参数的 callable",
             )
-        for flag in ("side_effect", "cancel_supported", "approval_required"):
+        for flag in ("side_effect", "cancel_supported", "approval_required",
+                     "wants_channel"):
             if not isinstance(getattr(self, flag), bool):
                 raise MechaError(
                     f"命令 {self.name!r} 的 {flag} 必须是 bool",
                     kind="bad_command_flags",
-                    hint="副作用/可取消/需审批是显式声明，不是注释约定",
+                    hint="副作用/可取消/需审批/需通道是显式声明，不是注释约定",
+                )
+        if self.wants_channel:
+            # `wants_channel` 注入的是**通道对象**（`channel=` 关键字）⇒ 参数里再声明一个
+            # 同名参数会让两个 `channel=` 撞在一起（TypeError 被归一成"参数不符"，很费解）。
+            # 构造期就拒，并给出改名建议（可教学错误）。
+            declared: set[str] = set()
+            props = self.parameters.get("properties")
+            if isinstance(props, Mapping):
+                declared |= {str(k) for k in props}
+            req = self.parameters.get("required")
+            if isinstance(req, Sequence) and not isinstance(req, (str, bytes)):
+                declared |= {str(k) for k in req}
+            if "channel" in declared:
+                raise MechaError(
+                    f"命令 {self.name!r} 声明了 wants_channel，却又声明了同名参数 'channel'",
+                    kind="bad_command_flags",
+                    hint="wants_channel 注入的是**通道对象本身**；请把那个参数改名"
+                         "（例如 channel_name），否则两个 channel= 会撞在一起",
                 )
 
 
@@ -238,16 +265,21 @@ def define_command(
     estimate_sec: float | Callable[..., float] = 0.0,
     cancel_supported: bool = False,
     approval_required: bool = False,
+    wants_channel: bool = False,
     banned_prefixes: tuple[str, ...] | None = None,
 ) -> CommandSpec:
-    """构造即校验的具名入口（门在 ``CommandSpec.__post_init__`` 上）。"""
+    """构造即校验的具名入口（门在 ``CommandSpec.__post_init__`` 上）。
+
+    ``wants_channel=True`` ⇒ **handler 会收到本次的 ``channel=``**（想知道"谁调的"就声明它；
+    不声明则参数与从前一字不差）。
+    """
     if banned_prefixes is not None:
         check_command_name(name, banned_prefixes=banned_prefixes)
     return CommandSpec(
         name=name, description=description, parameters=parameters,
         output_schema=output_schema, side_effect=side_effect, scope=scope,  # type: ignore[arg-type]
         estimate_sec=estimate_sec, cancel_supported=cancel_supported,
-        approval_required=approval_required,
+        approval_required=approval_required, wants_channel=wants_channel,
     )
 
 
@@ -400,7 +432,7 @@ class CommandRegistry:
                      if k not in RESERVED_ARGS or k in declared_set}
         try:
             self._check_args(spec, body_args)
-            result = self._call_handler(spec, body_args, context)
+            result = self._call_handler(spec, body_args, context, channel=channel)
         except MechaError as e:
             # 缺参/参数不符/命令体自报失败：命令体未产出回执 ⇒ 无审计可写。
             return _failure(e)
@@ -473,18 +505,29 @@ class CommandRegistry:
             )
 
     def _call_handler(self, spec: CommandSpec, args: Mapping[str, object],
-                      context: object) -> CommandResult:
-        """调命令体并归一化：裸 TypeError 不许逃（接管报告 P1-16 同款）。"""
+                      context: object, *, channel: object | None = None) -> CommandResult:
+        """调命令体并归一化：裸 TypeError 不许逃（接管报告 P1-16 同款）。
+
+        ⚠ **只有 `spec.wants_channel` 为真时才注入 `channel=`**：不声明 ⇒ 调用形状与从前
+        **一字不差**（既有命令的 handler 不会因为"多收到一个 kwargs"而变）。注入的是
+        **通道对象本身**（`Channel`），让 handler 分得清"这单是谁交的"——多操作者共享一张
+        命令表时（AI 走 MCP、Web 走 human）这是正确归因的前提。
+        """
         handler = self._handlers[spec.name]
+        kwargs = dict(args)
+        if spec.wants_channel:
+            kwargs["channel"] = channel
         try:
-            raw = handler(context=context, **dict(args))
+            raw = handler(context=context, **kwargs)
         except MechaError:
             raise
         except TypeError as e:
             raise MechaError(
                 f"命令 {spec.name!r} 参数不符：{e}",
                 kind="missing_arguments",
-                hint="必填参数见该命令 parameters 声明；handler 只接收声明过的参数",
+                hint="必填参数见该命令 parameters 声明；handler 只接收声明过的参数"
+                     + ("（本命令声明了 wants_channel ⇒ handler 必须收 channel=）"
+                        if spec.wants_channel else ""),
             ) from e
         if isinstance(raw, CommandResult):
             if not isinstance(raw.values, Mapping):
