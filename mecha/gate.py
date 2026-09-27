@@ -114,7 +114,7 @@ class Gate:
         self._authority.gate(channel.side)
 
     def record(self, key: str, value: object, actor: str, reason: str,
-               call_id: str = "") -> Event:
+               call_id: str = "", *, undoable: bool | None = None) -> Event:
         """**只记史、不改快照**（`set` 的第 4 步，单独暴露）。
 
         ⚠ 为什么需要这个口子：**审计事件属于事件史，不属于域状态快照**
@@ -123,7 +123,8 @@ class Gate:
         对审计**本来就没有意义**（同名命令只剩最后一次）。`set` 自己也调它 ⇒ 这一步
         **只有一份语义**。
         """
-        return self._history.append(key, value, actor, reason, call_id)
+        return self._history.append(key, value, actor, reason, call_id,
+                                    undoable=undoable)
 
     def validate_only(self, key: str, value: object) -> None:
         """**dry-run**：这个值会被写口接受吗（校验 + 预检）——**不落地、不记史**。
@@ -135,7 +136,7 @@ class Gate:
         self._history.precheck(key, value)
 
     def set(self, channel: Channel, key: str, value: object, reason: str,
-            call_id: str = "") -> Event:
+            call_id: str = "", *, undoable: bool | None = None) -> Event:
         """四步变更口（**全有或全无**）。返回落地的 History 事件。
 
         ``call_id`` 是当次操作的调用标识（AI 侧来自 dsh 的 tool callId，人类
@@ -156,7 +157,8 @@ class Gate:
         self._snapshot[key] = value
         try:
             # 5) History.append —— 落地之后才记，带当次 call_id 供互引
-            return self.record(key, value, channel.actor, reason, call_id)
+            return self.record(key, value, channel.actor, reason, call_id,
+                               undoable=undoable)
         except BaseException:
             # 写口"全有或全无"：记史没成 ⇒ 快照回到本次之前（含"本来没这个键"）
             if prev is _MISSING:
@@ -166,7 +168,7 @@ class Gate:
             raise
 
     def seed(self, key: str, value: object, actor: str, reason: str = "seed",
-             call_id: str = "") -> Event:
+             call_id: str = "", *, undoable: bool | None = None) -> Event:
         """启动种子：落到快照 + 记史，但**不过写权门**（面板初值回填等装配期写）。
 
         与 set 的区别：**只有写权那一关不同** —— set 是操作者发起的变更（要过
@@ -180,7 +182,8 @@ class Gate:
         """
         self._validate(key, value)
         self._snapshot[key] = value
-        return self._history.append(key, value, actor, reason, call_id)
+        return self._history.append(key, value, actor, reason, call_id,
+                                    undoable=undoable)
 
     def set_batch(self, channel: Channel, items: dict[str, object], reason: str,
                   call_id: str = "") -> list[Event]:

@@ -229,7 +229,8 @@ def config_tree(source, *, schema_rows=None) -> dict:
 
 
 def monitor_summary_payload(view) -> dict:
-    """把 ``MonitorView`` 投影成 wire 形状 ``{summary, disputed, dispute_reason}``。
+    """把 ``MonitorView`` 投影成 wire 形状
+    ``{summary, raw, summary_error, disputed, dispute_reason}``。
 
     ``summary`` 里的 ``Claim`` 必须转成 ``{"value", "target"}``：直接丢进
     ``json.dumps`` 会被 ``default=str`` 变成 ``"Claim(value=…)"`` 字符串，
@@ -237,6 +238,12 @@ def monitor_summary_payload(view) -> dict:
 
     ``disputed`` / ``dispute_reason`` 原样透出：概括与原始不一致时**原始赢**、
     概括显示存疑（两层信任的纪律）。
+
+    ⚠ **`raw`（原始层）也上 wire**（2026-09-26 加）：那条纪律是"**两层并列**、原始赢"，
+    而此前投影**只有概括层** ⇒ 概括层故障时整个读数都不在。补上原始层后，"故障"表现为
+    `summary={}` + `disputed=True` + `summary_error` 明文，而**原始层照常可读**。
+    ⚠ **不是新的披露面**：`/history` 早已把**全史事件（含 value）**放上 wire，
+    而 `raw` 是那份史的 **fold**（每键只留最后一次）⇒ 信息量更小。
     """
     summary: dict = {}
     for key, value in dict(view.summary).items():
@@ -244,7 +251,9 @@ def monitor_summary_payload(view) -> dict:
             summary[key] = {"value": value.value, "target": value.target}
         else:
             summary[key] = value
-    return {"summary": summary, "disputed": bool(view.disputed),
+    return {"summary": summary, "raw": dict(view.raw_snapshot),
+            "summary_error": str(getattr(view, "summary_error", "") or ""),
+            "disputed": bool(view.disputed),
             "dispute_reason": str(view.dispute_reason or "")}
 
 

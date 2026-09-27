@@ -214,15 +214,21 @@ def check_raw_layer_is_independent(out: list[str]) -> None:
         _write(sw, "power", 100)
         raw_before = fold(sw.history.events())
 
-        raised: Exception | None = None
-        try:
-            sw.monitor.read()
-        except Exception as e:  # noqa: BLE001 - 抓的就是概括层故障
-            raised = e
-        if isinstance(raised, RuntimeError) and "summarizer exploded" in str(raised):
-            _ok("summarizer 抛错 ⇒ read() 原样抛出（fail loud：不吞错、不伪装成 disputed）")
+        # ⚠ **2026-09-26 行为变更**：概括层故障**不再整体抛**，改成**降级读数**
+        # （原始层照给 + disputed=True + summary_error 明文）。
+        # 旧断言（读 `read()` 原样抛出）连同上面那条"未支持"登记**一起退役**——
+        # 退役理由不是"它错了"，而是**它守的那个契约不存在了**（那正是当时的诚实登记）。
+        lowered = sw.monitor.read()                     # 概括器仍是那个会炸的
+        if (lowered.disputed is True and lowered.summary == {}
+                and "RuntimeError" in lowered.summary_error
+                and lowered.raw_snapshot == {"power": 100}):
+            _ok("概括层故障 ⇒ **降级读数**（raw 照给 / disputed=True / summary_error 带类型名）")
         else:
-            _fail(out, f"概括层故障没有 fail loud：raised={raised!r}")
+            _fail(out, f"故障降级读数不符：{lowered}")
+        if lowered.dispute_reason and lowered.dispute_reason == lowered.summary_error:
+            _ok("故障在 wire 上可读：dispute_reason 与 summary_error 同时给出原因")
+        else:
+            _fail(out, f"故障原因没透出：{lowered.dispute_reason!r}")
 
         # 原始层不经概括层也能读：同一份 History 直接折叠
         events = sw.history.events()
@@ -238,11 +244,8 @@ def check_raw_layer_is_independent(out: list[str]) -> None:
         else:
             _fail(out, f"健全概括器读不到原始真值：{healthy}")
 
-        # 诚实登记未支持项：Monitor 没有"概括失败仍返回 raw_snapshot"的降级读数
-        UNSUPPORTED.append(
-            "summarizer 抛错时 Monitor.read() 整体抛出——**未支持**"
-            "『概括层故障仍返回 raw_snapshot 的降级读数』；"
-            "原始层此刻只能绕过 Monitor 直接读（History.events + fold）")
+        # 2026-09-26：上面那条"未支持"登记**已兑现**（降级读数已实现）⇒ 登记删除，
+        # 否则它会变成一句假话（诚实登记的纪律：兑现了就撤）。
 
 
 def check_l7_derived_summary_all_green(out: list[str]) -> None:

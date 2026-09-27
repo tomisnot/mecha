@@ -21,6 +21,7 @@ from __future__ import annotations
 import threading
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Protocol, runtime_checkable
 
 from .errors import MechaError
@@ -36,6 +37,14 @@ class Event:
     actor: str
     reason: str
     call_id: str = ""
+    #: **墙钟时间**（ISO 8601 UTC；2026-09-26 加）。⚠ 老记录（无此字段）读回 **`""`**
+    #: ＝"早于本特性"，不是"时间未知的错"。⛔ **不许用 `ts` 排序/去重**：`seq` 仍是
+    #: **唯一顺序**（同一秒多条、时钟回拨都可能）——`ts` 只给人看。
+    ts: str = ""
+    #: **能不能撤**（项目声明的**领域知识**；2026-09-26 加）：`True`/`False`/**`None`＝未声明**。
+    #: ⚠ 框架**只给槽位**：撤销需要"旧值 + 领域规则 + 冲突处理"，三样都归项目。
+    #: ⚠ **三态是刻意的**：用布尔会把"**没声明**"冒充成"不可撤"。
+    undoable: bool | None = None
 
     def to_record(self) -> dict:
         return {
@@ -45,13 +54,17 @@ class Event:
             "actor": self.actor,
             "reason": self.reason,
             "call_id": self.call_id,
+            "ts": self.ts,
+            "undoable": self.undoable,
         }
 
     @staticmethod
     def from_record(rec: dict) -> "Event":
+        """从盘上记录还原。⚠ **老记录缺 `ts`/`undoable` 也要能读**（零迁移，见 ADR）。"""
         return Event(
             seq=rec["seq"], key=rec["key"], value=rec["value"],
             actor=rec["actor"], reason=rec["reason"], call_id=rec.get("call_id", ""),
+            ts=str(rec.get("ts", "") or ""), undoable=rec.get("undoable", None),
         )
 
 
@@ -115,13 +128,17 @@ class History:
         check(Event(0, key, value, "", "").to_record())
 
     def append(self, key: str, value: object, actor: str, reason: str,
-               call_id: str = "") -> Event:
+               call_id: str = "", *, ts: str | None = None,
+               undoable: bool | None = None) -> Event:
+        """追加一条事件。``ts`` 缺省**现取墙钟**（UTC ISO；给人看，不参与排序）；
+        ``undoable`` 是**项目声明的槽位**（`None`＝未声明），框架不据此实现撤销。"""
         if not key.strip():
             raise MechaError("事件 key 不能为空", kind="bad_event",
                              hint="append 必须带非空 key")
+        when = ts if ts is not None else datetime.now(timezone.utc).isoformat()
         with self._lock:
             seq = self._seq + 1
-            ev = Event(seq, key, value, actor, reason, call_id)
+            ev = Event(seq, key, value, actor, reason, call_id, when, undoable)
             # ⚠ **先落盘、后推进内存**（2026-09-26 起）：反过来的话，sink 抛错时内存里
             # 已经多了一条**盘上没有**的事件 ⇒ `events()` 与 journal 不一致，
             # 而"快照必须能从史折叠出来"这条不变量正是建在这上面。

@@ -574,10 +574,54 @@ def check_summary_projection(out: list[str]) -> None:
         _fail(out, "投影后仍出现 Claim( 字面量——对账信息会丢")
     if monitor_summary_payload(MonitorView(summary={}, raw_snapshot={},
                                           disputed=False)) == {
-            "summary": {}, "disputed": False, "dispute_reason": ""}:
-        _ok("空概括的边界形状正确（不误报）")
+            "summary": {}, "raw": {}, "summary_error": "",
+            "disputed": False, "dispute_reason": ""}:
+        _ok("空概括的边界形状正确（含 raw 与 summary_error 两键）")
     else:
         _fail(out, "空概括形状错")
+    # ⭐ 2026-09-26：**原始层上 wire**（那条纪律是"两层并列、原始赢"）
+    view2 = MonitorView(summary={"复述": Claim(value=200.0, target="alpha")},
+                        raw_snapshot={"alpha": 200.0}, disputed=False)
+    p2 = monitor_summary_payload(view2)
+    if p2["raw"] == {"alpha": 200.0} and p2["summary_error"] == "":
+        _ok("原始层随读数上 wire（raw == 折叠快照；正常时 summary_error 为空）")
+    else:
+        _fail(out, f"原始层没上 wire 或 summary_error 不为空：{p2}")
+    # ⭐ 概括层故障：**降级读数**在 wire 上表现为 summary 空 + disputed + 原因明文
+    p3 = monitor_summary_payload(MonitorView(summary={}, raw_snapshot={"alpha": 200.0},
+                                             disputed=True,
+                                             dispute_reason="概括层故障：RuntimeError: boom",
+                                             summary_error="概括层故障：RuntimeError: boom"))
+    if (p3["disputed"] is True and p3["summary"] == {} and p3["raw"] == {"alpha": 200.0}
+            and "RuntimeError" in p3["summary_error"]):
+        _ok("故障时**原始层照常可读**、概括为空且标存疑（降级读数在 wire 上成立）")
+    else:
+        _fail(out, f"故障降级的 wire 形状不符：{p3}")
+
+    # ⭐ ② (1)：`before` 由**全史 fold** 重建 ⇒ `since_seq` **只过滤 emit、不影响 before**
+    #   （2026-09-26 钉住；扰动就用那个"顺序不可换"的静默错 ⇒ 必红）
+    class _FakeEvent:
+        def __getattr__(self, _name: str):        # 缺的属性一律空串（判据只用到几个）
+            return ""
+
+    class _FakeSource:
+        def events(self):
+            return [_FakeEvent(), _FakeEvent()]
+
+    def _ev(seq, key, value):
+        e = _FakeEvent()
+        e.seq, e.key, e.value, e.actor, e.reason, e.call_id = seq, key, value, "ai", "r", ""
+        return e
+
+    class _Src:
+        def events(self):
+            return [_ev(1, "k", "v1"), _ev(2, "k", "v2"), _ev(3, "other", 9)]
+
+    recs = history_records(_Src(), since_seq=2)
+    if [r["seq"] for r in recs] == [2, 3] and recs[0].get("before") == "v1":
+        _ok("`before` 由**全史 fold** 重建：`since_seq` 只过滤 emit、**不影响 before**")
+    else:
+        _fail(out, f"截断输出里的 before 不对：{recs}")
 
 
 # --------------------------------------------------------------------------

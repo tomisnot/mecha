@@ -53,6 +53,9 @@ class MonitorView:
     #: 概括层与原始层不可调和时为 True（原始赢，概括显示存疑）
     disputed: bool
     dispute_reason: str = ""
+    #: **概括层故障**的人可读说明（正常为空）。它让"**故障**"与"**撒谎**"在 wire 上
+    #: 可区分 —— 两者都是 `disputed=True`，但原因不同（2026-09-26 加）。
+    summary_error: str = ""
 
 
 class Monitor:
@@ -64,9 +67,20 @@ class Monitor:
         self._summarize = summarizer
 
     def read(self) -> MonitorView:
+        """读一次：**概括层故障 ⇒ 降级读数**（不整体抛），原始层照常给出。
+
+        ⚠ 为什么不再抛（2026-09-26 改）：硬纪律是"概括与原始不可调和 ⇒ **原始赢**、
+        概括标存疑"，而"**概括根本没出来**"是它的**极端情形** ⇒ 原始层照赢、概括照标存疑。
+        此前 summarizer 抛错会让**整个读面**一起不可读（旧 Known Limitations 登记为
+        "未支持"，现已支持）。⇒ 补偿：`summary_error` 明文写清故障，**不让它变成静默降级**。
+        """
         events = self._events()
         raw = fold(events)
-        summary = dict(self._summarize(events))
+        try:
+            summary = dict(self._summarize(events))
+        except BaseException as e:                      # noqa: BLE001 - 概括层故障 ⇒ 降级
+            why = f"概括层故障：{type(e).__name__}: {e}"
+            return MonitorView({}, raw, True, why, why)
         for k, v in summary.items():
             if isinstance(v, Claim):
                 target = v.target or k

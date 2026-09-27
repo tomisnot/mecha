@@ -455,10 +455,10 @@ def check_side_effect_audit(out: list[str]) -> None:
         # 承诺不变（**不静默**）：审计写不进去 ⇒ 命令回 `command_audit_denied`。
         # 用一份"拒写审计键"的 History 复现（新路径上唯一的失败来源）。
         class _NoAuditHistory(History):                      # noqa: D401 - 判据替身
-            def append(self, key, value, actor, reason="", call_id=""):
+            def append(self, key, value, actor, reason="", call_id="", **kw):
                 if str(key).startswith(AUDIT_KEY_PREFIX):
                     raise MechaError(f"拒写审计键 {key!r}", kind="audit_refused")
-                return super().append(key, value, actor, reason, call_id)
+                return super().append(key, value, actor, reason, call_id, **kw)
 
         g = Gate(Authority(mode=Mode.AI), _NoAuditHistory(), validate=accept_all)
         reg2 = CommandRegistry()

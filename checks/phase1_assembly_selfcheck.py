@@ -569,6 +569,41 @@ def check_data_layout(out: list[str]) -> None:
             _ok("含路径分隔符的目录名被拒")
 
 
+def check_event_ts_and_undoable(out: list[str]) -> None:
+    """② 账本两样（2026-09-26）：`ts` 可选加成 + `undoable` **三态槽位**。
+
+    ⚠ `ts`：**老记录（无 ts）读回空串**（＝"早于本特性"，不是"时间未知的错"）；
+    ⛔ **不许用 `ts` 排序/去重** —— `seq` 仍是唯一顺序（同秒多条、时钟回拨都可能）。
+    ⚠ `undoable`：`True`/`False`/**`None`＝未声明**；用布尔会把"没声明"冒充成"不可撤"。
+    """
+    _, hist, gate = _make_gate(Mode.AI)
+    gate.set(Channel("ai"), "a", 1, "r", undoable=True)
+    gate.set(Channel("ai"), "b", 2, "r", undoable=False)
+    gate.set(Channel("ai"), "c", 3, "r")             # 不传 ⇒ None（未声明）
+    evs = hist.events()
+    if all(e.ts and "T" in e.ts for e in evs):
+        _ok("新写事件都带 ts（UTC ISO；由 History.append 现取墙钟）")
+    else:
+        _fail(out, f"有新事件没有 ts：{[e.ts for e in evs]}")
+    if [e.undoable for e in evs] == [True, False, None]:
+        _ok("undoable **三态**原样进史（True / False / None＝未声明）")
+    else:
+        _fail(out, f"undoable 三态不对：{[e.undoable for e in evs]}")
+    old = Event.from_record({"seq": 9, "key": "k", "value": 1,
+                             "actor": "a", "reason": "r"})
+    if old.ts == "" and old.undoable is None:
+        _ok("**老记录照读**（无 ts ⇒ 空串；无 undoable ⇒ None，**不冒充 False**）")
+    else:
+        _fail(out, f"老记录读坏了：ts={old.ts!r} undoable={old.undoable!r}")
+    h2 = History(InMemorySink())
+    h2.append("x", 1, "ai", "r", ts="2026-01-01T00:00:00+00:00")
+    h2.append("x", 2, "ai", "r", ts="2025-01-01T00:00:00+00:00")
+    if [e.value for e in h2.events()] == [1, 2]:
+        _ok("⛔ `seq` 仍是唯一顺序：**ts 回拨也不重排**（不许用 ts 排序/去重）")
+    else:
+        _fail(out, f"顺序被 ts 影响了：{[e.value for e in h2.events()]}")
+
+
 def main() -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -578,6 +613,7 @@ def main() -> int:
     check_gate_executor_not_wrapper(out)
     check_seed_also_validates(out)
     check_open_mode(out)
+    check_event_ts_and_undoable(out)
     check_write_all_or_nothing(out)
     check_call_id_crossref(out)
     check_history_append_only_resume(out)

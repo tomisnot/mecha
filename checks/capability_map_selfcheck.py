@@ -495,6 +495,12 @@ _declare("MonitorView.disputed", "undecided", sym="monitor_summary_payload",
          files=("mecha/cockpit.py",),
          note="字段被透出（cockpit ✓），但「**概括器失败算不算存疑**」这一档未实现"
               "（phase10 的 UNSUPPORTED 已登记：summary 抛错时 read() 整体抛出）")
+_declare("MonitorView.summary_error", "deferred", sym="summary_error",
+         files=("mecha/cockpit.py",),
+         note="⚠ **今天没有任何人能看见它**：投影会把它透出（透出≠显示），但**面板资产不消费**、"
+              "GP 的端点只是原样带出 ⇒ 如实登记 deferred。⚠ 这是**刻意**的待办："
+              "不许出现「框架开始标存疑了、但没人看得见」；等一个真会显示"
+              "『概括层故障』的界面出现 ⇒ 转 consumed 并点名判据")
 _declare("MonitorView.dispute_reason", "consumed", sym="monitor_summary_payload",
          files=("mecha/cockpit.py",), crit="check_monitor_reconcile")
 
