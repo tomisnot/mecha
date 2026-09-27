@@ -201,6 +201,60 @@ def check_cancel(out: list[str]) -> None:
             _fail(out, f"取消状态不符：{job.to_dict()}")
 
 
+def check_cancel_truth(out: list[str]) -> None:
+    """``cancel`` 必须**回真话**：终态就报终态，运行中才说"已请求取消"。
+
+    ⚠ 旧实现返回 ``None`` ⇒ **调用方只能自己编**，下游就编出过「**取消已登记**」。
+    对**已经跑完**的 job 说"已登记/已取消"是**谎话**——AI 会以为它停了。
+    （"一个什么都不告诉你的接口，就是在邀请调用方自己编。"）
+    """
+    with _with_software() as sw:
+        done_job = sw.jobs.submit(lambda ctx: {"ok": True}, command="quick")
+        done_job.wait(5)
+        r1 = sw.jobs.cancel(done_job.id)
+        if (r1["terminal"] is True and r1["cancel_requested"] is False
+                and r1["state_before"] == "done"):
+            _ok("对**已完成**的 job 调 cancel ⇒ terminal=True / cancel_requested=False"
+                "（调用方编不出「已取消」）")
+        else:
+            _fail(out, f"终态没如实回报：{r1}")
+
+        def boom(ctx):
+            raise RuntimeError("x")
+
+        bad_job = sw.jobs.submit(boom, command="boom")
+        bad_job.wait(5)
+        r2 = sw.jobs.cancel(bad_job.id)
+        if (r2["terminal"] is True and r2["cancel_requested"] is False
+                and r2["state_before"] == "failed"):
+            _ok("对**已失败**的 job 同样如实（state_before=failed）")
+        else:
+            _fail(out, f"失败终态没如实回报：{r2}")
+
+        # ⚠ 对偶：运行中的 job **确实请求了取消**（别为了"诚实"变成永远说"没请求"）
+        started = threading.Event()
+
+        def long_task(ctx):
+            started.set()
+            for _ in range(500):
+                if ctx.cancelled:
+                    return {"ok": False, "cancelled": True}
+                time.sleep(0.01)
+            return {"ok": True}
+
+        job = sw.jobs.submit(long_task, command="long_task")
+        started.wait(2)
+        r3 = sw.jobs.cancel(job.id)
+        job.wait(5)
+        if (r3["terminal"] is False and r3["cancel_requested"] is True
+                and r3["state_before"] == "running"
+                and job.state is JobState.CANCELLED):
+            _ok("对偶：对**运行中**的 job ⇒ cancel_requested=True 且真的 cancelled"
+                "（不是「永远说没请求」）")
+        else:
+            _fail(out, f"运行中的取消不实：{r3} state={job.state}")
+
+
 def check_concurrent_history(out: list[str]) -> None:
     with _with_software() as sw:
         n = 6
@@ -443,6 +497,7 @@ def main() -> int:
     check_failure(out)
     check_ref_extraction_error(out)
     check_cancel(out)
+    check_cancel_truth(out)
     check_cancel_has_no_ref(out)
     check_cancel_supported_is_a_real_contract(out)
     check_list_under_concurrent_submit(out)

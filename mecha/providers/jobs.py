@@ -204,10 +204,25 @@ class JobRegistry:
         job.wait(timeout)
         return job.to_dict()
 
-    def cancel(self, jid: str) -> None:
-        """请求取消。取句柄经 ``get``（持锁读），真正的取消是
-        ``context.request_cancel()``——``threading.Event`` 自身线程安全，
-        不需要注册表锁；注册表锁只保护 ``_jobs`` 这张表。
+    def cancel(self, jid: str) -> dict:
+        """请求取消。**返回真话**——不是一个什么都不告诉调用方的 ``None``。
+
+        ⚠ 为什么改：旧实现只调 ``context.request_cancel()``、**什么都不返回** ⇒
+        **调用方只能自己编**——下游就编出过「**取消已登记**」这种话；而对**已经跑完**
+        的 job 说"已登记/已取消"是**谎话**（AI 会以为它停了）。**一个什么都不告诉你的
+        接口，就是在邀请调用方自己编。**
+
+        返回 ``{"job_id", "state_before", "terminal", "cancel_requested"}``：
+
+        * ``terminal=True``（已 done / failed / cancelled）⇒ ``cancel_requested=False``
+          ——**取消没有被请求**（本来就是终态，没什么可取消的），调用方**不能**说"已取消"；
+        * 否则确实置位了取消标志 ⇒ ``cancel_requested=True``。⚠ 取消是**协作式**的：
+          函数可能没查 ``ctx.cancelled`` 就跑完 ⇒ **真正的终态由 ``status()``/``wait()``
+          说了算**，不看这个返回值。
+
+        取句柄经 ``get``（持锁读），真正的取消是 ``context.request_cancel()``——
+        ``threading.Event`` 自身线程安全，不需要注册表锁；注册表锁只保护 ``_jobs``
+        这张表。
 
         ``cancel_supported=False`` 的 job **拒收**取消：抛
         ``MechaError(kind="job_not_cancellable")``，且**不**置位
@@ -224,7 +239,12 @@ class JobRegistry:
                      "取消请求已被拒绝，它的取消标志未被置位",
                 suggest="用 wait/status 轮询到终态再读结果，不要反复重试 cancel",
             )
-        job.context.request_cancel()
+        before = job.state
+        terminal = before in (JobState.DONE, JobState.FAILED, JobState.CANCELLED)
+        if not terminal:
+            job.context.request_cancel()
+        return {"job_id": jid, "state_before": before.value,
+                "terminal": terminal, "cancel_requested": not terminal}
 
     def list(self) -> list[dict]:
         """列出全部 job 状态（轮询面）。
