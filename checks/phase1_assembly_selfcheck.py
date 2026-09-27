@@ -336,6 +336,86 @@ def check_write_all_or_nothing(out: list[str]) -> None:
         _ok("validate_only **两道闸都试**（校验 + 预检），失败即抛、仍不留痕")
 
 
+def check_open_mode(out: list[str]) -> None:
+    """新增 `Mode.OPEN`：**两侧都能写**（2026-09-26）；出厂默认与既有三模式**一字不改**。
+
+    ⚠ `OPEN` 的代价是**后写覆盖**（没有先到先得、没有 CAS）——它是给"人机低冲突"的
+    项目去掉那道多余的闸，不是把写权变成没有闸。
+    """
+    human, ai = Channel("human"), Channel("ai")
+
+    # ① 新模式：**两个都要**（只有一边过 = 没做到）
+    #   ⚠ 用 try 收集而不是直接写：被测对象坏了时判据要**报红**，不是**崩**
+    _, hist, gate = _make_gate(Mode.OPEN)
+    wrote: list[str] = []
+    for ch, key, val in ((human, "h", 1), (ai, "a", 2)):
+        try:
+            gate.set(ch, key, val, "r")
+            wrote.append(ch.side)
+        except GateDenied:
+            pass
+    if wrote == ["human", "ai"] and gate.snapshot == {"h": 1, "a": 2}:
+        _ok("Mode.OPEN：human 与 ai **两侧都能写**（缺一不可）")
+    else:
+        _fail(out, f"OPEN 下不是两侧都能写：写成 {wrote}，快照 {gate.snapshot}")
+    actors = [e.actor for e in hist.events()]
+    if actors == wrote:
+        _ok("OPEN 不模糊归因：写成的每笔都按通道记 actor（写权放开≠归因模糊）")
+    else:
+        _fail(out, f"OPEN 下归因不对：{actors}（写成 {wrote}）")
+
+    # ② 对偶一：出厂 LOCKED **两侧仍都被拒**（安全默认没被削弱）
+    _, _, locked = _make_gate(Mode.LOCKED)
+    for ch in (human, ai):
+        try:
+            locked.set(ch, "k", 1, "r")
+            _fail(out, f"LOCKED 下 {ch.side} 侧竟写成功")
+        except GateDenied:
+            pass
+    if locked.snapshot == {}:
+        _ok("对偶：出厂 LOCKED 下**两侧仍都被拒**（安全默认没被削弱）")
+    else:
+        _fail(out, f"LOCKED 下竟落了值：{locked.snapshot}")
+
+    # ③ 对偶二：既有两模式的**互斥一字未改**
+    _, _, g_human = _make_gate(Mode.HUMAN)
+    _, _, g_ai = _make_gate(Mode.AI)
+    still_exclusive = True
+    try:
+        g_human.set(ai, "x", 1, "r")          # HUMAN 模式下 ai 仍应被拒
+        still_exclusive = False
+    except GateDenied:
+        pass
+    try:
+        g_ai.set(human, "y", 1, "r")          # AI 模式下 human 仍应被拒
+        still_exclusive = False
+    except GateDenied:
+        pass
+    g_human.set(human, "x", 1, "r")           # 各自的正侧仍可写（不误伤）
+    g_ai.set(ai, "y", 1, "r")
+    if (still_exclusive and g_human.snapshot == {"x": 1}
+            and g_ai.snapshot == {"y": 1}):
+        _ok("对偶：HUMAN 下 ai 仍被拒、AI 下 human 仍被拒（既有语义零变化）")
+    else:
+        _fail(out, f"既有模式的互斥被改动：{(g_human.snapshot, g_ai.snapshot)}")
+
+    # ④ 新模式**不能**被 ai 侧切进来（切模式仍只 human）
+    auth = Authority(mode=Mode.LOCKED)
+    try:
+        auth.switch_mode(Mode.OPEN, side="ai")
+        _fail(out, "ai 侧竟能切到 OPEN（AI 给自己开闸）")
+    except GateDenied as e:
+        if e.kind == "authority_switch_denied":
+            _ok("OPEN 也只能由 human 侧切（ai 侧切被拒、kind 正确）")
+        else:
+            _fail(out, f"ai 切模式报错 kind 不对：{e.kind}")
+    auth.switch_mode(Mode.OPEN, side="human")
+    if auth.mode is Mode.OPEN:
+        _ok("human 侧可切到 OPEN（新模式真的可用）")
+    else:
+        _fail(out, f"human 切 OPEN 未生效：{auth.mode}")
+
+
 def check_call_id_crossref(out: list[str]) -> None:
     """call-id 互引：set 带 call_id 落进 History。"""
     _, hist, gate = _make_gate(Mode.AI)
@@ -497,6 +577,7 @@ def main() -> int:
     check_gate_authority(out)
     check_gate_executor_not_wrapper(out)
     check_seed_also_validates(out)
+    check_open_mode(out)
     check_write_all_or_nothing(out)
     check_call_id_crossref(out)
     check_history_append_only_resume(out)

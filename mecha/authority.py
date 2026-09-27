@@ -7,6 +7,21 @@ dsh 的 approval **刻意窄**——one-shot only，无 allow-always / 无规则
 ``actor`` 由**通道**决定（硬纪律 4）：通道在构造时绑定，请求内容永远改不了它。
 ⇒ AI 适配器拿到的通道写死 actor='ai'，无法伪造 'human'。
 
+## 四种模式（**默认仍是 LOCKED**，出厂不放开）
+
+| mode | 谁能写 |
+|---|---|
+| ``HUMAN`` | 只有 human 侧 |
+| ``AI`` | 只有 ai 侧 |
+| ``OPEN`` | **两侧都能写**（2026-09-26 加：给"人机低冲突"的项目去掉那道多余的闸） |
+| ``LOCKED`` | **都不能写**（维护/危险态；**出厂默认**） |
+
+⚠ **``OPEN`` 的代价（用它就要认）**：两侧并发写时是"**后写覆盖**"，**没有**先到先得、
+也没有 CAS/期望旧值 ⇒ 真冲突时**后写的赢、先写的悄无声息地没了**（域状态史里仍能查到
+两笔，所以"丢了"是可查的，不是不可知）。⇒ 只在**确实低冲突**的项目上用。
+⚠ ``OPEN`` **不新增身份**：``side`` 仍是 ``human``/``ai`` 两个（``Channel`` 构造时钉死），
+细标签照旧只进 ``actor`` 做归因、**不扩写权**。切模式**仍只由 human 侧**发起。
+
 ## Known Limitations and Deferred Work
 
 - mode 是进程内状态，不落 History（它是操作者协调状态，不是域状态）。崩溃后
@@ -33,6 +48,7 @@ class Mode(str, Enum):
 
     HUMAN = "human"   # 只有 human 通道可写
     AI = "ai"         # 只有 ai 通道可写
+    OPEN = "open"     # **两侧都能写**（2026-09-26 加；代价是"后写覆盖"，见模块 docstring）
     LOCKED = "locked" # 谁都不可写（维护/危险态）
 
 
@@ -100,6 +116,9 @@ class Authority:
 
         不做 one-shot 授权（那是 Approval Provider 的事）；这里只判 mode 与
         side 通道的匹配（写权看 side，不看 actor 标签）。
+        ⚠ ``OPEN`` 是唯一"两侧都放行"的模式（**默认不是它**，出厂仍是 LOCKED）；
+        它**不校验 side 是不是 human/ai**——那个白名单在 ``Channel`` 构造期钉死
+        （见 ``gate.Channel.__post_init__``），本方法只做 mode 与 side 的匹配。
         """
         if self._mode is Mode.LOCKED:
             raise GateDenied(
@@ -108,6 +127,9 @@ class Authority:
                 hint="先由人类侧切到目标模式",
                 suggest="authority.switch_mode(Mode.AI, 'human')",
             )
+        if self._mode is Mode.OPEN:
+            # 都允许：合法 side（human/ai）都能写。⚠ 代价是"后写覆盖"（模块 docstring）
+            return
         if side != self._mode.value:
             raise GateDenied(
                 f"当前模式 {self._mode.value!r} 不接受 side={side!r}",
