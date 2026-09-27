@@ -73,6 +73,36 @@ def check_naming(out: list[str]) -> None:
     except MechaError as e:
         _fail(out, f"合规名被拒：{e}")
 
+    # ⭐ **放宽点**（2026-09-26）：**单段天然动词**合法（undo / reset / sync）。
+    # ⚠ **别把它修回"至少两段"**：命令面早就允许单段（同一个正则），工具面卡着只会逼出
+    # `undo_change` 这类造词，并让同一条律在两个面上自相矛盾（真实被撞两次）。
+    # ⇒ **放宽的只有段数**：get_/list_ 与项目前缀**照旧禁**（下面两条接着验）。
+    singles = ("undo", "reset", "sync")
+    ok_single = 0
+    for name in singles:
+        try:
+            _good_tool(name=name)
+            ok_single += 1
+        except MechaError as e:
+            _fail(out, f"单段天然动词 {name!r} 仍被拒：{e.kind}")
+    if ok_single == len(singles):
+        _ok("单段天然动词合法（undo/reset/sync）—— 与命令面同一口径")
+
+    # 放宽段数**没有放宽别的**：形状仍严（首尾/连续下划线、大写）
+    still_bad = ("do__thing", "_undo", "undo_", "Do_thing", "undo thing")
+    rejected_shape = 0
+    for name in still_bad:
+        try:
+            _good_tool(name=name)
+            _fail(out, f"坏形状 {name!r} 竟注册成功")
+        except MechaError as e:
+            if e.kind == "bad_tool_name":
+                rejected_shape += 1
+            else:
+                _fail(out, f"{name!r} 报错 kind 不对：{e.kind}")
+    if rejected_shape == len(still_bad):
+        _ok("放宽段数后形状仍严（首尾/连续下划线、大写、空格仍拒）")
+
 
 def check_output_contract(out: list[str]) -> None:
     # 能抓坏：output.schema 缺 required → 构造即拒（消 D-15）

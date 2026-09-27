@@ -42,7 +42,13 @@ CURRENT_CALL_ID: contextvars.ContextVar[str] = contextvars.ContextVar(
 #: schemas() 白名单（dsh ToolSchema 的模型可见字段）。
 MODEL_VISIBLE_FIELDS = ("name", "description", "parameters")
 
-_NAME_RE = re.compile(r"^[a-z][a-z0-9]*(_[a-z0-9]+)+$")
+#: 工具名的形状律。⚠ **2026-09-26 放宽：允许单段**（与命令面同一个正则）。
+#: 之前是 ``(_[a-z0-9]+)+``（**至少两段**）⇒ ``undo`` / ``reset`` / ``sync`` 这类
+#: **天然单词动词结构上不可能合规**，只能改名叫 ``undo_change``；而**命令面早就允许
+#: 单段**（`commands.py` 的 ``_NAME_RE`` 与本行逐字相同，其 ADR 明写"单段名 reset 合法"）
+#: ⇒ 工具面卡着没有道理，且**同一条律在两个面上自相矛盾**（被撞两次：某项目被迫改 7 个名，
+#: 后来又撞一次）。⇒ **放宽的只有"段数"**：``get_``/``list_`` 禁用与项目前缀禁用**一字未动**。
+_NAME_RE = re.compile(r"^[a-z][a-z0-9]*(_[a-z0-9]+)*$")
 
 #: 库自身包名。工具注册进宿主命名空间后不该再重复它（``mecha_run`` 是把
 #: 实现结构写进模型可见文本）。这是库的自有名，不是消费项目的领域值。
@@ -50,19 +56,30 @@ OWN_PACKAGE = "mecha"
 
 
 def check_tool_name(name: str, *, banned_prefixes: tuple[str, ...] = (OWN_PACKAGE,)) -> None:
-    """命名守卫：snake_case 动词_宾语；禁项目前缀。违规当场报错（fail loud）。"""
+    """命名守卫：snake_case（**单段天然动词** 或 动词_宾语）；禁 ``get_``/``list_``；禁项目前缀。
+
+    **官方改名惯例**（省得每个新项目自己论证一遍）：``get_*`` ⇒ **``read_*``**
+    （``get_paper`` ⇒ ``read_paper``）、``list_*`` ⇒ **``query_*``**
+    （``list_briefings`` ⇒ ``query_briefings``）。⚠ 惯例写在**错误信息里**——
+    那条消息就是宿主/模型看到的教学面（L4）。
+    """
     if not _NAME_RE.match(name):
         raise MechaError(
             f"工具名 {name!r} 不合命名律",
             kind="bad_tool_name",
-            hint="必须 snake_case 且至少两段（动词_宾语，如 do_thing / read_status）",
+            hint="必须 snake_case：**单段天然动词**（undo / reset / sync）或"
+                 "**动词_宾语**（do_thing / read_status）；"
+                 "不许首尾或连续下划线",
         )
     first = name.split("_")[0]
     if first in ("get", "list"):
         raise MechaError(
             f"工具名 {name!r} 以 {first}_ 开头：视图/枚举不是工具，是 schema 的投影",
             kind="bad_tool_name",
-            hint="把只读枚举并进 describe/schema 类工具，或注册为 query 项（Surface.register）",
+            hint="**官方改名惯例**：get_* ⇒ read_*（get_paper ⇒ read_paper）、"
+                 "list_* ⇒ query_*（list_briefings ⇒ query_briefings）；"
+                 "或把只读枚举并进 describe/schema 类工具，或注册为 query 项"
+                 "（Surface.register）",
         )
     for p in banned_prefixes:
         if name.startswith(p + "_"):
