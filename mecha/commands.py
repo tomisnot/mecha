@@ -487,10 +487,23 @@ class CommandRegistry:
                      if k not in RESERVED_ARGS or k in declared_set}
         try:
             self._check_args(spec, body_args)
+        except MechaError as e:
+            # ⚠ **参数错不留痕**：handler **还没跑** ⇒ 副作用**不可能发生**
+            # （判据是"副作用有没有可能已经发生"，不是"这次失败没失败"；
+            #  而且每次手滑都记一条会把真痕迹淹掉）。
+            return _failure(e)
+        try:
             result = self._call_handler(spec, body_args, context, channel=channel)
         except MechaError as e:
-            # 缺参/参数不符/命令体自报失败：命令体未产出回执 ⇒ 无审计可写。
+            # handler **已进入** ⇒ 副作用**可能已经发生** ⇒ 先留一条痕，再按原样返回失败
+            self._audit_entered_failure(spec, gate, channel, meta, e)
             return _failure(e)
+        except BaseException as e:
+            # 同上：**先留痕，再把异常原样放走** —— 两条纪律同时保住：
+            # ①"跑过的 handler 必须有痕"；②"不把 bug 伪装成域失败"（bug 仍穿透，
+            # 由传输边界兜，见 invoke 的 docstring）。
+            self._audit_entered_failure(spec, gate, channel, meta, e)
+            raise
         error = None if result.ok else (result.error or MechaError(
             f"命令 {name!r} 回执 ok=False 却没给 error",
             kind="bad_command_result",
@@ -604,6 +617,27 @@ class CommandRegistry:
             kind="bad_command_result",
             hint="handler 必须返回映射（回执键值）或 CommandResult",
         )
+
+    def _audit_entered_failure(self, spec: CommandSpec, gate: object | None,
+                               channel: object | None, meta: Mapping[str, object],
+                               exc: BaseException) -> None:
+        """「handler **已进入**」的失败：先写一条 ``ok=False`` 审计（在把失败放走之前）。
+
+        ⚠ 判据是【**副作用有没有可能已经发生**】，不是【这次失败没失败】：
+        handler 跑过了 ⇒ 它**可能已经动过宿主状态**（域状态外置的项目尤其如此）
+        ⇒ 必须留痕。而**拒绝点**（scope / authority / 审批 / 参数）都在 handler
+        **之前** ⇒ 副作用不可能发生 ⇒ **不留痕**（两条规则互补，不是矛盾）。
+
+        ``error_kind`` ＝ ``MechaError.kind``（域失败）或 ``type(exc).__name__``（编程错误）。
+        ⚠ ``gate`` 没注入时**写不了**（无痕）——那是既有的 ``missing_gate`` 语义，如实保留。
+        ⚠ 这条审计本身写不进去时，**不掩盖原失败**（原失败更响亮；留痕失败由 History
+        自己的判据兜）——所以这里丢弃 ``_audit`` 的返回值是有意的。
+        """
+        if not spec.side_effect or gate is None:
+            return
+        error = exc if isinstance(exc, MechaError) else MechaError(
+            f"{type(exc).__name__}: {exc}", kind=type(exc).__name__)
+        self._audit(spec, gate, channel, meta, {}, error, None)
 
     def _audit(self, spec: CommandSpec, gate: object | None,
                channel: object | None, meta: Mapping[str, object],

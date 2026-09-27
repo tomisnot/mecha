@@ -953,6 +953,76 @@ def check_required_semantics(out: list[str]) -> None:
         _fail(out, f"多余键语义变了：默认={r5} 显式={r6}")
 
 
+def check_failure_leaves_trace(out: list[str]) -> None:
+    """⭐「handler **已进入**」的失败必须留痕（抛 ``MechaError`` 或**任何**异常都先写 ``ok=False``）。
+
+    ⚠ 判据是【**副作用有没有可能已经发生**】：handler 跑过了就可能动过宿主状态。
+    ⚠ 与"拒绝点不留痕"**互补不冲突**：scope / authority / 审批 / 参数都在 handler
+    **之前** ⇒ 副作用不可能发生 ⇒ 不留痕（下面两条对偶钉的就是这一半）。
+    """
+    def boom_mecha(context, text):
+        raise MechaError("命令体自报失败", kind="domain_refused", hint="h")
+
+    def boom_plain(context, text):
+        raise RuntimeError("bug 在现场")
+
+    with _with_software() as sw:
+        sw.authority.switch_mode(Mode.AI, side="human")
+
+        # ① handler 抛 MechaError ⇒ 有痕，且回执照旧
+        sw.commands.register(_note_cmd(), boom_mecha)
+        r1 = sw.commands.invoke("record_note", {"text": "t"}, context=_Ctx(),
+                                gate=sw.gate, channel=sw.channels["ai"])
+        ev1 = [e for e in sw.history.events()
+               if e.key == f"{AUDIT_KEY_PREFIX}record_note"]
+        if (_fail_shape(r1, "domain_refused") and len(ev1) == 1
+                and ev1[0].value["ok"] is False
+                and ev1[0].value["error_kind"] == "domain_refused"):
+            _ok("handler 抛 MechaError ⇒ **有痕**（command.* / ok=False / error_kind=kind）")
+        else:
+            _fail(out, f"抛 MechaError 无痕或回执变了：{r1} 审计={[e.value for e in ev1]}")
+
+        # ② handler 抛**普通异常** ⇒ 也有痕，且异常**原样抛出**（不伪装成域失败）
+        sw.commands.register(_note_cmd(name="record_note_plain_boom"), boom_plain)
+        raised = False
+        try:
+            sw.commands.invoke("record_note_plain_boom", {"text": "t"}, context=_Ctx(),
+                               gate=sw.gate, channel=sw.channels["ai"])
+        except RuntimeError:
+            raised = True
+        ev2 = [e for e in sw.history.events()
+               if e.key == f"{AUDIT_KEY_PREFIX}record_note_plain_boom"]
+        if (raised and len(ev2) == 1 and ev2[0].value["ok"] is False
+                and ev2[0].value["error_kind"] == "RuntimeError"):
+            _ok("handler 抛**普通异常** ⇒ 也有痕（error_kind=异常类型名）且异常**原样抛出**")
+        else:
+            _fail(out, f"普通异常无痕或没原样抛出：raised={raised} "
+                       f"审计={[e.value for e in ev2]}")
+
+        # ③ 对偶一：**参数错不留痕**（拒绝在 handler 之前 ⇒ 副作用不可能发生）
+        seq_before = sw.history.last_seq
+        sw.commands.register(_note_cmd(name="record_note_noargs"), _note_handler)
+        r3 = sw.commands.invoke("record_note_noargs", {}, context=_Ctx(),
+                                gate=sw.gate, channel=sw.channels["ai"])
+        any_new = [e for e in sw.history.events()
+                   if e.key.startswith(AUDIT_KEY_PREFIX) and e.seq > seq_before]
+        if _fail_shape(r3, "missing_arguments") and not any_new:
+            _ok("对偶：**参数错不留痕**（handler 没跑 ⇒ 副作用不可能发生）")
+        else:
+            _fail(out, f"参数错留了痕：{r3} 新审计={[e.key for e in any_new]}")
+
+        # ④ 对偶二：正常成功 ⇒ 审计现状不变（1 条 ok=True）
+        sw.commands.register(_note_cmd(name="record_note_fine"), _note_handler)
+        r4 = sw.commands.invoke("record_note_fine", {"text": "t"}, context=_Ctx(),
+                                gate=sw.gate, channel=sw.channels["ai"])
+        ev4 = [e for e in sw.history.events()
+               if e.key == f"{AUDIT_KEY_PREFIX}record_note_fine"]
+        if not r4.get("is_error") and len(ev4) == 1 and ev4[0].value["ok"] is True:
+            _ok("对偶：正常成功 ⇒ 审计现状不变（1 条 ok=True）")
+        else:
+            _fail(out, f"成功路径的审计变了：{r4} 审计={[e.value for e in ev4]}")
+
+
 def main() -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -963,6 +1033,7 @@ def main() -> int:
     check_params_and_output(out)
     check_required_semantics(out)
     check_side_effect_audit(out)
+    check_failure_leaves_trace(out)
     check_result_ref_audit(out)
     check_scope_policy(out)
     check_approval_required(out)
