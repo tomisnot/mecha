@@ -283,6 +283,56 @@ def check_codeact_logs_each_subcall(out: list[str]) -> None:
             _fail(out, f"成功步输出不符：{r.outputs}")
 
 
+def check_codeact_failure_leaves_trace(out: list[str]) -> None:
+    """CodeAct 三条（2026-09-26）：**账逐条即时写** + **普通异常也留痕** + **动作不写域状态**。
+
+    ⚠ 旧行为：账在 `run` **末尾**一次性写（"先收集后落盘"）⇒ **中途抛异常 = 整段无账**；
+    且只捕 `MechaError` ⇒ 普通异常**既穿透又不落账**（与 A1 同病）。
+    """
+    def boom(**kw):
+        raise RuntimeError("引擎炸了")
+
+    with tempfile.TemporaryDirectory() as td:
+        hist = History()
+        s = Surface(ToyEngine())
+        s.register(EntryKind.QUERY, "ok_op", lambda word="": f"E:{word}",
+                   called_by="framework")
+        s.register(EntryKind.QUERY, "boom_op", boom, called_by="framework")
+        act = CodeAct(s, hist, actor_provider=lambda: "ai")
+        raised = False
+        try:
+            act.run([Action("ok_op", {"word": "a"}), Action("boom_op"),
+                     Action("ok_op", {"word": "b"})], call_id="c9")
+        except RuntimeError:
+            raised = True
+        steps = [e for e in hist.events() if e.key.startswith("codeact.")]
+        if raised and [e.key for e in steps] == ["codeact.0", "codeact.1"]:
+            _ok("中途抛普通异常 ⇒ **已跑过的步都在史里**（不再整段无账），且异常**原样抛出**")
+        else:
+            _fail(out, f"崩溃留痕不符：raised={raised} steps={[e.key for e in steps]}")
+        if (len(steps) == 2 and steps[1].value["ok"] is False
+                and "RuntimeError" in str(steps[1].value["detail"])):
+            _ok("失败步也留痕，detail 带异常类型名（与 A1 同一判据）")
+        else:
+            _fail(out, f"失败步的痕不对：{[e.value for e in steps]}")
+        if all(e.call_id == "c9" for e in steps):
+            _ok("逐条写仍「整段可识别」：两步共用同一个 call_id（不必新增批 id）")
+        else:
+            _fail(out, f"call_id 不一致：{[e.call_id for e in steps]}")
+
+        # ⚠ 事实判据：`run` 动作**不写域状态**（Surface.run 不碰 Gate）——
+        # 免得后人以为"CodeAct 在改世界"（它只编排；域状态写归宿主的 handler）。
+        hist2 = History()
+        gate2 = Gate(Authority(Mode.AI), hist2, validate=accept_all)
+        act2 = CodeAct(Surface(ToyEngine()), hist2, actor_provider=lambda: "ai")
+        act2.run([Action("run", {"spec": {"mode": "x"}})], call_id="c10")
+        acts = [e for e in hist2.events() if e.key.startswith("codeact.")]
+        if gate2.snapshot == {} and len(acts) == 1:
+            _ok("`run` 动作**不产生域状态写**（快照空；只在史里留 codeact.* 一条）")
+        else:
+            _fail(out, f"run 动作越界：snapshot={gate2.snapshot} 史={[e.key for e in acts]}")
+
+
 def main() -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -294,6 +344,7 @@ def main() -> int:
     check_registration_is_the_only_visibility(out)
     check_skill_catalog_single_source(out)
     check_codeact_logs_each_subcall(out)
+    check_codeact_failure_leaves_trace(out)
     if out:
         print(f"phase3_provider_selfcheck: FAIL（{len(out)} 条）")
         return 1

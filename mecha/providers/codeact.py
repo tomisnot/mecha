@@ -10,10 +10,22 @@
 
 ## Known Limitations and Deferred Work
 
-- 动作集 = Surface 已注册项 + 内置 run/summary/estimate；不解释表达式、
-  不 import。需要更强 CodeAct 的项目自带动作 Provider（推迟到 n=2）。
-- 日志先收集后落盘（run 结束一次性 append），不逐条同步写——中途崩溃丢
-  整段；需要逐条持久时换 LogSink 直写，届时写 ADR。
+- **动作集（与代码逐项对齐，2026-09-26 改正）**：**内置四个** ``run`` / ``summary`` /
+  ``estimate`` / ``schema`` **＋ ``Surface`` 已注册的 ``query`` 项**（经 ``Surface.query``）。
+  ⚠ **不触达**注册的 **command / tool** 面——旧文案写"Surface 已注册项"读起来像"什么都行"，
+  实际只到 query 那一层。需要更强 CodeAct 的项目自带动作 Provider（推迟到 n=2）。
+  ⚠ 若将来要让它触达 command/tool 面，**必须同时回答"过不过写权门"**（见下一条），
+  不能只把 `_dispatch` 加一支了事。
+- ⚠ **动作不写域状态，因此不在写权闸的管辖里**（这是刻意的，不是漏闸）：``run`` 走
+  ``Surface.run``，而 ``Surface`` **不碰 Gate/History**（计算/演化面）。域状态的写发生在
+  **宿主自己的 handler 里**（``gate.set`` ⇐ 那一步过门）。⇒ 把 ``Surface.run`` 塞进写权门
+  会要求"只读计算也要先开闸"，那与既有的**读写分离**（只读命令在 LOCKED 下照样可调）冲突。
+  ⚠ **但边界要留痕**：**若某项目的引擎 ``run`` 在 Gate 之外改自己的存储**（"域状态外置"），
+  那么 CodeAct 这条路径**不受写权闸管辖**——正解是**让宿主的写经 Gate**，不是给 CodeAct
+  加闸（`Surface.run` 是公开面，在 CodeAct 这一条路上设卡挡不住旁边那十扇门）。
+- **账逐条即时写**（2026-09-26 起）：每个子调用**一有结果就 append 一条**（不再"跑完整段
+  再一次性落盘"），且一段动作共用一个 ``call_id`` ⇒ **中途崩溃/异常时，已跑过的步都在史里**、
+  这一整段仍可用 ``call_id`` 串起来。⚠ 代价：**史事件数变多**（一段 N 步 = N 条）。
 """
 
 from __future__ import annotations
@@ -67,24 +79,41 @@ class CodeAct:
         result = CodeActResult()
         for i, a in enumerate(actions):
             if ctx.cancelled:
+                self._log_step(i, a.op, False, "cancelled", call_id)
                 result.steps.append(SubCallLog(i, a.op, False, "cancelled"))
                 result.stopped_at = i
                 break
             try:
                 out = self._dispatch(a, ctx)
-                result.steps.append(SubCallLog(i, a.op, True))
-                result.outputs.append(out)
             except MechaError as e:
-                result.steps.append(SubCallLog(i, a.op, False, e.teaching_text()))
+                detail = e.teaching_text()
+                self._log_step(i, a.op, False, detail, call_id)
+                result.steps.append(SubCallLog(i, a.op, False, detail))
                 result.stopped_at = i
                 break
-        # 逐子调用记日志 → 落 History（可归因；actor 来自通道）
-        for s in result.steps:
-            self._history.append(
-                f"codeact.{s.index}", {"op": s.op, "ok": s.ok, "detail": s.detail},
-                self._actor(), "codeact step", call_id,
-            )
+            except BaseException as e:
+                # ⚠ 与 A1 同一判据：**子调用已进入 ⇒ 失败也要留痕**，然后**原样放走**
+                # （不把 bug 伪装成域失败；只是先记一条痕）。
+                detail = f"{type(e).__name__}: {e}"
+                self._log_step(i, a.op, False, detail, call_id)
+                result.steps.append(SubCallLog(i, a.op, False, detail))
+                result.stopped_at = i
+                raise
+            self._log_step(i, a.op, True, "", call_id)
+            result.steps.append(SubCallLog(i, a.op, True))
+            result.outputs.append(out)
         return result
+
+    def _log_step(self, index: int, op: str, ok: bool, detail: str,
+                  call_id: str) -> None:
+        """**一步一条、即时落史**（不再"整段跑完才写"）：中途崩溃时已跑过的步仍在史里。
+
+        一段动作共用一个 ``call_id`` ⇒ 逐条写也仍然"整段可识别"（不必新增批 id）。
+        """
+        self._history.append(
+            f"codeact.{index}", {"op": op, "ok": ok, "detail": detail},
+            self._actor(), "codeact step", call_id,
+        )
 
     def _dispatch(self, a: Action, ctx: ExecutionContext) -> object:
         if a.op == "run":
