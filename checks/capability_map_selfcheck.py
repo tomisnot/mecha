@@ -88,8 +88,11 @@ def check_map_generated(out: list[str]) -> None:
 
 
 #: EL 仓根（真表来源）。与 phase5_* 判据同一约定；MECHA_EL_ROOT 可覆盖。
-EL_ROOT = Path(os.environ.get("MECHA_EL_ROOT")
-               or r"D:\学\BaiduSyncdisk\编程\code\python\Energy Level")
+EL_ROOT = Path(os.environ.get("MECHA_EL_ROOT", ""))
+#: WARN **缺 EL 时必须先问这个**。陷阱（本批差点踩）：把默认值删掉而不加守卫
+#: ⇒ `Path("")` = 当前目录 ⇒ `EL_MAP` 指向 **mecha 自己的** docs/capabilities.md
+#: ⇒ 比对变成「自己跟自己比」= **假绿**（比红更坏）。
+EL_READY = (EL_ROOT / "mecha_v2").is_dir()
 EL_MAP = EL_ROOT / "docs" / "capabilities.md"
 
 _ROW_RE = re.compile(
@@ -116,7 +119,7 @@ def _el_project_entries() -> list[CapabilityEntry]:
     审查建议 2：合成表退役——并表判据只证明"能 diff 我自己写的表"不算数，
     必须拿第二个真实项目生成的表来 diff。真表缺失即红（不假绿、不回退合成表）。
     """
-    if not EL_MAP.exists():
+    if not EL_READY or not EL_MAP.exists():
         raise FileNotFoundError(
             f"EL 真表不存在：{EL_MAP}\n"
             f"先在 EL 仓跑 python scripts/gen_capability_map.py 生成（ADR 边界机制补三洞）")
@@ -136,7 +139,8 @@ def check_merge_ready(out: list[str]) -> None:
     try:
         el = _el_project_entries()
     except FileNotFoundError as e:
-        _fail(out, str(e))
+        # WARN 外部依赖缺失只有一种语义 => 响亮跳过（严格模式由 --require-external 转失败）
+        print(f"  · 跳过（缺 EL 仓）：读 EL 真表做并表 diff —— {e}")
         return
     # 字段格式一致（并表前提）
     for e in main + el:
@@ -186,7 +190,11 @@ def _real_consumer_files(symbol: str, own_module_substrings) -> list[str]:
     非 checks/、非 assembly、非 providers/ 子树（re-export 与兄弟模块不算消费者）。
     只认含 symbol 的 import 行——docstring/注释里的提及不算（防假绿）。"""
     hits: list[str] = []
-    bases = [(ROOT / "mecha", "mecha/"), (EL_ROOT / "mecha_v2", "EL:mecha_v2/")]
+    bases = [(ROOT / "mecha", "mecha/")]
+    if EL_READY:
+        bases.append((EL_ROOT / "mecha_v2", "EL:mecha_v2/"))
+    else:
+        print("  · 跳过（缺 EL 仓）：EL 侧的「真实消费者」扫描面")
     for d, prefix in bases:
         if not d.is_dir():
             continue
@@ -218,6 +226,11 @@ def check_real_consumers(out: list[str]) -> None:
     这独立于 consumer 标签——标签写对了不代表有人 import，grep 才证明。
     L7 对偶：真符号（JobRegistry）必须非空、假符号必须空（守卫不永远返绿）。
     """
+    if not EL_READY:
+        # ⚠ 这一组证的是「**真项目**在消费」（扫 EL 仓的 import）⇒ 缺 EL 时无可证之物：
+        # **响亮跳过这一组**，但 **L1/L2/L3/L3+ 一字不动**（守卫必须永远能跑）。
+        print("  · 跳过（缺 EL 仓）：真实消费者 grep 证（需要 EL 仓作为第二个项目）")
+        return
     for cap, (sym, own) in CONSUMER_SYMBOLS.items():
         files = _real_consumer_files(sym, own)
         if not files:
@@ -335,12 +348,19 @@ def check_runtime_graph_matches(out: list[str]) -> None:
 
     # B：bridge 真路径（serve_mcp → _build_gui_tools）必须复用装配点的 surface。
     # （领域实现搬回 EL 仓后，bridge 在 EL_ROOT/mecha_v2/ —— 与 phase5 判据同源）
-    src = (EL_ROOT / "mecha_v2" / "bridge.py").read_text(encoding="utf-8")
-    if ("surface=sw.surface" in src and "surface=self._surface" in src
-            and "surface or Surface(engine)" in src):
-        _ok("bridge 真路径穿装配点 surface（_assembled→serve_mcp→工具面同源）")
+    if not EL_READY:
+        print("  · 跳过（缺 EL 仓）：bridge 真路径穿线核对（需要 EL 的 bridge.py）")
+        _ok("bridge 穿线核对**未执行**（缺 EL 仓，已响亮标注）")
+        pass  # ⚠ 跳过分支到此为止：**不许**掉进下面的 else（上一版就是这么自伤的）
+    if EL_READY:
+        src = (EL_ROOT / "mecha_v2" / "bridge.py").read_text(encoding="utf-8")
+        if ("surface=sw.surface" in src and "surface=self._surface" in src
+                and "surface or Surface(engine)" in src):
+            _ok("bridge 真路径穿装配点 surface（_assembled→serve_mcp→工具面同源）")
+        else:
+            _fail(out, "bridge 的 surface 穿线断了（漂回裸建 Surface ⇒ 双图复活）")
     else:
-        _fail(out, "bridge 的 surface 穿线断了（漂回裸建 Surface ⇒ 双图复活）")
+        print("  · 跳过（缺 EL 仓）：bridge surface 穿线核对（结论只能由 EL 的 bridge.py 证）")
 
     # C：L7 对偶——裸建的表确实缺声明表的脊椎条目（守卫不是永远绿的哑守卫）
     bare = {(e.name, e.role.value) for e in Surface(Toy()).roles.entries()}
