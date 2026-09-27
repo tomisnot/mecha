@@ -5,4 +5,3 @@
 #    对应行应当被删掉（判据会打印"可收紧"的条目提醒）。
 #
 # 台账（2026-09-26，git ls-files 口径、151 个文件）：
-checks/capability_map_selfcheck.py 2
