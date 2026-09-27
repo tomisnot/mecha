@@ -417,13 +417,22 @@ def _monitor_fields() -> set[str]:
 
 
 #: **L1 的枚举源**：从**活对象**取（`__dataclass_fields__` / `__members__`），**不手抄**。
-#: ⚠ 加一个新的声明面（新 dataclass / 新 Enum）必须同时加进这里，否则 L1 覆盖不到它
-#: （这是本组唯一的"手抄位"，所以它自己也被 L7 对偶钉住）。
+#:
+#: ⚠ **复核过的声明面清单**（哪些进了、哪些没进 —— 这块**必须能被人核**）：
+#: * **进**：`CommandSpec`（命令声明）· `ToolDefinition`（工具声明）· `Mode`（写权模式）·
+#:   `MonitorView`（监控读数形状）· **`Event`（域事件形状；2026-09-26 补）**
+#: * **没进**（附理由）：`Action` / `SubCallLog` / `CodeActResult`（CodeAct 的**内部值对象**，
+#:   由调用方构造，不是"项目声明面"）· `ToolOutput` / `Claim`（值形状，不是声明）·
+#:   角色与能力面（走同文件的 `DEFERRED_PROVIDERS` / `CONSUMER_SYMBOLS` 那一套）
+#: * ⚠ **这块永远是这套守卫的已知软肋**：**"哪些类算声明面"需要人判** ⇒
+#:   **新加一个带声明字段的 dataclass / 枚举时必须人判并在此加一行**，否则**守卫看不见它**
+#:   —— 同一个缺口会再来一次：本次 `Event.ts` / `Event.undoable` 就是这么漏掉的。
 ENUM_SOURCES = (
     ("CommandSpec", _cmd_fields),
     ("ToolDefinition", _tooldef_fields),
     ("Mode", _mode_members),
     ("MonitorView", _monitor_fields),
+    ("Event", _event_fields),
 )
 
 #: 三态表：`consumed`（有消费者 + 点名判据）/ `deferred`（今天没有消费者，**必须给理由**）
@@ -436,6 +445,28 @@ def _declare(row_key: str, state: str, *, sym: str = "", files: tuple[str, ...] 
              crit: str = "", note: str = "") -> None:
     DECLARATIONS[row_key] = {"state": state, "sym": sym, "files": files,
                              "crit": crit, "note": note}
+
+
+# ---- Event（域事件形状；2026-09-26 补进枚举源 —— 补的原因就是 ts/undoable 那次漏掉）----
+_declare("Event.seq", "consumed", sym="last_seq",
+         files=("mecha/providers/log_local.py",), crit="check_history_append_only_resume")
+_declare("Event.key", "consumed", sym="fold",
+         files=("mecha/history.py",), crit="check_history_append_only_resume")
+_declare("Event.value", "consumed", sym="fold",
+         files=("mecha/history.py",), crit="check_monitor_reconcile")
+_declare("Event.actor", "consumed", sym="history_records",
+         files=("mecha/cockpit.py",), crit="check_call_id_crossref")
+_declare("Event.reason", "consumed", sym="config_tree",
+         files=("mecha/cockpit.py",), crit="check_call_id_crossref")
+_declare("Event.call_id", "consumed", sym="to_record",
+         files=("mecha/history.py",), crit="check_call_id_crossref")
+_declare("Event.ts", "consumed", sym="ts",
+         files=("mecha/history.py",), crit="check_event_ts_and_undoable",
+         note="⚠ **不许用它排序/去重**（seq 是唯一顺序）；判据已钉「ts 回拨也不重排」")
+_declare("Event.undoable", "consumed", sym="undoable",
+         files=("mecha/history.py",), crit="check_event_ts_and_undoable",
+         note="⚠ **三态槽位**（None＝未声明），框架**不**据此实现撤销；"
+              "**今天没有项目在传它** ⇒ 判据只钉「三态原样进史 + 老记录不冒充 False」")
 
 
 # ---- CommandSpec（命令声明面：本会话三起事件在这里）----
