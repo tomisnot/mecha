@@ -37,6 +37,7 @@ CHECKS = [
     "checks/assembly_endtoend_selfcheck.py",
     "checks/vocabulary_selfcheck.py",
     "checks/l8_prose_count_selfcheck.py",
+    "checks/personal_paths_selfcheck.py",
     "checks/phase6_command_surface_selfcheck.py",
     "checks/phase7_job_contract_selfcheck.py",
     "checks/phase8_artifact_contract_selfcheck.py",
