@@ -632,14 +632,22 @@ class CommandRegistry:
             # 不透明引用：核心不解释，只保证可 JSON 化（值由宿主负责）。
             record["result_ref"] = dict(result_ref)
         try:
-            gate.set(channel or _default_channel(spec.name),   # type: ignore[attr-defined]
-                     f"{AUDIT_KEY_PREFIX}{spec.name}", record, reason, call_id)
+            # ⚠ **只记史、不改快照**（`Gate.record`）：审计事件属于**事件史**，
+            # 不属于域状态快照——借 `gate.set` 落史会让审计键混进 `/config` 的键空间
+            # （在那里变成"契约外的键"，而快照的"后写覆盖"语义对审计毫无意义）。
+            gate.record(                                                     # type: ignore[attr-defined]
+                f"{AUDIT_KEY_PREFIX}{spec.name}", record,
+                (channel or _default_channel(spec.name)).actor,              # type: ignore[attr-defined]
+                reason, call_id)
         except MechaError as e:
+            # 承诺不变（**不静默**）：审计写不进去 ⇒ 命令回失败。⚠ 路径变了：
+            # 审计**不再经过宿主 validator**（所以不再要求宿主接受 'command.' 前缀），
+            # 这条失败现在只可能来自 History 本身（如宿主换了实现）。
             return MechaError(
-                f"命令 {spec.name!r} 的审计事件被 Gate 拒绝：{e.message}",
+                f"命令 {spec.name!r} 的审计事件写不进去：{e.message}",
                 kind="command_audit_denied",
-                hint="宿主 validator 需接受 'command.' 前缀的审计键；"
-                     "或先由人类通道开闸（authority）",
+                hint="审计必须留痕（有副作用的命令哪怕回执不合契约也已经动过宿主状态）；"
+                     "写不进去就 fail loud，不静默放行",
                 suggest=e.suggest,
             )
         return None

@@ -52,12 +52,13 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from mecha.assembly import assemble  # noqa: E402
-from mecha.authority import Mode  # noqa: E402
+from mecha.authority import Authority, Mode  # noqa: E402
 from mecha.commands import (  # noqa: E402
     AUDIT_KEY_PREFIX, CommandRegistry, CommandResult, CommandSpec, define_command,
 )
 from mecha.errors import MechaError  # noqa: E402
-from mecha.gate import Channel, accept_all  # noqa: E402
+from mecha.gate import Channel, Gate, accept_all  # noqa: E402
+from mecha.history import History  # noqa: E402
 from mecha.scopes import ScopePolicy  # noqa: E402
 from mecha.providers.approval import LocalApproval  # noqa: E402
 from mecha.surface import Engine, ExecutionContext  # noqa: E402
@@ -376,6 +377,14 @@ def check_side_effect_audit(out: list[str]) -> None:
             _fail(out, f"有副作用命令调用不符：{r}")
         events = [e for e in sw.history.events()
                   if e.key == f"{AUDIT_KEY_PREFIX}record_note"]
+        # ⭐ **审计进事件史、不进域快照**（发现 3 的落地点）：事件在 `/history` 里
+        # 一条不少，而快照里**不该**有 `command.` 前缀的键（否则 `/config` 视图会把它
+        # 当"契约外的键"，且快照的"后写覆盖"语义对审计毫无意义）。
+        snap_audit = [k for k in sw.gate.snapshot if str(k).startswith(AUDIT_KEY_PREFIX)]
+        if not snap_audit:
+            _ok("审计键**不进域快照**（域快照纯净：`/config` 不再把它当契约外的键）")
+        else:
+            _fail(out, f"审计键混进了域快照：{snap_audit}")
         if len(events) != 1:
             _fail(out, f"审计事件数不符（期望 1）：{[e.key for e in sw.history.events()]}")
         else:
@@ -396,12 +405,15 @@ def check_side_effect_audit(out: list[str]) -> None:
                 _ok("审计值不含结果体/入参原文（大对象不进 History）")
             else:
                 _fail(out, f"审计值泄漏结果体或字段漂移：{sorted(v)}")
-        # 允许：审计事件不污染域快照（键前缀不在域键空间内）
-        if "record_note" not in sw.gate.snapshot and set(sw.gate.snapshot) == {
-                f"{AUDIT_KEY_PREFIX}record_note"}:
-            _ok("审计键与域键空间分离（command.* 前缀，域快照里无同名污染）")
+        # ⚠ **这里以前断言「快照里恰好是 `{command.record_note}`」——那是把【已知债】写成
+        # 期望值**：框架自己的 ADR 当年承认"审计键会进域快照的键空间（前缀隔离）……
+        # 需要'域快照纯净'的读面要按前缀过滤"，只是**没做到**。
+        # 现在审计走 `Gate.record`（只记史、不改快照）⇒ 快照里**不该有任何** `command.` 键。
+        # ⚠ **不要修回"恰好等于那个键"**：那描述的是缺陷，不是承诺。
+        if not sw.gate.snapshot:
+            _ok("审计键与域键空间分离：域快照里**没有任何** command.* 键（审计只在事件史）")
         else:
-            _fail(out, f"审计写入污染了域快照键空间：{sorted(sw.gate.snapshot)}")
+            _fail(out, f"审计仍在域快照键空间里：{sorted(sw.gate.snapshot)}")
         # 回执不合契约但已产生副作用 ⇒ 仍必须留痕
         dispose()
         sw.commands.register(_note_cmd(), lambda context, text: {"ok": True})
@@ -414,7 +426,14 @@ def check_side_effect_audit(out: list[str]) -> None:
             _ok("副作用已发生但回执坏 ⇒ 仍写审计且标 ok=False+error_kind（不静默）")
         else:
             _fail(out, f"坏回执的副作用未留痕：{[e.value for e in audited]}")
-        # 宿主 validator 不受协时审计被拒 = fail loud（框架不替宿主放行）
+        # ⚠ **这里以前断言的是「宿主 validator 拒 `command.*` ⇒ `command_audit_denied`」。
+        # 那条现在【不能保留】——但原因不是"它错了"，而是【它守的那个契约不存在了】**：
+        # 审计此前借 `gate.set` 落史 ⇒ 必须过宿主 validator（所以宿主得给 `command.`
+        # 前缀开白名单）；改成 `Gate.record`（只记史、不改快照）之后，**宿主 validator
+        # 根本不在审计路径上** ⇒ "validator 拒了怎么办"这个问题不再存在。
+        # ⚠ **但"不静默"这条承诺必须留下**：它被【改写】成新路径上的断言（见下面
+        # `_NoAuditHistory` 那一段：审计写不进去 ⇒ 仍 `command_audit_denied` fail loud）。
+        # ⇒ 顺应翻转：宿主 validator 再拒 `command.*`，命令也应当**正常执行且审计照写**。
         def strict(key, value):
             if key.startswith(AUDIT_KEY_PREFIX):
                 raise MechaError(f"未知键 {key!r}", kind="unknown_key",
@@ -424,11 +443,32 @@ def check_side_effect_audit(out: list[str]) -> None:
             sw2.commands.register(_note_cmd(), _note_handler)
             r2 = sw2.commands.invoke("record_note", {"text": "t"}, context=_Ctx(),
                                      gate=sw2.gate, channel=sw2.channels["ai"])
-            if _fail_shape(r2, "command_audit_denied"):
-                _ok("宿主 validator 拒 command.* 键 ⇒ fail loud（不静默放行）")
+            audited2 = [e for e in sw2.history.events()
+                        if e.key == f"{AUDIT_KEY_PREFIX}record_note"]
+            if not r2.get("is_error") and audited2:
+                _ok("宿主 validator 拒 command.* 前缀**不再影响审计**：命令照跑、审计照写"
+                    "（审计已不经 validator —— 负担从宿主侧消失）")
             else:
-                _fail(out, f"审计被拒不报：{r2}")
+                _fail(out, f"审计仍被宿主 validator 拦住：{r2} 审计={len(audited2)}")
         dispose()
+
+        # 承诺不变（**不静默**）：审计写不进去 ⇒ 命令回 `command_audit_denied`。
+        # 用一份"拒写审计键"的 History 复现（新路径上唯一的失败来源）。
+        class _NoAuditHistory(History):                      # noqa: D401 - 判据替身
+            def append(self, key, value, actor, reason="", call_id=""):
+                if str(key).startswith(AUDIT_KEY_PREFIX):
+                    raise MechaError(f"拒写审计键 {key!r}", kind="audit_refused")
+                return super().append(key, value, actor, reason, call_id)
+
+        g = Gate(Authority(mode=Mode.AI), _NoAuditHistory(), validate=accept_all)
+        reg2 = CommandRegistry()
+        reg2.register(_note_cmd(), _note_handler)
+        r3 = reg2.invoke("record_note", {"text": "t"}, context=_Ctx(),
+                         gate=g, channel=Channel("ai"))
+        if _fail_shape(r3, "command_audit_denied"):
+            _ok("审计写不进去 ⇒ 仍 `command_audit_denied` fail loud（承诺保留、路径改写）")
+        else:
+            _fail(out, f"审计写失败被静默：{r3}")
 
 
 def check_result_ref_audit(out: list[str]) -> None:

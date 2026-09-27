@@ -192,6 +192,11 @@ def config_tree(source, *, schema_rows=None) -> dict:
 
     ``n_snapshot_keys`` 恒回：快照键数（``n_keys`` 是 **schema 行数**，两者之差
     正是人最该看见的信号——"schema 说这么多键，实际只设了这么几个"）。
+
+    ⚠ **审计键（``command.*``）不属于配置面**（2026-09-26 起）：命令审计走
+    ``Gate.record``（**只记史、不改快照**）⇒ 它**不在快照里**，因此**不会**出现在
+    ``orphans``（此前它借 ``gate.set`` 落史，于是混进快照、在这里被当"契约外的键"）。
+    ⇒ 这也是 ``n_snapshot_keys`` 的一个隐含语义：**它只数域键**，不含审计。
     """
     snapshot = dict(source.snapshot())
     last: dict = {}

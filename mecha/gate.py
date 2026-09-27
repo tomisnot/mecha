@@ -109,6 +109,18 @@ class Gate:
         """
         self._authority.gate(channel.side)
 
+    def record(self, key: str, value: object, actor: str, reason: str,
+               call_id: str = "") -> Event:
+        """**只记史、不改快照**（`set` 的第 4 步，单独暴露）。
+
+        ⚠ 为什么需要这个口子：**审计事件属于事件史，不属于域状态快照**
+        （`command.<name>` 不是配置键）。它此前借 `gate.set` 落史，于是**混进了快照**
+        ——在 `/config` 视图里变成"契约外的键（orphans）"，而快照的"后写覆盖"语义
+        对审计**本来就没有意义**（同名命令只剩最后一次）。`set` 自己也调它 ⇒ 这一步
+        **只有一份语义**。
+        """
+        return self._history.append(key, value, actor, reason, call_id)
+
     def set(self, channel: Channel, key: str, value: object, reason: str,
             call_id: str = "") -> Event:
         """四步变更口。返回落地的 History 事件。
@@ -123,7 +135,7 @@ class Gate:
         # 3) 落到执行器 —— 快照是 Gate 私有，只有这里能改
         self._snapshot[key] = value
         # 4) History.append —— 落地之后才记，带当次 call_id 供互引
-        return self._history.append(key, value, channel.actor, reason, call_id)
+        return self.record(key, value, channel.actor, reason, call_id)
 
     def seed(self, key: str, value: object, actor: str, reason: str = "seed",
              call_id: str = "") -> Event:
