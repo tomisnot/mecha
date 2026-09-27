@@ -372,6 +372,19 @@ def _error_result(error: Mapping[str, object]) -> CallToolResult:
     )
 
 
+def _brief(payload: object, *, limit: int = 200) -> str:
+    """把回执**截断**成一行人话：原样透传顶层键（模型据此自我纠正），但不 dump 整包。
+
+    ``limit`` 是对**模型可见面**的体积守卫：非标准信封可能带着大 blob，
+    整包塞进错误消息会把上下文挤爆（而错误消息本身要能读）。
+    """
+    try:
+        text = json.dumps(payload, ensure_ascii=False, default=str)
+    except Exception:                       # noqa: BLE001 - 不可 JSON 化也要如实说
+        text = repr(payload)
+    return text if len(text) <= limit else text[:limit] + "…"
+
+
 def _make_handler(toolhost: ToolHost, tool_name: str,
                   defaulted: set[str]) -> Callable[..., object]:
     """一个工具的 handler：归一化入参 → 经 ToolHost 调用 → 结构化回执。
@@ -409,6 +422,21 @@ def _make_handler(toolhost: ToolHost, tool_name: str,
             if not isinstance(failure, Mapping):
                 failure = ToolFailure("工具失败", kind="unknown_failure").to_failure()
             return _error_result(failure)
+        if "value" not in result:
+            # ⚠ **非标准信封 ⇒ 响亮失败，别默认吞**。旧行为**更坏**：既不是失败信封、
+            # 又没有 `value` ⇒ 取 `result.get("value")` = `None` ⇒ 返回 `"null"` 且
+            # `is_error` 缺省为假 ⇒ **模型看到「成功、内容是 null」**，而能力其实说了
+            # `ok: false`；顶层 `status`/`date` 全被丢掉 ⇒ 模型**没法自我纠正**。
+            # （L4：错误消息是给 AI 看的界面。）⇒ 这里把信封**截断透传**进消息。
+            return _error_result(ToolFailure(
+                f"工具回执不是标准信封（既没有 value，也不是 is_error+error）："
+                f"{_brief(result)}",
+                kind="bad_envelope",
+                hint="宿主回执只有两种合法形状：成功 {value: …}，"
+                     "失败 {is_error: true, error: {message, info}}；"
+                     "看到 {ok: false, …} 这类自定义信封，请在**宿主侧**翻译成其中之一",
+                suggest="LocalToolHost 的回执就是标准形状；自定义 ToolHost 请对齐它",
+            ).to_failure())
         return json.dumps(result.get("value"), ensure_ascii=False, default=str)
 
     _handler.__name__ = tool_name

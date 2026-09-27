@@ -111,12 +111,16 @@ class _SpyHost:
     而那正是 EL 踩过的形状；假替身若报空表就不再是"合法传输"了。
     """
 
-    def __init__(self, registry: ToolRegistry | None = None) -> None:
+    def __init__(self, registry: ToolRegistry | None = None,
+                 reply: object | None = None) -> None:
         self._registry = registry
+        self._reply = reply
         self.calls: list[tuple[str, dict]] = []
 
     def call(self, name, args=None):
         self.calls.append((name, dict(args or {})))
+        if self._reply is not None:
+            return self._reply
         return {"is_error": False, "value": {"echo": dict(args or {})}, "content": []}
 
     def declare(self, schemas) -> None:
@@ -446,6 +450,76 @@ def check_call_path_and_failure(out: list[str]) -> None:
 # G 端点生命周期
 # --------------------------------------------------------------------------
 
+def check_bad_envelope(out: list[str]) -> None:
+    """非标准信封（`{ok:false}` 却不带 `error`）**必须响亮失败**，不许静默吞。
+
+    ⚠ 旧行为**更坏**：既不是失败信封、又没有 `value` ⇒ 投影取 `result.get("value")`
+    = `None` ⇒ 返回 **`"null"`** 且 `is_error` 缺省为假 ⇒ **模型看到「成功、内容是
+    null」**，而能力其实说了 `ok: false`；顶层 `status`/`date` 全被丢掉 ⇒ 模型**没法
+    自我纠正**（L4：错误消息是给 AI 看的界面）。
+    """
+
+    def _echo(**kwargs):
+        return {"ok": True, "value": {"echo": kwargs}}
+
+    # ① 非标准信封 ⇒ 响亮失败 + **截断透传**被丢掉的顶层键
+    nonstd = {"ok": False, "status": 500, "date": "2026-09-26", "detail": "上游超时"}
+    reg = _registry(_tool("do_thing", {"alpha": {"type": "string"}}, _echo))
+    server = build_mcp_server(reg, server_name="checkbox", instructions=INSTRUCTIONS,
+                              toolhost=_SpyHost(reg, reply=nonstd))
+    body = _handler_of(server, "do_thing")(ctx=None, alpha="x")
+    if getattr(body, "is_error", None) is not True:
+        _fail(out, f"非标准信封被当成成功：{body!r}")
+        return
+    payload = json.loads(body.content[0].text)
+    info = payload["error"]["info"]
+    msg = payload["error"]["message"]
+    if info["kind"] == "bad_envelope":
+        _ok("非标准信封 ⇒ `bad_envelope` 响亮失败（不是「成功、内容 null」）")
+    else:
+        _fail(out, f"非标准信封的 kind 不对：{info['kind']}")
+    if all(k in msg for k in ("status", "date", "500", "上游超时")):
+        _ok("被丢掉的顶层键**截断透传**进消息（模型据此能自我纠正）")
+    else:
+        _fail(out, f"顶层键没透传：{msg!r}")
+    if len(msg) < 1000:
+        _ok("透传有**体积上界**（不 dump 整包进上下文）")
+    else:
+        _fail(out, f"透传没截断（{len(msg)} 字符）")
+
+    # ② 对偶（不许误报）：标准两种信封照旧
+    ok_host = _SpyHost(reg)                                    # 默认标准成功信封
+    server_ok = build_mcp_server(reg, server_name="checkbox",
+                                 instructions=INSTRUCTIONS, toolhost=ok_host)
+    ok_body = _handler_of(server_ok, "do_thing")(ctx=None, alpha="y")
+    if not getattr(ok_body, "is_error", False) and json.loads(ok_body) == {"echo": {"alpha": "y"}}:
+        _ok("对偶：标准成功信封（{is_error:false, value:…}）仍原样成功")
+    else:
+        _fail(out, f"标准成功信封被误伤：{ok_body!r}")
+    fail_host = _SpyHost(reg, reply={"is_error": True, "error": {
+        "message": "能力拒绝", "info": {"kind": "denied", "hint": "h", "suggest": ""}}})
+    server_fail = build_mcp_server(reg, server_name="checkbox",
+                                   instructions=INSTRUCTIONS, toolhost=fail_host)
+    fail_body = _handler_of(server_fail, "do_thing")(ctx=None, alpha="z")
+    fail_payload = json.loads(fail_body.content[0].text)
+    if (getattr(fail_body, "is_error", None) is True
+            and fail_payload["error"]["info"]["kind"] == "denied"):
+        _ok("对偶：标准失败信封（is_error+error）仍逐字透传 kind")
+    else:
+        _fail(out, f"标准失败信封被误伤：{fail_body!r}")
+
+    # ③ 巨大信封 ⇒ 消息有界（不 dump 整包）
+    huge = _SpyHost(reg, reply={"ok": False, "blob": "x" * 5000})
+    server_huge = build_mcp_server(reg, server_name="checkbox",
+                                   instructions=INSTRUCTIONS, toolhost=huge)
+    huge_body = _handler_of(server_huge, "do_thing")(ctx=None, alpha="w")
+    huge_msg = json.loads(huge_body.content[0].text)["error"]["message"]
+    if len(huge_msg) < 1000 and huge_msg.endswith("…"):
+        _ok("巨大信封：消息被截断且有 `…` 标记（体积守卫）")
+    else:
+        _fail(out, f"巨大信封没被截断（{len(huge_msg)} 字符）")
+
+
 def check_endpoint(out: list[str]) -> None:
     reg = _registry(_tool("do_thing", {}, lambda: {"ok": True}))
     with tempfile.TemporaryDirectory(prefix="mcp-g-") as td:
@@ -571,6 +645,7 @@ def main() -> int:
     check_wire_schema(out)
     check_instruction_limit(out)
     check_call_path_and_failure(out)
+    check_bad_envelope(out)
     check_endpoint(out)
     check_toolhost_reach(out)
     if out:
