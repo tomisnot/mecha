@@ -382,6 +382,17 @@ class CommandRegistry:
                 self._scope_policy.check(side, spec.scope)
             except MechaError as e:
                 return _failure(e)
+        # authority 检查也必须在**任何副作用之前**（与 scope 同一纪律）。
+        # ⚠ 为什么不能只靠 `_audit` 里那次 `gate.set`：副作用**不一定发生在 Gate 里**
+        # （域状态外置的项目：外置库/外部 API）⇒ 若检查跟在 handler 之后，就会出现
+        # "**改动已经落地、只是审计失败**"= 静默越权（老项目因为副作用本来就在 Gate 里
+        # 而被掩盖）。这里只**检查**；**留痕仍在原位**（理由不变：有副作用的命令哪怕
+        # 回执不合契约也已经动过宿主状态，必须留痕）。
+        if spec.side_effect and gate is not None and channel is not None:
+            try:
+                gate.check(channel)
+            except MechaError as e:
+                return _failure(e)
         meta = {k: args.get(k) for k in RESERVED_ARGS if k in args}
         declared = spec.parameters.get("required", [])
         declared_set = set(declared) if _is_name_sequence(declared) else set()

@@ -97,6 +97,18 @@ class Gate:
         """只读投影（返回副本；外部改它不回写门）。"""
         return dict(self._snapshot)
 
+    def check(self, channel: Channel) -> None:
+        """**只检查**写权：此刻这个侧能不能写（`set` 的第 1 步，单独暴露）。
+
+        ⚠ 为什么需要这个口子：**副作用不一定发生在 Gate 里**——域状态外置的项目
+        （外置库/外部 API）的副作用在命令体里，而写权检查**必须发生在任何副作用之前**
+        （否则"改动已落地、只有审计失败"= 静默越权）。所以调用方需要一个
+        "只检查、不落地"的入口。
+
+        `set` 自己也调它 ⇒ **这套判定的语义只有一份**（不许复制出第二份）。
+        """
+        self._authority.gate(channel.side)
+
     def set(self, channel: Channel, key: str, value: object, reason: str,
             call_id: str = "") -> Event:
         """四步变更口。返回落地的 History 事件。
@@ -105,7 +117,7 @@ class Gate:
         侧来自 GUI），写进 History 供与操作者行为史双向互引（总纲 §5.2②）。
         """
         # 1) authority.gate —— 写权看 side（human/ai），不看请求内容；actor 标签不扩权
-        self._authority.gate(channel.side)
+        self.check(channel)
         # 2) validate —— 在落地之前，失败则快照一字节不动
         self._validate(key, value)
         # 3) 落到执行器 —— 快照是 Gate 私有，只有这里能改

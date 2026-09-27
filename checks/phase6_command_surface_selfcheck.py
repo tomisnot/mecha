@@ -544,13 +544,24 @@ def check_readonly_bypasses_gate(out: list[str]) -> None:
                 _ok("LOCKED 下只读命令可调（读权与写权分离）")
             else:
                 _fail(out, f"LOCKED 下只读命令被拒：{r2}")
-            sw2.commands.register(_note_cmd(), _note_handler)
+            # ⚠ 用**副作用不在 Gate 里**的替身（只动外置计数器）：这样"拦下"必须发生在
+            # handler 之前——若检查仍跟在 handler 之后，就会出现「改动已落地、只是审计
+            # 失败」= 静默越权（域状态外置的项目正是这种形状）。
+            sw2.commands.register(_note_cmd(scope=()), _external_handler)
+            _EXTERNAL["writes"] = 0
             r3 = sw2.commands.invoke("record_note", {"text": "t"}, context=_Ctx(),
                                      gate=sw2.gate, channel=sw2.channels["ai"])
-            if _fail_shape(r3, "command_audit_denied"):
-                _ok("LOCKED 下有副作用命令被写权门拦下（fail closed）")
+            audit3 = [e for e in sw2.history.events() if e.key.startswith(AUDIT_KEY_PREFIX)]
+            # 期望 kind 取 **authority 自己那道闸**的判词（`command_audit_denied` 是
+            # "检查迟到、在审计那一步才拒"的旧形状——那正是发现 7 要消掉的东西）。
+            if _fail_shape(r3, "authority_locked") and _EXTERNAL["writes"] == 0:
+                _ok("LOCKED 下有副作用命令被写权门**在副作用之前**拦下（handler 零调用）")
             else:
-                _fail(out, f"LOCKED 下写命令竟通过：{r3}")
+                _fail(out, f"LOCKED 下写命令未被前置拦下：{r3} 副作用={_EXTERNAL['writes']}")
+            if not audit3:
+                _ok("LOCKED：没干活 ⇒ 不留痕（与 scope 拒绝同一纪律）")
+            else:
+                _fail(out, f"LOCKED 下却写了审计：{[e.key for e in audit3]}")
         # 有副作用却没注入 gate：fail loud（不留痕的副作用不可审计）
         reg = CommandRegistry()
         reg.register(_note_cmd(), _note_handler)
@@ -694,6 +705,19 @@ def check_no_false_alarm(out: list[str]) -> None:
         else:
             _fail(out, f"合规命令被误报：read={r_read} write={r_write} "
                        f"audit={[e.key for e in audit]}")
+
+
+# ---------------------------------------------------------------------------
+# D3 「副作用不在 Gate 里」的替身（域状态外置：外置库 / 外部 API）
+# ---------------------------------------------------------------------------
+
+_EXTERNAL = {"writes": 0}
+
+
+def _external_handler(context, text):
+    """副作用**不在 Gate 里**的替身：只动一个外置计数器，不碰 Gate/History。"""
+    _EXTERNAL["writes"] += 1
+    return {"ok": True, "stored_key": "note"}
 
 
 def main() -> int:
