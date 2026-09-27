@@ -139,13 +139,18 @@ class Gate:
 
     def seed(self, key: str, value: object, actor: str, reason: str = "seed",
              call_id: str = "") -> Event:
-        """启动种子：落快照 + 记史，但**不经写权门**（面板初值回填等装配期写）。
+        """启动种子：落到快照 + 记史，但**不过写权门**（面板初值回填等装配期写）。
 
-        与 set 的区别：set 是操作者发起的变更（要过 authority.gate）；seed 是
-        装配期把已知值灌进快照（GUI 首次把面板当前值种进史）。仍走 validate
-        之外的同一落地路径，保证快照与 History 一致。归因上 actor 通常是
-        'session'/'bootstrap'，区别于 human/ai。
+        与 set 的区别：**只有写权那一关不同** —— set 是操作者发起的变更（要过
+        ``authority.gate``）；seed 是装配期把已知值灌进快照（如 GUI 首次把面板当前值
+        种进史）。**校验（validate）照走**：初值也是值，"快照里只放校验过的值"这条
+        不变量对 seed 同样成立。
+        ⚠ 2026-09-26 之前 seed **连 validate 也跳过**，而 docstring 写的是"仍走
+        validate **之外**的同一落地路径"——那句话很容易读反（字面"在 validate 之外"，
+        读起来像"验证仍在"），现已改正。
+        归因上 actor 通常是 'session'/'bootstrap'，区别于 human/ai。
         """
+        self._validate(key, value)
         self._snapshot[key] = value
         return self._history.append(key, value, actor, reason, call_id)
 

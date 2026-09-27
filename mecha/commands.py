@@ -393,8 +393,12 @@ class CommandRegistry:
                approval: object | None = None) -> dict:
         """统一调用口：契约校验 → 命令体 → 回执契约 →（有副作用则）Gate 审计。
 
-        返回归一化回执（``is_error`` / ``value`` / ``error``）。任何失败都以
-        ``ToolFailure`` 形状回来，不抛穿（宿主适配层只见一种形状）。
+        返回归一化回执（``is_error`` / ``value`` / ``error``）。
+        ⚠ **归一化的范围是"域失败"**：``MechaError`` 一律转成 ``ToolFailure`` 形状、
+        不抛穿；**其它异常（编程错误）穿透**，由**传输边界**兜（``LocalToolHost.call``
+        / MCP 投影把它们归一成 ``toolhost_error`` / ``bad_host_result``）——
+        **不把 bug 伪装成域失败**（伪装会让人去查领域逻辑而不是代码坏了）。
+        ⇒ 直调本方法的调用方要自己接住非 ``MechaError`` 的异常。
 
         参数纪律：``args`` 必须与 ``spec.parameters`` **双向吻合**——声明的必填
         键缺一即拒，未声明的键多一也拒（除非 ``parameters.additionalProperties``

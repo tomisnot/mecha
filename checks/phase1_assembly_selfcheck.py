@@ -170,6 +170,39 @@ def check_gate_executor_not_wrapper(out: list[str]) -> None:
         _fail(out, "validate 失败仍有副作用")
 
 
+def check_seed_also_validates(out: list[str]) -> None:
+    """⭐ `seed` **也过 validate**：它免的是**写权门**，不免**校验**。
+
+    ⚠ 2026-09-26 之前 `seed` **连 validate 也跳过** ⇒ "快照里只放校验过的值"这条
+    不变量对 seed 不成立；而那句旧 docstring"仍走 validate **之外**的同一落地路径"
+    很容易读反（字面"在 validate 之外"，读者却会读成"验证仍在"）。
+    ⚠ **别改回去**：初值也是值，凭它绕过校验就是让快照可以装"非法值"。
+    """
+
+    def bad_validate(key, value):
+        if value == "forbidden":
+            raise GateDenied("禁值", kind="validate", hint="h")
+
+    hist = InMemorySink()
+    _, memhist, gate = _make_gate(Mode.LOCKED, validate=bad_validate, sink=hist)
+    # ① 合法初值：LOCKED 下也能写（免的是写权门，不是校验）
+    gate.seed("ok_key", "fine", actor="bootstrap")
+    if gate.snapshot.get("ok_key") == "fine" and memhist.last_seq == 1:
+        _ok("seed 免写权门：LOCKED 下装配期初值仍可落（并记史）")
+    else:
+        _fail(out, f"seed 在 LOCKED 下没落地：{gate.snapshot} seq={memhist.last_seq}")
+    # ② 非法初值：**必须被 validate 拦下**，且快照/史都不动
+    snap_before, seq_before = dict(gate.snapshot), memhist.last_seq
+    try:
+        gate.seed("bad_key", "forbidden", actor="bootstrap")
+        _fail(out, "seed 把非法值写进了快照（validate 被跳过）")
+    except GateDenied:
+        if gate.snapshot == snap_before and memhist.last_seq == seq_before:
+            _ok("seed 的非法初值被 validate 拦下：快照未动 + 史未追加")
+        else:
+            _fail(out, f"seed 被拒却留下痕迹：{gate.snapshot} seq={memhist.last_seq}")
+
+
 def check_call_id_crossref(out: list[str]) -> None:
     """call-id 互引：set 带 call_id 落进 History。"""
     _, hist, gate = _make_gate(Mode.AI)
@@ -330,6 +363,7 @@ def main() -> int:
     print("Phase 1 装配判据：")
     check_gate_authority(out)
     check_gate_executor_not_wrapper(out)
+    check_seed_also_validates(out)
     check_call_id_crossref(out)
     check_history_append_only_resume(out)
     check_monitor_reconcile(out)
