@@ -56,11 +56,37 @@ CHECKS = [
 ]
 
 
+#: **需要 EL 仓（示例项目）才能跑的判据**：缺它 ⇒ **跳过**（不是失败，但要**响亮列名**）。
+#: ⚠ 为什么归这里判：这 3 条**整条**都依赖 EL（`sys.path.insert(EL_ROOT)` 后 import/运行
+#: EL 的代码）⇒ 在 run_all 这一层跳过 = 一处改动覆盖三条，且**不假装它们跑过**。
+#: ⚠ `capability_map_selfcheck` **不在**这里：它只有 3 处 EL 依赖，**主体与 L1/L2/L3/L3+
+#: 守卫必须照跑** ⇒ 它自己在脚本内做**部分跳过**（整条跳过会让守卫在开源后失效）。
+NEEDS_EL = frozenset({
+    "checks/phase5_el_selfcheck.py",
+    "checks/phase5_hub_selfcheck.py",
+    "checks/phase5_bridge_selfcheck.py",
+})
+
+
 def main() -> int:
+    import os                       # 只在 main 里用（避免动文件头）
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    el_ready = bool(os.environ.get("MECHA_EL_ROOT"))
+    #: 严格模式：**跳过即失败**（给我们自己的 CI —— 有 EL 的机器不该因"跳过"而永远不验那 3 条）。
+    strict = os.environ.get("MECHA_REQUIRE_EL") == "1" or "--require-el" in sys.argv
     failed: list[str] = []
+    skipped: list[str] = []
     for spec in CHECKS:
+        if spec in NEEDS_EL and not el_ready:
+            note = "缺 EL 仓 ⇒ 跳过（设 MECHA_EL_ROOT 可启用）"
+            if strict:
+                print(f"[SKIP→FAIL] {spec}  —— {note}；**严格模式**（--require-el/MECHA_REQUIRE_EL=1）")
+                failed.append(spec)
+            else:
+                print(f"[SKIP] {spec}  —— {note}")
+                skipped.append(spec)
+            continue
         parts = spec.split()
         r = subprocess.run([sys.executable, *parts], cwd=ROOT,
                            capture_output=True, text=True, encoding="utf-8",
@@ -71,10 +97,17 @@ def main() -> int:
         print(f"[{status}] {spec}  —— {last if isinstance(last, str) else last[0]}")
         if r.returncode != 0:
             failed.append(spec)
+    # ⚠ **按名列出跳过的判据**（只给数字等于把跳过藏起来 —— 本仓纪律：假绿比红更坏）。
+    if skipped:
+        print("run_all: 跳过的判据（缺 EL 仓，未验）：" + "、".join(skipped))
+    total = len(CHECKS)
+    n_pass = total - len(failed) - len(skipped)
     if failed:
-        print(f"run_all: FAIL（{len(failed)} 项）：{failed}")
+        print(f"run_all: FAIL（{len(failed)} 项）—— 共 {total} 项："
+              f"{n_pass} PASS / {len(failed)} FAIL / {len(skipped)} SKIP")
         return 1
-    print("run_all: 全部门禁 PASS")
+    print(f"run_all: 全部门禁 PASS —— 共 {total} 项："
+          f"{n_pass} PASS / 0 FAIL / {len(skipped)} SKIP")
     return 0
 
 
