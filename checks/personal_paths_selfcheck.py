@@ -44,7 +44,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 EXEMPT = ROOT / "checks" / "personal_paths_exempt.txt"
 SELF = "checks/personal_paths_selfcheck.py"
-SKIP_EXT = (".png", ".jpg", ".jpeg", ".gif", ".whl", ".pdf", ".ico", ".lock")
+SKIP_EXT = (".png", ".jpg", ".jpeg", ".gif", ".whl", ".pdf", ".ico", ".lock",
+            ".pyc", ".pyo", ".so", ".dll", ".exe")
+#: 路径里含这些目录名就跳过：**字节码与构建产物**。⚠ 不是洁癖 —— 红证时踩到过：
+#: 临时副本里 `git add -A` 把 `checks/__pycache__/*.pyc` 也加了进去，而**本模块的字节码里
+#: 有 `LENOVO` 那类字面量** ⇒ 副本的"干净基线"当场变红（**假红**）。真仓里 `.pyc` 不入库、
+#: 所以真仓是绿的 —— 但**守卫不该依赖"没人提交字节码"这个假设**。
+SKIP_DIRS = ("__pycache__", ".pytest_cache", "node_modules")
 
 #: 特征（**拆开拼**，理由见模块 docstring）。
 PATTERNS = (
@@ -68,16 +74,23 @@ def _fail(out: list[str], msg: str) -> None:
 
 
 def _tracked_files() -> list[str] | None:
+    """被跟踪文件清单。⚠ **必须 `-z` + `core.quotePath=false`**：
+    `git ls-files` 默认会给**非 ASCII 路径加引号并转义**（`"docs\\AI\\uXXXX.md"`）⇒
+    路径拼出来打不开 ⇒ 那些文件**会被静默跳过**（本判据第一版正是这样：非 ASCII 路径
+    **从没被扫过**，而结果上看起来"扫了 151 个文件"）。这与模块 docstring 里那条
+    PowerShell 教训是**同一类病**：**读不到的，与没命中的，长得一模一样**。
+    """
     try:
-        r = subprocess.run(["git", "ls-files"], cwd=str(ROOT), capture_output=True,
-                           text=True, encoding="utf-8", errors="replace", timeout=60)
+        r = subprocess.run(["git", "-c", "core.quotePath=false", "ls-files", "-z"],
+                           cwd=str(ROOT), capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=60)
     except (OSError, subprocess.SubprocessError) as exc:
         print(f"  ✗ git ls-files 跑不起来：{type(exc).__name__}: {exc}")
         return None
     if r.returncode != 0:
         print(f"  ✗ git ls-files 非零退出：{r.stderr.strip()[:120]}")
         return None
-    return [ln for ln in r.stdout.splitlines() if ln.strip()]
+    return [ln for ln in r.stdout.split("\0") if ln.strip()]
 
 
 def _load_exempt() -> dict[str, int] | None:
@@ -111,6 +124,8 @@ def scan() -> tuple[list[tuple[str, int]], int, dict[str, int]] | None:
         if rel == SELF or rel == "checks/personal_paths_exempt.txt":
             continue
         if rel.endswith(SKIP_EXT):
+            continue
+        if any(part in SKIP_DIRS for part in rel.split("/")):
             continue
         p = ROOT / rel
         try:
