@@ -416,6 +416,11 @@ def _monitor_fields() -> set[str]:
     return set(MonitorView.__dataclass_fields__)
 
 
+def _event_fields() -> set[str]:
+    from mecha.history import Event
+    return set(Event.__dataclass_fields__)
+
+
 #: **L1 的枚举源**：从**活对象**取（`__dataclass_fields__` / `__members__`），**不手抄**。
 #:
 #: ⚠ **复核过的声明面清单**（哪些进了、哪些没进 —— 这块**必须能被人核**）：
