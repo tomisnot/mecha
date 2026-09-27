@@ -74,10 +74,12 @@ GUI 纯本地 / AI 经 dsh），详见 `docs/v2/notes/implemented/` 下 `两模�
 ## 验证
 
 ```
-python checks/run_all.py     # 全部门禁（含真引擎端到端，需 EL 仓在位 + node 在 PATH）
+python checks/run_all.py     # 全部门禁；缺外部依赖的判据会【跳过并打印判据名】
+                             #   --require-external 让跳过变成失败（CI 用）
 ```
 
-**三条硬外部依赖**（**缺即红，不假绿**）：
+**外部依赖与跳过语义**（**缺依赖 ⇒ 跳过并打印判据名；`--require-external` ⇒ 跳过即失败**）：
+⚠ 名字不写数字（L8）：跑一次 `run_all` 看它打印 PASS / FAIL / SKIP 与跳过的判据名。
 1. **EL 仓在位**——`phase5_*` 直接 import EL 的 `mecha_v2`；
 2. **`node` 在 PATH**——`dsh_panel_selfcheck` 跑 `mecha/dsh-panel/` 那份**共享资产**的
    TS 自测（Node ≥22.6 原生剥类型，零 npm 依赖）；

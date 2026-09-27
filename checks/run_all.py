@@ -74,14 +74,19 @@ def main() -> int:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     el_ready = bool(os.environ.get("MECHA_EL_ROOT"))
     #: 严格模式：**跳过即失败**（给我们自己的 CI —— 有 EL 的机器不该因"跳过"而永远不验那 3 条）。
-    strict = os.environ.get("MECHA_REQUIRE_EL") == "1" or "--require-el" in sys.argv
+    #: 严格模式：**跳过即失败**（覆盖全部外部依赖：EL 仓 + tsc）。
+    #: ⚠ 名字从 --require-el 换成 --require-external（两个外部依赖，旧名不够用；
+    #: 按本仓先例**不留别名**：--open-gate 当年也是直接换掉的）。
+    strict = (os.environ.get("MECHA_REQUIRE_EXTERNAL") == "1"
+              or "--require-external" in sys.argv)
     failed: list[str] = []
     skipped: list[str] = []
     for spec in CHECKS:
         if spec in NEEDS_EL and not el_ready:
-            note = "缺 EL 仓 ⇒ 跳过（设 MECHA_EL_ROOT 可启用）"
+            note = "SKIP: 缺 EL 仓 ⇒ 跳过（设 MECHA_EL_ROOT 可启用）"
             if strict:
-                print(f"[SKIP→FAIL] {spec}  —— {note}；**严格模式**（--require-el/MECHA_REQUIRE_EL=1）")
+                print(f"[SKIP→FAIL] {spec}  —— {note}；**严格模式**"
+                      f"（--require-external/MECHA_REQUIRE_EXTERNAL=1）")
                 failed.append(spec)
             else:
                 print(f"[SKIP] {spec}  —— {note}")
@@ -93,8 +98,20 @@ def main() -> int:
                            errors="replace")
         tail = (r.stdout or "").strip().splitlines()
         last = tail[-1] if tail else (r.stderr or "").strip().splitlines()[-1:] or ["无输出"]
+        last_s = last if isinstance(last, str) else last[0]
+        # ⚠ **SKIP 由被调判据自己声明**（末行以 SKIP 开头）——那是"外部依赖缺失"，
+        # 与"跑了但失败"是两件事：后者必须仍然是 FAIL（不许拿缺依赖掩盖真失败）。
+        if r.returncode == 0 and last_s.startswith("SKIP"):
+            if strict:
+                print(f"[SKIP→FAIL] {spec}  —— {last_s}；**严格模式**"
+                      f"（--require-external/MECHA_REQUIRE_EXTERNAL=1）")
+                failed.append(spec)
+            else:
+                print(f"[SKIP] {spec}  —— {last_s}")
+                skipped.append(spec)
+            continue
         status = "PASS" if r.returncode == 0 else "FAIL"
-        print(f"[{status}] {spec}  —— {last if isinstance(last, str) else last[0]}")
+        print(f"[{status}] {spec}  —— {last_s}")
         if r.returncode != 0:
             failed.append(spec)
     # ⚠ **按名列出跳过的判据**（只给数字等于把跳过藏起来 —— 本仓纪律：假绿比红更坏）。

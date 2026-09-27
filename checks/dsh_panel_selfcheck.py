@@ -234,10 +234,12 @@ def check(panel_dir: Path = PANEL_DIR) -> tuple[int, list[str]]:
                      "（`<项目>/dsh/node_modules/typescript`），或用 `MECHA_TSC_ROOT` 指定")
         for d in TSC_ROOTS:
             lines.append(f"    - 找过：{d}")
-        lines.append("dsh_panel_selfcheck: FAIL —— 环境缺硬依赖：**一份可用的 tsc**"
-                     "（**不是框架 Python 故障**）：类型检查是资产的第一道消费者防线"
-                     "（漏 import 的类型名只有它看得见）")
-        return 1, lines
+        # ⚠ 裁决：**外部依赖缺失只有一种语义 ⇒ SKIP**（与 phase5_* 缺 EL 同一套）。
+        # 末行以 SKIP 开头由 run_all 识别；严格模式（--require-external）下它会变 FAIL。
+        # ⚠ **但"tsc 在、检查失败"仍然是 FAIL**（下面那条分支）——不许拿缺依赖掩盖真失败。
+        lines.append("SKIP: 缺一份可用的 tsc ⇒ 跳过类型检查（设 MECHA_TSC_ROOT 到含"
+                     "node_modules 的那一层可启用）")
+        return 0, lines
     tsc, types = found
     tc_code, tc_errs, n_files = _typecheck(panel_dir, tsc, types)
     lines.append(f"[dsh_panel] 类型检查：{tsc}（借来的）；检查 {n_files} 个文件"
