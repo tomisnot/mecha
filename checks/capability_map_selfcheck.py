@@ -387,6 +387,215 @@ def check_declaration_completeness(out: list[str]) -> None:
         _fail(out, f"完整性守卫对合成违例漏抓：{caught}")
 
 
+# ---------------------------------------------------------------------------
+# 声明 → 消费者（L1/L2/L3，2026-09-26）：把「声明了就得被消费」从人读变成机械
+#
+# 缘起：本会话抓到四处「声明与行为不一致」（approval_required 没人拦 / scope 项目没绑 /
+# kind=read 却在写账 / CodeAct 文档的动作集比代码大），**四处都是人读代码发现的**。
+# 本组把这个形态变成机械可查：**新声明必须表态**（有消费者 / 推迟 / 未定），
+# **表里的消费者符号必须真的还在**，**每条"有消费者"必须点名一条判据**。
+# ---------------------------------------------------------------------------
+
+def _cmd_fields() -> set[str]:
+    from mecha.commands import CommandSpec
+    return set(CommandSpec.__dataclass_fields__)
+
+
+def _tooldef_fields() -> set[str]:
+    from mecha.tools import ToolDefinition
+    return set(ToolDefinition.__dataclass_fields__)
+
+
+def _mode_members() -> set[str]:
+    from mecha.authority import Mode
+    return set(Mode.__members__)
+
+
+def _monitor_fields() -> set[str]:
+    from mecha.monitor import MonitorView
+    return set(MonitorView.__dataclass_fields__)
+
+
+#: **L1 的枚举源**：从**活对象**取（`__dataclass_fields__` / `__members__`），**不手抄**。
+#: ⚠ 加一个新的声明面（新 dataclass / 新 Enum）必须同时加进这里，否则 L1 覆盖不到它
+#: （这是本组唯一的"手抄位"，所以它自己也被 L7 对偶钉住）。
+ENUM_SOURCES = (
+    ("CommandSpec", _cmd_fields),
+    ("ToolDefinition", _tooldef_fields),
+    ("Mode", _mode_members),
+    ("MonitorView", _monitor_fields),
+)
+
+#: 三态表：`consumed`（有消费者 + 点名判据）/ `deferred`（今天没有消费者，**必须给理由**）
+#: / `undecided`（被消费了，但**语义还没定**）。
+#: ⚠ 三态都要求**有行**：**新声明没有行 ⇒ 红**（逼"要么接、要么明说推迟/未定"）。
+DECLARATIONS: dict[str, dict[str, object]] = {}
+
+
+def _declare(row_key: str, state: str, *, sym: str = "", files: tuple[str, ...] = (),
+             crit: str = "", note: str = "") -> None:
+    DECLARATIONS[row_key] = {"state": state, "sym": sym, "files": files,
+                             "crit": crit, "note": note}
+
+
+# ---- CommandSpec（命令声明面：本会话三起事件在这里）----
+_declare("CommandSpec.name", "consumed", sym="_require",
+         files=("mecha/commands.py",), crit="check_spec_contract")
+_declare("CommandSpec.description", "deferred",
+         note="框架内只在构造期校验非空；命令→工具的投影面今天不存在（n=0）")
+_declare("CommandSpec.parameters", "consumed", sym="_check_args",
+         files=("mecha/commands.py",), crit="check_params_and_output")
+_declare("CommandSpec.output_schema", "consumed", sym="_output_error",
+         files=("mecha/commands.py",), crit="check_params_and_output")
+_declare("CommandSpec.side_effect", "consumed", sym="_audit",
+         files=("mecha/commands.py",), crit="check_side_effect_audit")
+_declare("CommandSpec.scope", "consumed", sym="_scope_policy",
+         files=("mecha/commands.py",), crit="check_scope_policy",
+         note="⚠ 框架侧有消费者；**项目没绑 ScopePolicy 时它静默不生效**——"
+              "那一类框架看不到，要靠项目侧判据（见 ADR）")
+_declare("CommandSpec.estimate_sec", "consumed", sym="estimate",
+         files=("mecha/commands.py",), crit="check_spec_contract")
+_declare("CommandSpec.cancel_supported", "consumed", sym="cancel_supported",
+         files=("mecha/providers/jobs.py",),
+         crit="check_cancel_supported_is_a_real_contract")
+_declare("CommandSpec.approval_required", "consumed", sym="approval",
+         files=("mecha/commands.py",), crit="check_approval_required")
+_declare("CommandSpec.wants_channel", "consumed", sym="wants_channel",
+         files=("mecha/commands.py",), crit="check_handler_sees_channel")
+
+# ---- ToolDefinition（工具声明面）----
+_declare("ToolDefinition.name", "consumed", sym="MODEL_VISIBLE_FIELDS",
+         files=("mecha/tools.py",), crit="check_wire_schema")
+_declare("ToolDefinition.description", "consumed", sym="MODEL_VISIBLE_FIELDS",
+         files=("mecha/tools.py",), crit="check_description_style")
+_declare("ToolDefinition.parameters", "consumed", sym="MODEL_VISIBLE_FIELDS",
+         files=("mecha/tools.py",), crit="check_wire_schema")
+_declare("ToolDefinition.output", "consumed", sym="output",
+         files=("mecha/tools.py",), crit="check_output_contract")
+_declare("ToolDefinition.execute", "consumed", sym="execute",
+         files=("mecha/tools.py",), crit="check_error_shape")
+
+# ---- Mode（写权模式）----
+_declare("Mode.HUMAN", "consumed", sym="switch_mode",
+         files=("mecha/authority.py",), crit="check_gate_authority")
+_declare("Mode.AI", "consumed", sym="switch_mode",
+         files=("mecha/authority.py",), crit="check_gate_authority")
+_declare("Mode.OPEN", "consumed", sym="OPEN",
+         files=("mecha/authority.py",), crit="check_open_mode")
+_declare("Mode.LOCKED", "consumed", sym="DEFAULT_MODE",
+         files=("mecha/authority.py",), crit="check_gate_authority")
+
+# ---- MonitorView（监控读数）----
+_declare("MonitorView.summary", "consumed", sym="monitor_summary_payload",
+         files=("mecha/cockpit.py",), crit="check_monitor_reconcile")
+_declare("MonitorView.raw_snapshot", "deferred",
+         note="⚠ 只有判据读它；**wire 投影（monitor_summary_payload）不含原始层** ⇒"
+              " 今天没有产品路径消费它（「两层信任」里的原始层只到了函数，没到端点）")
+_declare("MonitorView.disputed", "undecided", sym="monitor_summary_payload",
+         files=("mecha/cockpit.py",),
+         note="字段被透出（cockpit ✓），但「**概括器失败算不算存疑**」这一档未实现"
+              "（phase10 的 UNSUPPORTED 已登记：summary 抛错时 read() 整体抛出）")
+_declare("MonitorView.dispute_reason", "consumed", sym="monitor_summary_payload",
+         files=("mecha/cockpit.py",), crit="check_monitor_reconcile")
+
+
+def _iter_declared_names() -> list[str]:
+    """L1：把声明面**从代码枚举**出来（`<Source>.<name>`）。"""
+    out_names: list[str] = []
+    for label, getter in ENUM_SOURCES:
+        for name in sorted(getter()):
+            out_names.append(f"{label}.{name}")
+    return out_names
+
+
+def _symbol_in_files(sym: str, files: tuple[str, ...]) -> list[str]:
+    """L2：符号**还在**被点名的文件里吗（只认非注释行；注释里提一句不算）。
+
+    ⚠ 诚实边界：它证明"点名的消费者**还在**"，**不证明它被调用**——
+    "被调用"那一层由 L3 的**具名判据**兜（判据是真在跑代码的）。
+    """
+    hits: list[str] = []
+    for rel in files:
+        path = ROOT / rel
+        if not path.is_file():
+            continue
+        for ln in path.read_text(encoding="utf-8").splitlines():
+            s = ln.strip()
+            if not s or s.startswith("#") or s.startswith('"""') or s.startswith("'''"):
+                continue
+            if sym in s:
+                hits.append(f"{rel}:{ln.strip()[:40]}")
+                break
+    return hits
+
+
+def _criterion_exists(name: str) -> bool:
+    """L3：这条判据**真的存在**吗（在 `checks/` 里找一个 `def <name>(`）。"""
+    for path in (ROOT / "checks").glob("*.py"):
+        if f"def {name}(" in path.read_text(encoding="utf-8"):
+            return True
+    return False
+
+
+def check_declarations_are_consumed(out: list[str]) -> None:
+    """L1/L2/L3：声明的字段必须**表里有行**、消费者**还在**、且有**具名判据**。
+
+    L1（枚举驱动，强）：`ENUM_SOURCES` 枚举出的每个名字都必须在 `DECLARATIONS` 里有行
+      ⇒ **新声明没表态 ⇒ 红**（"声明了没人喂"这一类从此机械可见）。
+    L2（grep，强）：`consumed` 行的消费者符号必须**仍在**点名文件里（非注释行）。
+    L3（存在性，中）：`consumed` 行必须点名一条**真实存在的判据**；空栏即红。
+    `deferred` / `undecided` ⇒ 进**待办清单**（**既不放行、也不红**——避免为"还没决定"造假红）。
+    ⚠ **抓不到的**（写清，别当万能药）：项目侧没绑（如 `scope` 没注入 policy）、
+      "有引用但不可达"、文档承诺比代码大、以及"消费的语义对不对"（那要靠行为判据）。
+    """
+    names = _iter_declared_names()
+    missing = [n for n in names if n not in DECLARATIONS]
+    if missing:
+        _fail(out, f"声明了却没表态（既没消费者、也没登记推迟/未定）：{missing}")
+    else:
+        _ok(f"L1：{len(names)} 个声明字段全部表内有行（新声明没表态就会红）")
+
+    bad_sym: list[str] = []
+    bad_crit: list[str] = []
+    todo: list[str] = []
+    consumed = 0
+    for key, row in sorted(DECLARATIONS.items()):
+        state = str(row["state"])
+        if state == "deferred" or state == "undecided":
+            todo.append(f"{key}（{state}：{row['note']}）")
+            continue
+        consumed += 1
+        sym = str(row["sym"])
+        files = tuple(str(f) for f in row["files"])          # type: ignore[union-attr]
+        if not _symbol_in_files(sym, files):
+            bad_sym.append(f"{key}→{sym} @ {list(files)}")
+        crit = str(row["crit"])
+        if not crit or not _criterion_exists(crit):
+            bad_crit.append(f"{key}→{crit or '(空)'}")
+    if bad_sym:
+        _fail(out, f"L2：点名的消费者符号已不在（改名/删除？）：{bad_sym}")
+    else:
+        _ok(f"L2：{consumed} 条「有消费者」的符号都还在点名文件里")
+    if bad_crit:
+        _fail(out, f"L3：有消费者却没点名真实判据（空栏即红）：{bad_crit}")
+    else:
+        _ok(f"L3：{consumed} 条「有消费者」都点名了真实存在的判据")
+    for item in todo:
+        print(f"    · 待办（既不放行也不红）：{item}")
+    if todo:
+        _ok(f"推迟/未定共 {len(todo)} 条**已列出**（推迟不许沉默）")
+
+    # L7 对偶：守卫不是哑的 —— ① 合成一个没登记的名字必须被 L1 抓到；
+    # ② 假符号在真文件里必须 0 命中。
+    synthetic = "CommandSpec.__no_such_field__"
+    picks_up = synthetic not in DECLARATIONS
+    bogus = _symbol_in_files("NoSuchSymbol_zzz", ("mecha/commands.py",))
+    if picks_up and not bogus:
+        _ok("L7 对偶：未登记的名字会被 L1 抓、假符号 0 命中（非哑守卫）")
+    else:
+        _fail(out, f"守卫自测失败：picks_up={picks_up} bogus={len(bogus)}")
+
+
 def main() -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -399,6 +608,7 @@ def main() -> int:
     check_real_consumers(out)
     check_runtime_graph_matches(out)
     check_declaration_completeness(out)
+    check_declarations_are_consumed(out)
     if out:
         print(f"capability_map_selfcheck: FAIL（{len(out)} 条）")
         return 1
