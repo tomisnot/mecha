@@ -50,8 +50,10 @@
 - Gate 审计键 ``command.<name>`` 要求宿主的 ``validate`` 接受该前缀；宿主
   validator 若拒绝未知键，审计写入会 fail loud（``command_audit_denied``），
   框架不替宿主放行——这是刻意的，见 ADR 的 Consequences。
-- ``approval_required`` 目前**只是声明**：命令面不据此改变分派（审批归宿主
-  validator）。``cancel_supported`` 已由宿主从声明面取给 Job Provider 消费
+- ``approval_required`` **真的拦**（2026-09-26 起）：为真时 ``invoke`` 在**任何副作用
+  之前**要一次 one-shot 授权，**没接审批通道即拒绝**（fail closed）。⚠ 它此前只是
+  声明、不分派 ⇒ 项目写了"需要批准"就以为被保护而照跑（**制造虚假安全感**）。
+  ``cancel_supported`` 已由宿主从声明面取给 Job Provider 消费
   （``JobRegistry`` 对不可取消的 job 拒绝 ``cancel``）；``scope`` 已可由
   ``bind_scope_policy`` 注入的 ScopePolicy 消费（不注入则不做过滤）。
 - 不内置并发控制：同命令并发 invoke 的串行化归宿主 Job Provider（n=1 无此压力）。
@@ -94,8 +96,11 @@ OWN_PACKAGE = "mecha"
 #: 命令审计事件的键前缀（Gate 键空间里的保留前缀；宿主 validator 需接受它）。
 AUDIT_KEY_PREFIX = "command."
 
-#: 框架保留的调用元数据键：由 ``invoke`` 抽出来喂 Gate 审计，**不传给命令体**。
-#: 命令体若要自己用，必须在 ``parameters`` 里显式声明（声明即契约）。
+#: 框架保留的调用元数据键：由 ``invoke`` 抽出来喂 Gate 审计，**默认不传给命令体**
+#: （``body_args`` 会把它们剥掉）。
+#: ⚠ 命令体若要自己用（例如要在域史里记"为什么干"），**唯一的路是把它显式列进
+#: ``parameters.required``**——只有 ``required`` 里的名字才会被保留进 handler 的参数；
+#: **只写进 ``properties`` 不够**。⚠ 这个"会被剥"的行为很容易让人以为"参数没传进来"。
 RESERVED_ARGS = ("reason", "call_id")
 
 
@@ -512,9 +517,17 @@ class CommandRegistry:
     def _check_args(self, spec: CommandSpec, args: Mapping[str, object]) -> None:
         """参数契约守卫（fail loud，先于命令体）：必填键缺一即拒；多键也拒。
 
-        ``"required"`` 缺失时才从 ``properties`` 的键取必填集；两者都无声明
-        则退化为"不约束必填"，但**仍禁多余键**（除非 ``additionalProperties``
-        显式为真——那是宿主显式表态"这个命令吃任意附加参数"）。
+        ⚠ **``required`` 的语义（2026-09-26 对齐 JSON Schema：缺失与空都表示"无必填"）**：
+        * **没有 ``required`` 键** ⇒ **无必填**；
+        * **``required: []``** ⇒ **无必填**；
+        * 要某几个必填 ⇒ **显式列出** ``required: ["a", "b"]``。
+
+        ⚠ **这是一处语义翻转（必须知道）**：旧行为是"``required`` 缺失 ⇒ 把
+        ``properties`` 的键**全部**当必填"⇒ 老写法（有 properties、没写 required）
+        从"全必填"变成"都不必填"，**可能静默接受原本会被拒的调用**。
+        ⇒ 迁移办法：想让某几个必填就**显式列出** ``required``。
+        （与 ``output_schema`` **刻意不同**：那里仍**必须**给非空 ``required``——
+        回执契约要显式化，消 D-15。别把两处"看起来一样"的 required 当成一处。）
         """
         if not isinstance(args, Mapping):
             raise MechaError(
@@ -523,10 +536,7 @@ class CommandRegistry:
                 hint="invoke(name, {参数名: 值}, ...)",
             )
         declared = spec.parameters.get("required")
-        if not _is_name_sequence(declared):
-            props = spec.parameters.get("properties")
-            declared = list(props) if isinstance(props, Mapping) else []
-        required = [str(k) for k in declared]
+        required = [str(k) for k in declared] if _is_name_sequence(declared) else []
         missing = [k for k in required if k not in args]
         if missing:
             raise MechaError(

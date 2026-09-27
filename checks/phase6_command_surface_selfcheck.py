@@ -861,6 +861,58 @@ def check_handler_sees_channel(out: list[str]) -> None:
                 _fail(out, f"拒因 kind 不符：{e.kind}")
 
 
+def check_required_semantics(out: list[str]) -> None:
+    """``parameters.required``：**缺失与空都表示「无必填」**（对齐 JSON Schema）。
+
+    ⚠ **这是一处语义翻转（别"修"回去）**：旧行为是"``required`` 缺失 ⇒ 把
+    ``properties`` 的键**全部**当必填"。⇒ 老写法（有 properties、没写 required）从
+    "全必填"变成"都不必填"，**可能静默接受原本会被拒的调用**；迁移办法是
+    **显式列出** ``required: [...]``。
+    ⚠ 与 ``output_schema`` **刻意不同**：那里仍**必须**给非空 ``required``
+    （回执契约显式化，消 D-15）——别把两处"看起来一样"的 required 合成一处。
+    """
+    props = {"type": "object", "properties": {"a": {"type": "string"},
+                                              "b": {"type": "string"}}}
+
+    def h(context, **kw):
+        return {"ok": True, "digest": "d"}
+
+    def call(params: dict, args: dict) -> dict:
+        reg = CommandRegistry()
+        reg.register(_summary_cmd(name="probe_cmd", parameters=params), h)
+        return reg.invoke("probe_cmd", args, context=_Ctx())
+
+    # ① 没写 required ⇒ 无必填（**翻转点**）
+    r1 = call(dict(props), {})
+    if not r1.get("is_error"):
+        _ok("没写 required ⇒ 无必填（对齐 JSON Schema；旧行为是「properties 全必填」）")
+    else:
+        _fail(out, f"缺 required 时仍被当全必填：{r1}")
+
+    # ② required: [] ⇒ 同样无必填
+    r2 = call({**props, "required": []}, {})
+    if not r2.get("is_error"):
+        _ok("required: [] ⇒ 无必填（与「缺失」同义）")
+    else:
+        _fail(out, f"required: [] 被当成全必填：{r2}")
+
+    # ③ 显式列出才必填：缺则拒、给齐则过
+    r3 = call({**props, "required": ["a"]}, {})
+    r4 = call({**props, "required": ["a"]}, {"a": "x"})
+    if _fail_shape(r3, "missing_arguments") and not r4.get("is_error"):
+        _ok("显式 required: [a] ⇒ 缺 a 即拒、给齐即过（这才是「想让它必填」的写法）")
+    else:
+        _fail(out, f"显式 required 不生效：缺={r3} 齐={r4}")
+
+    # ④ 多余键仍拒（除非 additionalProperties 显式为真）——严格性不变
+    r5 = call(dict(props), {"zzz": 1})
+    r6 = call({**props, "additionalProperties": True}, {"zzz": 1})
+    if _fail_shape(r5, "missing_arguments") and not r6.get("is_error"):
+        _ok("未声明的键仍拒；显式 additionalProperties: true 才放行（严格性不变）")
+    else:
+        _fail(out, f"多余键语义变了：默认={r5} 显式={r6}")
+
+
 def main() -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -869,6 +921,7 @@ def main() -> int:
     check_spec_contract(out)
     check_register_dispose(out)
     check_params_and_output(out)
+    check_required_semantics(out)
     check_side_effect_audit(out)
     check_result_ref_audit(out)
     check_scope_policy(out)
