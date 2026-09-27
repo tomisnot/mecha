@@ -113,13 +113,21 @@ def _hits(text: str) -> int:
     return sum(text.count(p) for p in PATTERNS)
 
 
-def scan() -> tuple[list[tuple[str, int]], int, dict[str, int]] | None:
-    """返回 (命中表, 扫描文件数, 免除表)；任一前置失败返回 None（**响亮失败，不静默**）。"""
+def scan() -> tuple[list[tuple[str, int]], int, dict[str, int], list[str], int] | None:
+    """返回 (命中表, 列出文件数, 免除表, **读不到的**, **实际读到数**)。
+
+    ⚠ 后两项是**这次事故的直接产物**：
+    * **读不到**必须响亮（**不许静默 continue**）——"读不到的"与"没命中的"长得一模一样；
+    * **实际读到几个**必须打印 —— "列了 151 个"不等于"读了 151 个"（本判据第一版就是这么瞎的：
+      非 ASCII 路径**一个都没读到**，却打印"扫描 151 个文件"）。
+    """
     files = _tracked_files()
     exempt = _load_exempt()
     if files is None or exempt is None:
         return None
     rows: list[tuple[str, int]] = []
+    unreadable: list[str] = []
+    read = 0
     for rel in files:
         if rel == SELF or rel == "checks/personal_paths_exempt.txt":
             continue
@@ -130,12 +138,16 @@ def scan() -> tuple[list[tuple[str, int]], int, dict[str, int]] | None:
         p = ROOT / rel
         try:
             text = p.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue                      # 读不到的（子模块等）跳过——**但它不该有命中**
+        except OSError as exc:
+            # ⚠ **响亮**：读不到就不能对它下任何结论（本次病根正是这一行曾经是静默 continue）
+            print(f"  ✗ 读不到被跟踪文件，**不能**对它下结论：{rel}（{type(exc).__name__}）")
+            unreadable.append(rel)
+            continue
+        read += 1
         n = _hits(text)
         if n:
             rows.append((rel, n))
-    return rows, len(files), exempt
+    return rows, len(files), exempt, unreadable, read
 
 
 def check_no_personal_paths(out: list[str]) -> None:
@@ -143,7 +155,14 @@ def check_no_personal_paths(out: list[str]) -> None:
     if res is None:
         _fail(out, "前置失败：拿不到被跟踪文件或免除表（**不静默放行**）")
         return
-    rows, scanned, exempt = res
+    rows, listed, exempt, unreadable, read = res
+    if unreadable:
+        _fail(out, f"有被跟踪文件**读不到**（读不到 ⇒ 不下任何结论，响亮失败）："
+                   f"{unreadable[:5]}（共 {len(unreadable)} 个）")
+    if read == 0:
+        _fail(out, "**一个文件都没读到** —— 这不是「没有泄漏」，这是判据瞎了")
+    else:
+        _ok(f"自证读到了东西：**实际读到 {read} 个**文件（列出 {listed} 个）")
     offenders: list[str] = []
     for rel, n in rows:
         allowed = exempt.get(rel)
@@ -154,7 +173,7 @@ def check_no_personal_paths(out: list[str]) -> None:
     if offenders:
         _fail(out, f"被跟踪文件里出现个人路径特征：{offenders}")
     else:
-        _ok(f"被跟踪文件无**新增**个人路径特征（扫描 {scanned} 个文件）")
+        _ok(f"被跟踪文件无**新增**个人路径特征（列出 {listed} 个、读到 {read} 个）")
 
     debt = sum(n for rel, n in rows if rel in exempt)
     shrinkable = [rel for rel, n in rows if exempt.get(rel, 0) > n]
