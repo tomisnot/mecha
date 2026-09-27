@@ -24,6 +24,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 import time
 from collections.abc import Mapping
@@ -32,7 +33,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-EL_ROOT = Path(r"D:\学\BaiduSyncdisk\编程\code\python\Energy Level")
+EL_ROOT = Path(os.environ.get("MECHA_EL_ROOT", ""))   # 只读环境变量，缺了不猜
 # 领域实现归所属项目（ADR 领域参考实现搬回所属项目）：引擎/工具面从 EL 仓 import。
 sys.path.insert(0, str(EL_ROOT))
 

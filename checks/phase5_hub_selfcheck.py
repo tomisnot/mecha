@@ -28,13 +28,14 @@ from __future__ import annotations
 import asyncio
 import json
 import subprocess
+import os
 import sys
 import tempfile
 import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-EL_ROOT = Path(r"D:\学\BaiduSyncdisk\编程\code\python\Energy Level")
+EL_ROOT = Path(os.environ.get("MECHA_EL_ROOT", ""))   # 只读环境变量，缺了不猜
 sys.path.insert(0, str(ROOT))
 
 EXPECTED_TOOLS = {"set_config", "read_config", "query_params", "estimate_run",

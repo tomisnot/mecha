@@ -6,7 +6,3 @@
 #
 # 台账（2026-09-26，git ls-files 口径、151 个文件）：
 checks/capability_map_selfcheck.py 2
-checks/dsh_panel_selfcheck.py 4
-checks/phase5_bridge_selfcheck.py 2
-checks/phase5_el_selfcheck.py 2
-checks/phase5_hub_selfcheck.py 2

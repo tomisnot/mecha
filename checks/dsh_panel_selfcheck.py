@@ -101,8 +101,6 @@ _TS_ERROR_RE = re.compile(r"error TS\d+", re.M)
 #: 可用环境变量 `MECHA_TSC_ROOT` 显式指定一个（指向含 `node_modules` 的那一层，通常是
 #: 某项目的 `dsh/`）。
 TSC_ROOTS = (
-    Path(r"D:\学\BaiduSyncdisk\编程\code\python\Energy Level\dsh"),
-    Path(r"D:\学\BaiduSyncdisk\编程\code\python\Get Paper\dsh"),
 )
 
 
@@ -133,6 +131,9 @@ def _tsc() -> tuple[Path, Path] | None:
     if env:
         cands.append(Path(env))
     cands.extend(TSC_ROOTS)
+    _g = shutil.which("tsc")          # 自足兜底：装了 typescript 就能跑
+    if _g:
+        cands.append(Path(_g).resolve().parent.parent)
     for dsh in cands:
         tsc = dsh / "node_modules" / "typescript" / "bin" / "tsc"
         types = dsh / "node_modules" / "@types"
