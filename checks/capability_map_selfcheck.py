@@ -543,6 +543,24 @@ def _criterion_exists(name: str) -> bool:
     return False
 
 
+def _criterion_is_called(name: str) -> bool:
+    """L3+：这条判据**真的被调用**吗（`def` 之外还要有 `<name>(out)` 的调用点）。
+
+    ⚠ **一条没人调的判据是靠「缺席」而绿的** —— 那是最坏的一种绿（看起来有覆盖）。
+    本仓今天就抓到一次：`check_event_ts_and_undoable` **定义了却没接进 `main`**
+    （它自己不会报，因为**它根本没跑**）。
+    ⚠ **边界**：只证「**被调用**」，**不证「被调用了并且真的在验」** ——
+    后者只有**该判据自己的红证**能证（别当万能药）。
+    """
+    for path in (ROOT / "checks").glob("*.py"):
+        for ln in path.read_text(encoding="utf-8").splitlines():
+            # ⚠ **必须排除 `def` 那一行**：`def check_x(out: …)` 里也含 `check_x(out`
+            # ⇒ 只认"调用行"（这条假绿是红证当场抓出来的：摘掉调用后守卫仍绿）。
+            if f"{name}(out)" in ln and not ln.strip().startswith("def "):
+                return True
+    return False
+
+
 def check_declarations_are_consumed(out: list[str]) -> None:
     """L1/L2/L3：声明的字段必须**表里有行**、消费者**还在**、且有**具名判据**。
 
@@ -586,6 +604,13 @@ def check_declarations_are_consumed(out: list[str]) -> None:
         _fail(out, f"L3：有消费者却没点名真实判据（空栏即红）：{bad_crit}")
     else:
         _ok(f"L3：{consumed} 条「有消费者」都点名了真实存在的判据")
+    uncalled = [str(row["crit"]) for row in DECLARATIONS.values()
+                if str(row["state"]) == "consumed" and str(row["crit"])
+                and not _criterion_is_called(str(row["crit"]))]
+    if uncalled:
+        _fail(out, f"L3+：点名的判据**没被调用**（靠缺席而绿）：{sorted(set(uncalled))}")
+    else:
+        _ok(f"L3+：{consumed} 条点名的判据**都在 run_all 的调用树里**（不是只定义不调用）")
     for item in todo:
         print(f"    · 待办（既不放行也不红）：{item}")
     if todo:
