@@ -5,6 +5,43 @@
 GUI 平级——不是主子关系。软件不依附 dsh：dsh 消失时，数据、域状态史、监控
 面全部照常，只少一个操作者。
 
+## 四个仓的关系（**框架与用它的项目**）
+
+| 仓 | 是什么 | 它用了 mecha 的哪一面 |
+|---|---|---|
+| **`mecha`**（本仓） | **框架**：操作者无关层 —— Gate 写入门 / History 域状态史 / Surface 能力面 / Monitor 人类监控面 + Provider 层（log_local / jobs / approval / skills / codeact / mcp） | — |
+| `energy-level` | 物理仿真 | **CodeAct 通道**跑 AI 演化 |
+| `get-paper` | 论文管理与推荐 | **命令面 + 工具面（MCP）** |
+| `ml-toolbox` | 机器学习方法试验台 | **宿主适配 + 面板** |
+
+⚠ 三个项目**不是框架的一部分**：各自独立成仓、各自装自己的领域内容；**mecha 里没有任何领域实现**。
+
+⭐ **第一次来该从哪读起**：**先读 [`docs/接入指南.md`](docs/接入指南.md)**
+（六步顺序 + 每步验收 + 「该由谁提供」+ n=3 要回答的问题）。
+三个项目仓是**用法样例**，不是入门读物 —— 从它们乱点最容易误以为「框架里有这些东西」。
+
+## 安装（陌生人照这个做）
+
+**前置**：Python ≥ 3.10。⭐ **mecha 不依赖任何第三方**（`dependencies = []`）——
+核心只用标准库；只有 MCP 投影那条路要可选依赖（`mecha[mcp]`）。
+
+```bash
+git clone https://github.com/tomisnot/mecha && cd mecha
+python checks/run_all.py        # 门禁一条跑全
+```
+
+**门禁的「跳过」语义**：本机若**没有 EL 仓（`MECHA_EL_ROOT`）**或**没有 typescript
+（`MECHA_TSC_ROOT`）**，相应判据会**跳过并打印判据名**；用 **`--require-external`**
+让**跳过变成失败**（有依赖的 CI 用）。⚠ 具体是哪几条**不在这里列**——跑一次就会打印。
+
+**作为依赖被别家引用**（三个项目就是这么装的）：
+
+```
+mecha @ git+https://github.com/tomisnot/mecha@v0.2.0
+```
+
+⚠ **如实说明**：**仓库还没建 ⇒ 这个 URL 目前会 404**；等仓建好、`v0.2.0` 推上去后即可解析。
+
 ## 它是什么 / 不是什么
 
 | 是 | 不是 |
@@ -24,7 +61,7 @@ mecha/          稳定脊椎：gate / history / surface / monitor / authority /
 mecha/providers/  Provider 层（dsh 的 churn 关在这里）：log_local / jobs /
                 approval / skills / codeact —— local 是出厂默认
 checks/         判据（见下）+ 门禁；python checks/run_all.py 一条跑全
-                （硬依赖 EL 仓 + node，见「验证」节）
+                （缺外部依赖会**跳过并打印判据名**，见「安装」节）
 docs/v2/        架构总纲（规范源：为什么这么设计）+ 架构详解（建成态导览：代码
                 现在长什么样）+ 框架准入线（改动纪律 R 系列）+ 操作陷阱（工具与
                 测量层面的坑）+ 遗留登记 + ADR 制度 + notes/（ADR 四态树）
