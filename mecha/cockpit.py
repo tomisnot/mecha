@@ -16,7 +16,7 @@ Monitor 是软件自己四件里与 Gate / History / Surface **并列的第一�
 
 ``OPTIONS *`` → ``204`` + CORS（无 body）；``GET /status`` → ``{ok, mode}``；
 ``GET /activity`` → ``{ok, events, mode}``（事件 6 键，无 before/after/reason）；
-``GET /history`` → ``{ok, events, mode}``（事件 9 键，含 before/after/reason）；
+``GET /history`` → ``{ok, events, mode}``（事件含 op / before / after / reason）；
 ``GET /config`` → ``{ok, has_schema, groups, orphans, n_keys, n_snapshot_keys}``；
 未知路径 → ``404 {"ok": false, "error": "unknown endpoint"}``；
 任意 ``POST`` → ``404 {"ok": false, "error": "read-only monitor endpoint"}``。
@@ -160,7 +160,7 @@ def activity_records(source, since_seq: int = 0) -> list[dict]:
 
 
 def history_records(source, since_seq: int = 0) -> list[dict]:
-    """飞行记录仪事件：9 键，按史序升序，只含 ``seq >= since_seq``。
+    """飞行记录仪事件：按史序升序，只含 ``seq >= since_seq``。
 
     ``before`` 由**全史 fold 重建**（同键上一条事件的值，首写 ``None``）。
     ⚠ fold 覆盖全史、过滤只作用于 emit：两者写在一个循环里但**顺序不可换**
@@ -173,6 +173,7 @@ def history_records(source, since_seq: int = 0) -> list[dict]:
         last[event.target] = event.after
         if event.seq >= since_seq:
             out.append({"seq": event.seq, "kind": SET_KIND, "actor": event.actor,
+                        "op": event.op,
                         "target": event.target, "after": event.after,
                         "before": before, "reason": event.reason,
                         "call_id": event.call_id, "ts": event.ts})
