@@ -104,6 +104,9 @@ def project(spec: CommandSpec, *, overrides: ProjectionOverrides | None = None,
         parameters=params,
         output_schema=spec.output_schema,
         execute=_not_wired,
+        # WARN 这里是**翻译**（kind="write" 能无损翻回 side_effect=True）；凡「翻不回去」的
+        # 派生都是**判断** ⇒ 禁止（框架不许替项目判语义）。第三档 read_telemetry 派生不出来，
+        # **只能从 overrides 进**。
         kind=ov.kind if ov.kind is not None else ("write" if spec.side_effect else "read"),
         scope=scope,
         reversible=ov.reversible,          # ⚠ 只认 overrides：没给就是 None（未声明）
