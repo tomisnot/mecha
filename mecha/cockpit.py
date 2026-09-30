@@ -154,8 +154,8 @@ def activity_records(source, since_seq: int = 0) -> list[dict]:
     与 ``history_records`` 的区别：不带 ``before`` / ``after`` / ``reason``
     ——面板的"最近动作"列表只需知道谁改了什么、改成什么。
     """
-    return [{"kind": SET_KIND, "actor": e.actor, "target": e.key,
-             "value": e.value, "seq": e.seq, "call_id": e.call_id}
+    return [{"kind": SET_KIND, "actor": e.actor, "target": e.target,
+             "value": e.after, "seq": e.seq, "call_id": e.call_id}
             for e in source.events() if e.seq >= since_seq]
 
 
@@ -169,13 +169,13 @@ def history_records(source, since_seq: int = 0) -> list[dict]:
     last: dict = {}
     out: list[dict] = []
     for event in source.events():
-        before = last.get(event.key)
-        last[event.key] = event.value
+        before = last.get(event.target)
+        last[event.target] = event.after
         if event.seq >= since_seq:
             out.append({"seq": event.seq, "kind": SET_KIND, "actor": event.actor,
-                        "target": event.key, "value": event.value,
-                        "before": before, "after": event.value,
-                        "reason": event.reason, "call_id": event.call_id})
+                        "target": event.target, "after": event.after,
+                        "before": before, "reason": event.reason,
+                        "call_id": event.call_id, "ts": event.ts})
     return out
 
 
@@ -201,7 +201,7 @@ def config_tree(source, *, schema_rows=None) -> dict:
     snapshot = dict(source.snapshot())
     last: dict = {}
     for event in source.events():
-        last[event.key] = {"reason": event.reason, "actor": event.actor,
+        last[event.target] = {"reason": event.reason, "actor": event.actor,
                            "seq": event.seq}
     rows = list(schema_rows if schema_rows is not None else source.schema_rows())
     groups: dict = {}

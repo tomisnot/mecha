@@ -676,9 +676,9 @@ class CommandRegistry:
             # ⚠ **只记史、不改快照**（`Gate.record`）：审计事件属于**事件史**，
             # 不属于域状态快照——借 `gate.set` 落史会让审计键混进 `/config` 的键空间
             # （在那里变成"契约外的键"，而快照的"后写覆盖"语义对审计毫无意义）。
-            gate.record(                                                     # type: ignore[attr-defined]
-                f"{AUDIT_KEY_PREFIX}{spec.name}", record,
-                (channel or _default_channel(spec.name)).actor,              # type: ignore[attr-defined]
+            gate.record(
+                f"{AUDIT_KEY_PREFIX}{spec.name}", "", record,
+                (channel or _default_channel(spec.name)).actor,   # type: ignore[attr-defined]
                 reason, call_id)
         except MechaError as e:
             # 承诺不变（**不静默**）：审计写不进去 ⇒ 命令回失败。⚠ 路径变了：

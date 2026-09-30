@@ -110,9 +110,9 @@ class CodeAct:
 
         一段动作共用一个 ``call_id`` ⇒ 逐条写也仍然"整段可识别"（不必新增批 id）。
         """
-        self._history.append(
-            f"codeact.{index}", {"op": op, "ok": ok, "detail": detail},
-            self._actor(), "codeact step", call_id,
+        self._history.append_history(
+            f"codeact.{index}", "", {"op": op, "ok": ok, "detail": detail},
+            None, self._actor(), "codeact step", call_id,
         )
 
     def _dispatch(self, a: Action, ctx: ExecutionContext) -> object:

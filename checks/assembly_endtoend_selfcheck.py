@@ -67,7 +67,7 @@ def _fail(out: list[str], msg: str) -> None:
 
 def _summarizer(events):
     # 动态复述最新 power（概括必须能从原始推出）
-    power = [e.value for e in events if e.key == "power"]
+    power = [e.after for e in events if e.target == "power"]
     return {"power": Claim(power[-1])} if power else {}
 
 

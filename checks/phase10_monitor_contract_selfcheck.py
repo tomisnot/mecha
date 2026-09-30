@@ -235,7 +235,7 @@ def check_raw_layer_is_independent(out: list[str]) -> None:
         if events and fold(events) == {"power": 100} == raw_before:
             _ok("原始层独立可读（History.events + fold 原样可用，与概括层死活无关）")
         else:
-            _fail(out, f"原始层读不出来：{[e.key for e in events]}")
+            _fail(out, f"原始层读不出来：{[e.target for e in events]}")
 
         # 原始层是唯一权威：换一个健全概括器，立刻读到原始真值
         healthy = Monitor(sw.history.events, lambda evs: {"power": Claim(100)}).read()
@@ -283,7 +283,7 @@ def check_catches_stale_claim_after_raw_change(out: list[str]) -> None:
 
         def freezes_first(events):
             # 冻结"第一条 power 事件"的值当概括（陈旧概括的典型形态）
-            vals = [e.value for e in events if e.key == "power"]
+            vals = [e.after for e in events if e.target == "power"]
             return {"power": Claim(vals[0], target="power")} if vals else {}
 
         first = Monitor(sw.history.events, freezes_first).read()

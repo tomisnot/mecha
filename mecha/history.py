@@ -32,10 +32,18 @@ class Event:
     """一条账事件（append-only 的单位）。"""
 
     seq: int
-    key: str
-    value: object
-    actor: str
-    reason: str
+    #: "state"（改域状态）| "history"（只记史：审计/编排日志）
+    kind: str
+    #: 动作名；state 事件固定 "set"
+    op: str
+    #: 作用对象；state 事件 = 键名
+    target: str
+    #: 后像；state 事件 = 新值
+    after: object
+    #: 前像；state 事件 = 旧值（键此前不存在 ⇒ None）
+    before: object = None
+    actor: str = ""
+    reason: str = ""
     call_id: str = ""
     #: **墙钟时间**（ISO 8601 UTC；2026-09-26 加）。⚠ 老记录（无此字段）读回 **`""`**
     #: ＝"早于本特性"，不是"时间未知的错"。⛔ **不许用 `ts` 排序/去重**：`seq` 仍是
@@ -48,24 +56,37 @@ class Event:
 
     def to_record(self) -> dict:
         return {
-            "seq": self.seq,
-            "key": self.key,
-            "value": self.value,
-            "actor": self.actor,
-            "reason": self.reason,
-            "call_id": self.call_id,
-            "ts": self.ts,
+            "seq": self.seq, "kind": self.kind, "op": self.op, "target": self.target,
+            "after": self.after, "before": self.before, "actor": self.actor,
+            "reason": self.reason, "call_id": self.call_id, "ts": self.ts,
             "undoable": self.undoable,
         }
 
     @staticmethod
     def from_record(rec: dict) -> "Event":
         """从盘上记录还原。⚠ **老记录缺 `ts`/`undoable` 也要能读**（零迁移，见 ADR）。"""
-        return Event(
-            seq=rec["seq"], key=rec["key"], value=rec["value"],
-            actor=rec["actor"], reason=rec["reason"], call_id=rec.get("call_id", ""),
-            ts=str(rec.get("ts", "") or ""), undoable=rec.get("undoable", None),
-        )
+        if "kind" in rec:
+            return Event(
+                seq=rec["seq"], kind=str(rec["kind"]), op=str(rec.get("op", "")),
+                target=str(rec.get("target", "")), after=rec.get("after"),
+                before=rec.get("before"), actor=rec.get("actor", ""),
+                reason=rec.get("reason", ""), call_id=rec.get("call_id", ""),
+                ts=str(rec.get("ts", "") or ""), undoable=rec.get("undoable", None),
+            )
+        # **老记录零迁移**（照 ts/undoable 的先例，推理**只有这一处**）：
+        #   key 以 "command." 开头 ⇒ 审计 ⇒ kind="history"
+        #   否则                  ⇒ kind="state"
+        key = str(rec["key"])
+        if key.startswith("command."):
+            return Event(seq=rec["seq"], kind="history", op=key, target="", after=None,
+                         before=None, actor=rec.get("actor", ""),
+                         reason=rec.get("reason", ""), call_id=rec.get("call_id", ""),
+                         ts=str(rec.get("ts", "") or ""),
+                         undoable=rec.get("undoable", None))
+        return Event(seq=rec["seq"], kind="state", op="set", target=key,
+                     after=rec.get("value"), before=None, actor=rec.get("actor", ""),
+                     reason=rec.get("reason", ""), call_id=rec.get("call_id", ""),
+                     ts=str(rec.get("ts", "") or ""), undoable=rec.get("undoable", None))
 
 
 @runtime_checkable
@@ -81,7 +102,8 @@ class LogSink(Protocol):
     """
 
     def append(self, record: dict) -> None: ...
-    def since(self, seq: int) -> Iterable[dict]: ...
+    def since(self, seq: int, *, actor: str | None = None,
+              op: str | None = None, limit: int | None = None) -> Iterable[dict]: ...
     def last_seq(self) -> int: ...
 
 
@@ -89,7 +111,9 @@ def fold(events: Iterable[Event]) -> dict[str, object]:
     """纯函数：从事件史折叠出当前快照。后写覆盖先写。"""
     snapshot: dict[str, object] = {}
     for e in events:
-        snapshot[e.key] = e.value
+        if e.kind != "state":       # 只折域状态；审计/编排日志不是状态（本轮的 bug 就在这一行）
+            continue
+        snapshot[e.target] = e.after
     return snapshot
 
 
@@ -113,6 +137,31 @@ class History:
         self._events.extend(existing)
         self._seq = sink.last_seq()
 
+    def append_history(self, op: str, target: str = "", after: object = None,
+                       before: object = None, actor: str = "", reason: str = "",
+                       call_id: str = "", *, ts: str | None = None,
+                       undoable: bool | None = None) -> Event:
+        """**只记史**（审计 / 编排日志）：`fold` 不折它 ⇒ **永不进快照**。"""
+        if not op.strip():
+            raise MechaError("事件 op 不能为空", kind="bad_event",
+                             hint="append_history 必须带非空 op")
+        when = ts if ts is not None else datetime.now(timezone.utc).isoformat()
+        with self._lock:
+            seq = self._seq + 1
+            ev = Event(seq, "history", op, target, after, before, actor, reason,
+                       call_id, when, undoable)
+            if self._sink is not None:
+                self._sink.append(ev.to_record())
+            self._seq = seq
+            self._events.append(ev)
+            subs = list(self._subs)
+        for cb in subs:
+            try:
+                cb(ev)
+            except Exception:              # noqa: BLE001 - 一个坏订阅者不拖垮写口
+                pass
+        return ev
+
     def precheck(self, key: str, value: object) -> None:
         """**落地之前**的可预见失败预检：委托 sink 的可选 ``precheck``（缺失即跳过）。
 
@@ -125,20 +174,24 @@ class History:
         check = getattr(self._sink, "precheck", None)     # 可选能力（同 close 的先例）
         if check is None:
             return
-        check(Event(0, key, value, "", "").to_record())
+        # ⚠ 这个伪事件**只在 state 路径被调**（gate.set / gate.set_batch）：
+        # 它给 sink 做"能不能编码"的预检，与 history 路径无关。
+        check(Event(0, "state", "set", key, value).to_record())
 
-    def append(self, key: str, value: object, actor: str, reason: str,
-               call_id: str = "", *, ts: str | None = None,
-               undoable: bool | None = None) -> Event:
+    def append_state(self, target: str, after: object, before: object = None,
+                     actor: str = "", reason: str = "", call_id: str = "",
+                     *, ts: str | None = None, undoable: bool | None = None) -> Event:
+        """**改域状态**（唯一会被 `fold` 折进快照的那类事件）。"""
         """追加一条事件。``ts`` 缺省**现取墙钟**（UTC ISO；给人看，不参与排序）；
         ``undoable`` 是**项目声明的槽位**（`None`＝未声明），框架不据此实现撤销。"""
-        if not key.strip():
-            raise MechaError("事件 key 不能为空", kind="bad_event",
-                             hint="append 必须带非空 key")
+        if not target.strip():
+            raise MechaError("事件 target 不能为空", kind="bad_event",
+                             hint="append_state 必须带非空 target")
         when = ts if ts is not None else datetime.now(timezone.utc).isoformat()
         with self._lock:
             seq = self._seq + 1
-            ev = Event(seq, key, value, actor, reason, call_id, when, undoable)
+            ev = Event(seq, "state", "set", target, after, before, actor, reason,
+                       call_id, when, undoable)
             # ⚠ **先落盘、后推进内存**（2026-09-26 起）：反过来的话，sink 抛错时内存里
             # 已经多了一条**盘上没有**的事件 ⇒ `events()` 与 journal 不一致，
             # 而"快照必须能从史折叠出来"这条不变量正是建在这上面。

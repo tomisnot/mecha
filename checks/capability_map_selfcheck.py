@@ -475,10 +475,19 @@ def _declare(row_key: str, state: str, *, sym: str = "", files: tuple[str, ...] 
 # ---- Event（域事件形状；2026-09-26 补进枚举源 —— 补的原因就是 ts/undoable 那次漏掉）----
 _declare("Event.seq", "consumed", sym="last_seq",
          files=("mecha/providers/log_local.py",), crit="check_history_append_only_resume")
-_declare("Event.key", "consumed", sym="fold",
+_declare("Event.kind", "consumed", sym="fold",
+         files=("mecha/history.py",), crit="check_monitor_reconcile",
+         note="\"state\" 才被 fold 折进快照；\"history\" 永不进（本轮的 bug 就在这一行）")
+_declare("Event.op", "consumed", sym="append_history",
+         files=("mecha/history.py",), crit="check_side_effect_audit",
+         note="事件名住在这里（原先是 key；前缀只是命名习惯，不再承担判定）")
+_declare("Event.target", "consumed", sym="fold",
          files=("mecha/history.py",), crit="check_history_append_only_resume")
-_declare("Event.value", "consumed", sym="fold",
-         files=("mecha/history.py",), crit="check_monitor_reconcile")
+_declare("Event.after", "consumed", sym="fold",
+         files=("mecha/history.py",), crit="check_history_append_only_resume")
+_declare("Event.before", "consumed", sym="append_state",
+         files=("mecha/history.py",), crit="check_write_all_or_nothing",
+         note="state 事件的前像（键此前不存在 ⇒ None）")
 _declare("Event.actor", "consumed", sym="history_records",
          files=("mecha/cockpit.py",), crit="check_call_id_crossref")
 _declare("Event.reason", "consumed", sym="config_tree",

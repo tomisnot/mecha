@@ -23,6 +23,7 @@ from pathlib import Path
 
 from ..data_layout import DataLayout
 from ..errors import MechaError
+from ..history import Event
 from ..format_version import FORMAT_VERSION, JOURNAL_FILENAME, MigrationChain
 from ..write_lease import WriteLease
 
@@ -72,8 +73,25 @@ class JsonlLogSink:
         """
         self._encode(record)
 
-    def since(self, seq: int) -> Iterable[dict]:
-        return [r for r in self._load() if r["seq"] > seq]
+    def since(self, seq: int, *, actor: str | None = None, op: str | None = None,
+              limit: int | None = None) -> Iterable[dict]:
+        """按序号取（可加 actor / op 筛选与条数上限）。
+
+        ⚠ 字段推理**只用 `Event.from_record`**（老记录也一致）——不许在这里复制第二份。
+        """
+        out: list[dict] = []
+        for rec in self._load():
+            if rec["seq"] <= seq:
+                continue
+            ev = Event.from_record(rec)
+            if actor is not None and ev.actor != actor:
+                continue
+            if op is not None and ev.op != op:
+                continue
+            out.append(rec)
+            if limit is not None and len(out) >= limit:
+                break
+        return out
 
     def last_seq(self) -> int:
         recs = self._load()

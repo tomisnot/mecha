@@ -74,8 +74,8 @@ POST_BODY_BYTES = 256 * 1024
 
 #: 投影字段集（契约的一部分：多一个少一个都是漂移）。
 ACTIVITY_KEYS = {"kind", "actor", "target", "value", "seq", "call_id"}
-HISTORY_KEYS = {"seq", "kind", "actor", "target", "value", "before", "after",
-                "reason", "call_id"}
+HISTORY_KEYS = {"seq", "kind", "actor", "target", "after", "before",
+                "reason", "call_id", "ts"}
 ROW_KEYS = {"name", "short", "prefix", "value", "unit", "type", "desc", "set"}
 ORPHAN_KEYS = {"name", "value", "set"}
 
@@ -209,7 +209,7 @@ def check_projection(out: list[str]) -> None:
             else:
                 _fail(out, f"/activity 事件字段错：{act[:1]}")
             if len(hist) == 3 and all(set(e) == HISTORY_KEYS for e in hist) \
-                    and all(e["value"] == e["after"] for e in hist):
+                    and all("after" in e and "before" in e for e in hist):
                 _ok("/history 事件恰好 9 键、value == after")
             else:
                 _fail(out, f"/history 事件字段错：{hist[:1]}")
@@ -610,7 +610,7 @@ def check_summary_projection(out: list[str]) -> None:
 
     def _ev(seq, key, value):
         e = _FakeEvent()
-        e.seq, e.key, e.value, e.actor, e.reason, e.call_id = seq, key, value, "ai", "r", ""
+        e.seq, e.target, e.after, e.actor, e.reason, e.call_id = seq, key, value, "ai", "r", ""
         return e
 
     class _Src:

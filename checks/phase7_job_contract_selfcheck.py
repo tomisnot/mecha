@@ -264,7 +264,7 @@ def check_concurrent_history(out: list[str]) -> None:
             def fn(ctx):
                 gate.wait(2)
                 for k in range(20):
-                    sw.history.append(f"key.{i}", k, f"actor{i}", "concurrency")
+                    sw.history.append_state(f"key.{i}", k, None, f"actor{i}", "concurrency")
                 return i
             return fn
 

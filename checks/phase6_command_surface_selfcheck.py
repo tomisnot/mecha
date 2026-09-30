@@ -376,7 +376,7 @@ def check_side_effect_audit(out: list[str]) -> None:
         else:
             _fail(out, f"有副作用命令调用不符：{r}")
         events = [e for e in sw.history.events()
-                  if e.key == f"{AUDIT_KEY_PREFIX}record_note"]
+                  if e.op == f"{AUDIT_KEY_PREFIX}record_note"]
         # ⭐ **审计进事件史、不进域快照**（发现 3 的落地点）：事件在 `/history` 里
         # 一条不少，而快照里**不该**有 `command.` 前缀的键（否则 `/config` 视图会把它
         # 当"契约外的键"，且快照的"后写覆盖"语义对审计毫无意义）。
@@ -386,10 +386,10 @@ def check_side_effect_audit(out: list[str]) -> None:
         else:
             _fail(out, f"审计键混进了域快照：{snap_audit}")
         if len(events) != 1:
-            _fail(out, f"审计事件数不符（期望 1）：{[e.key for e in sw.history.events()]}")
+            _fail(out, f"审计事件数不符（期望 1）：{[e.target for e in sw.history.events()]}")
         else:
             ev = events[0]
-            v = ev.value
+            v = ev.after
             if ev.actor == "ai" and ev.call_id == "c-42" and ev.reason == "测试审计":
                 _ok("审计事件可归因：actor + call_id + reason 进 History（互引）")
             else:
@@ -420,12 +420,12 @@ def check_side_effect_audit(out: list[str]) -> None:
         sw.commands.invoke("record_note", {"text": "x", "call_id": "c-43"},
                            context=_Ctx(), gate=sw.gate, channel=sw.channels["ai"])
         audited = [e for e in sw.history.events()
-                   if e.key == f"{AUDIT_KEY_PREFIX}record_note"]
-        if len(audited) == 2 and audited[-1].value["ok"] is False \
-                and audited[-1].value["error_kind"] == "bad_command_output":
+                   if e.op == f"{AUDIT_KEY_PREFIX}record_note"]
+        if len(audited) == 2 and audited[-1].after["ok"] is False \
+                and audited[-1].after["error_kind"] == "bad_command_output":
             _ok("副作用已发生但回执坏 ⇒ 仍写审计且标 ok=False+error_kind（不静默）")
         else:
-            _fail(out, f"坏回执的副作用未留痕：{[e.value for e in audited]}")
+            _fail(out, f"坏回执的副作用未留痕：{[e.after for e in audited]}")
         # ⚠ **这里以前断言的是「宿主 validator 拒 `command.*` ⇒ `command_audit_denied`」。
         # 那条现在【不能保留】——但原因不是"它错了"，而是【它守的那个契约不存在了】**：
         # 审计此前借 `gate.set` 落史 ⇒ 必须过宿主 validator（所以宿主得给 `command.`
@@ -444,7 +444,7 @@ def check_side_effect_audit(out: list[str]) -> None:
             r2 = sw2.commands.invoke("record_note", {"text": "t"}, context=_Ctx(),
                                      gate=sw2.gate, channel=sw2.channels["ai"])
             audited2 = [e for e in sw2.history.events()
-                        if e.key == f"{AUDIT_KEY_PREFIX}record_note"]
+                        if e.op == f"{AUDIT_KEY_PREFIX}record_note"]
             if not r2.get("is_error") and audited2:
                 _ok("宿主 validator 拒 command.* 前缀**不再影响审计**：命令照跑、审计照写"
                     "（审计已不经 validator —— 负担从宿主侧消失）")
@@ -455,10 +455,12 @@ def check_side_effect_audit(out: list[str]) -> None:
         # 承诺不变（**不静默**）：审计写不进去 ⇒ 命令回 `command_audit_denied`。
         # 用一份"拒写审计键"的 History 复现（新路径上唯一的失败来源）。
         class _NoAuditHistory(History):                      # noqa: D401 - 判据替身
-            def append(self, key, value, actor, reason="", call_id="", **kw):
-                if str(key).startswith(AUDIT_KEY_PREFIX):
-                    raise MechaError(f"拒写审计键 {key!r}", kind="audit_refused")
-                return super().append(key, value, actor, reason, call_id, **kw)
+            def append_history(self, op, target="", after=None, before=None, actor="",
+                                   reason="", call_id="", **kw):
+                if str(op).startswith(AUDIT_KEY_PREFIX):
+                    raise MechaError(f"拒写审计事件 {op!r}", kind="audit_refused")
+                return super().append_history(op, target, after, before, actor, reason,
+                                              call_id, **kw)
 
         g = Gate(Authority(mode=Mode.AI), _NoAuditHistory(), validate=accept_all)
         reg2 = CommandRegistry()
@@ -491,14 +493,14 @@ def check_result_ref_audit(out: list[str]) -> None:
         else:
             _fail(out, f"带 result_ref 的命令回执不符：{r}")
         events = [e for e in sw.history.events()
-                  if e.key == f"{AUDIT_KEY_PREFIX}record_note"]
-        if events and events[-1].value.get("result_ref") == {"kind": "note",
+                  if e.op == f"{AUDIT_KEY_PREFIX}record_note"]
+        if events and events[-1].after.get("result_ref") == {"kind": "note",
                                                              "id": "n-1"}:
             _ok("result_ref 进审计（命令调用与宿主结果可互引）")
         else:
-            _fail(out, f"result_ref 未进审计：{[e.value for e in events]}")
+            _fail(out, f"result_ref 未进审计：{[e.after for e in events]}")
         # 不透明引用不进结果体；参数原文也不进审计
-        audit_value = events[-1].value
+        audit_value = events[-1].after
         if "x" not in str(audit_value) and "values" not in audit_value:
             _ok("result_ref 审计不含结果体/入参原文（大对象不进 History）")
         else:
@@ -594,7 +596,7 @@ def check_readonly_bypasses_gate(out: list[str]) -> None:
             _EXTERNAL["writes"] = 0
             r3 = sw2.commands.invoke("record_note", {"text": "t"}, context=_Ctx(),
                                      gate=sw2.gate, channel=sw2.channels["ai"])
-            audit3 = [e for e in sw2.history.events() if e.key.startswith(AUDIT_KEY_PREFIX)]
+            audit3 = [e for e in sw2.history.events() if e.op.startswith(AUDIT_KEY_PREFIX)]
             # 期望 kind 取 **authority 自己那道闸**的判词。
             # ⚠ **这里以前断言的是 `command_audit_denied`，那不是"更宽松/更严格"的差别，
             # 而是"判据把缺陷钉住了"**：那条期望值描述的是「检查迟到、handler 先干完、
@@ -609,7 +611,7 @@ def check_readonly_bypasses_gate(out: list[str]) -> None:
             if not audit3:
                 _ok("LOCKED：没干活 ⇒ 不留痕（与 scope 拒绝同一纪律）")
             else:
-                _fail(out, f"LOCKED 下却写了审计：{[e.key for e in audit3]}")
+                _fail(out, f"LOCKED 下却写了审计：{[e.target for e in audit3]}")
         # 有副作用却没注入 gate：fail loud（不留痕的副作用不可审计）
         reg = CommandRegistry()
         reg.register(_note_cmd(), _note_handler)
@@ -625,7 +627,7 @@ def check_readonly_bypasses_gate(out: list[str]) -> None:
             r5 = sw3.commands.invoke("record_note", {"text": "t"}, context=_Ctx(),
                                      gate=sw3.gate)
             ev = [e for e in sw3.history.events()
-                  if e.key == f"{AUDIT_KEY_PREFIX}record_note"]
+                  if e.op == f"{AUDIT_KEY_PREFIX}record_note"]
             if not r5.get("is_error") and ev and ev[0].actor.startswith("command:"):
                 _ok("未传 channel 的兜底 actor 是命令名、side 为 ai（不伪装 human）")
             else:
@@ -743,17 +745,17 @@ def check_no_false_alarm(out: list[str]) -> None:
                                     gate=sw.gate, channel=sw.channels["ai"])
         r_write = sw.commands.invoke("record_note", {"text": "ok"}, context=ctx,
                                      gate=sw.gate, channel=sw.channels["ai"])
-        audit = [e for e in sw.history.events() if e.key.startswith(AUDIT_KEY_PREFIX)]
+        audit = [e for e in sw.history.events() if e.op.startswith(AUDIT_KEY_PREFIX)]
         good = (not r_read.get("is_error") and r_read["value"]["digest"] == "d:ok"
                 and not r_write.get("is_error")
                 and r_write["value"]["stored_key"] == "note"
-                and len(audit) == 1 and audit[0].key == f"{AUDIT_KEY_PREFIX}record_note"
+                and len(audit) == 1 and audit[0].op == f"{AUDIT_KEY_PREFIX}record_note"
                 and ctx.calls == ["ok"])
         if good:
             _ok("合规命令全绿：只读 0 审计 / 有副作用 1 审计 / 回执齐键（不误报）")
         else:
             _fail(out, f"合规命令被误报：read={r_read} write={r_write} "
-                       f"audit={[e.key for e in audit]}")
+                       f"audit={[e.target for e in audit]}")
 
 
 # ---------------------------------------------------------------------------
@@ -789,7 +791,7 @@ def check_approval_required(out: list[str]) -> None:
         calls["n"] = 0
         r1 = sw.commands.invoke("record_note", {"text": "a"}, context=_Ctx(),
                                 gate=sw.gate, channel=sw.channels["ai"])
-        audit1 = [e for e in sw.history.events() if e.key.startswith(AUDIT_KEY_PREFIX)]
+        audit1 = [e for e in sw.history.events() if e.op.startswith(AUDIT_KEY_PREFIX)]
         if (_fail_shape(r1, "approval_denied") and calls["n"] == 0
                 and not audit1 and not sw.gate.snapshot):
             _ok("声明需审批但**没接审批通道** ⇒ 拒绝 + handler 零调用 + 域零改动 + 无审计")
@@ -809,7 +811,7 @@ def check_approval_required(out: list[str]) -> None:
                                 gate=sw.gate, channel=sw.channels["ai"],
                                 approval=LocalApproval(lambda *a: True))
         audit2 = [e for e in sw.history.events()
-                  if e.key.startswith(AUDIT_KEY_PREFIX + "record_note_ok")]
+                  if e.op.startswith(AUDIT_KEY_PREFIX + "record_note_ok")]
         if not r2.get("is_error") and calls["n"] == 1 and len(audit2) == 1:
             _ok("对偶：接「点头」决策器 ⇒ 正常执行（副作用 1 次 + 审计 1 条）")
         else:
@@ -861,7 +863,7 @@ def check_handler_sees_channel(out: list[str]) -> None:
         r_hu = sw.commands.invoke("record_note", {"text": "h"}, context=_Ctx(),
                                   gate=sw.gate, channel=sw.channels["human"])
         actors = [e.actor for e in sw.history.events()
-                  if e.key.startswith(AUDIT_KEY_PREFIX)]
+                  if e.op.startswith(AUDIT_KEY_PREFIX)]
         if seen == ["ai", "human"]:
             _ok("handler 拿到的是**本次**的通道（同一张命令表：ai 与 human 各自正确）")
         else:
@@ -974,13 +976,13 @@ def check_failure_leaves_trace(out: list[str]) -> None:
         r1 = sw.commands.invoke("record_note", {"text": "t"}, context=_Ctx(),
                                 gate=sw.gate, channel=sw.channels["ai"])
         ev1 = [e for e in sw.history.events()
-               if e.key == f"{AUDIT_KEY_PREFIX}record_note"]
+               if e.op == f"{AUDIT_KEY_PREFIX}record_note"]
         if (_fail_shape(r1, "domain_refused") and len(ev1) == 1
-                and ev1[0].value["ok"] is False
-                and ev1[0].value["error_kind"] == "domain_refused"):
+                and ev1[0].after["ok"] is False
+                and ev1[0].after["error_kind"] == "domain_refused"):
             _ok("handler 抛 MechaError ⇒ **有痕**（command.* / ok=False / error_kind=kind）")
         else:
-            _fail(out, f"抛 MechaError 无痕或回执变了：{r1} 审计={[e.value for e in ev1]}")
+            _fail(out, f"抛 MechaError 无痕或回执变了：{r1} 审计={[e.after for e in ev1]}")
 
         # ② handler 抛**普通异常** ⇒ 也有痕，且异常**原样抛出**（不伪装成域失败）
         sw.commands.register(_note_cmd(name="record_note_plain_boom"), boom_plain)
@@ -991,13 +993,13 @@ def check_failure_leaves_trace(out: list[str]) -> None:
         except RuntimeError:
             raised = True
         ev2 = [e for e in sw.history.events()
-               if e.key == f"{AUDIT_KEY_PREFIX}record_note_plain_boom"]
-        if (raised and len(ev2) == 1 and ev2[0].value["ok"] is False
-                and ev2[0].value["error_kind"] == "RuntimeError"):
+               if e.op == f"{AUDIT_KEY_PREFIX}record_note_plain_boom"]
+        if (raised and len(ev2) == 1 and ev2[0].after["ok"] is False
+                and ev2[0].after["error_kind"] == "RuntimeError"):
             _ok("handler 抛**普通异常** ⇒ 也有痕（error_kind=异常类型名）且异常**原样抛出**")
         else:
             _fail(out, f"普通异常无痕或没原样抛出：raised={raised} "
-                       f"审计={[e.value for e in ev2]}")
+                       f"审计={[e.after for e in ev2]}")
 
         # ③ 对偶一：**参数错不留痕**（拒绝在 handler 之前 ⇒ 副作用不可能发生）
         seq_before = sw.history.last_seq
@@ -1005,22 +1007,22 @@ def check_failure_leaves_trace(out: list[str]) -> None:
         r3 = sw.commands.invoke("record_note_noargs", {}, context=_Ctx(),
                                 gate=sw.gate, channel=sw.channels["ai"])
         any_new = [e for e in sw.history.events()
-                   if e.key.startswith(AUDIT_KEY_PREFIX) and e.seq > seq_before]
+                   if e.op.startswith(AUDIT_KEY_PREFIX) and e.seq > seq_before]
         if _fail_shape(r3, "missing_arguments") and not any_new:
             _ok("对偶：**参数错不留痕**（handler 没跑 ⇒ 副作用不可能发生）")
         else:
-            _fail(out, f"参数错留了痕：{r3} 新审计={[e.key for e in any_new]}")
+            _fail(out, f"参数错留了痕：{r3} 新审计={[e.target for e in any_new]}")
 
         # ④ 对偶二：正常成功 ⇒ 审计现状不变（1 条 ok=True）
         sw.commands.register(_note_cmd(name="record_note_fine"), _note_handler)
         r4 = sw.commands.invoke("record_note_fine", {"text": "t"}, context=_Ctx(),
                                 gate=sw.gate, channel=sw.channels["ai"])
         ev4 = [e for e in sw.history.events()
-               if e.key == f"{AUDIT_KEY_PREFIX}record_note_fine"]
-        if not r4.get("is_error") and len(ev4) == 1 and ev4[0].value["ok"] is True:
+               if e.op == f"{AUDIT_KEY_PREFIX}record_note_fine"]
+        if not r4.get("is_error") and len(ev4) == 1 and ev4[0].after["ok"] is True:
             _ok("对偶：正常成功 ⇒ 审计现状不变（1 条 ok=True）")
         else:
-            _fail(out, f"成功路径的审计变了：{r4} 审计={[e.value for e in ev4]}")
+            _fail(out, f"成功路径的审计变了：{r4} 审计={[e.after for e in ev4]}")
 
 
 def main() -> int:

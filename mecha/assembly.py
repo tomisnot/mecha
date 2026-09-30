@@ -157,7 +157,8 @@ def assemble(*, root: Path, data_dir_name: str | None, engine: Engine,
              project: str = "mecha",
              mode: Mode = DEFAULT_MODE,
              migration: MigrationChain | None = None,
-             approval_decider=None) -> Software:
+             approval_decider=None,
+             log_sink: object | None = None) -> Software:
     """完整装配（唯一具名装配点，L6/D-33：真实部署路径也走这里）。
 
     validate 必填透传给 Gate（审查 P5-2：不校验请显式传 accept_all）。
@@ -165,7 +166,9 @@ def assemble(*, root: Path, data_dir_name: str | None, engine: Engine,
     """
     layout: DataLayout = resolve_data_dir(root, data_dir_name)
     roles = build_roles(engine_name=type(engine).__name__, project=project)
-    sink = JsonlLogSink(layout, chain=migration)
+    # ⚠ 落盘 sink **可注入**（默认仍是本机 JSONL）——Provider 层既有做法：
+    # 出厂默认本机文件，项目可换成自己的实现（如把账写进自己的库）。
+    sink = log_sink if log_sink is not None else JsonlLogSink(layout, chain=migration)
     history = History(sink)
     authority = Authority(mode)
     gate = Gate(authority, history, validate=validate)

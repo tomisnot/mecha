@@ -214,7 +214,7 @@ class _FlakySink(InMemorySink):
 
     def precheck(self, record: dict) -> None:
         if (self.fail_precheck_for is not None
-                and record.get("value") == self.fail_precheck_for):
+                and record.get("after") == self.fail_precheck_for):
             raise MechaError("值不可编码（替身）", kind="bad_event_value")
 
     def append(self, record: dict) -> None:
@@ -271,7 +271,7 @@ def check_write_all_or_nothing(out: list[str]) -> None:
         _fail(out, "append 失败竟没抛")
     except OSError:
         pass
-    folded = {e.key: e.value for e in memhist3.events()}
+    folded = {e.target: e.after for e in memhist3.events()}
     if gate3.snapshot == folded:
         _ok("落地期失败（不可预见）⇒ 快照 **== fold(史)**（不变量保住了）")
     else:
@@ -596,12 +596,12 @@ def check_event_ts_and_undoable(out: list[str]) -> None:
     else:
         _fail(out, f"老记录读坏了：ts={old.ts!r} undoable={old.undoable!r}")
     h2 = History(InMemorySink())
-    h2.append("x", 1, "ai", "r", ts="2026-01-01T00:00:00+00:00")
-    h2.append("x", 2, "ai", "r", ts="2025-01-01T00:00:00+00:00")
-    if [e.value for e in h2.events()] == [1, 2]:
+    h2.append_state("x", 1, None, "ai", "r", ts="2026-01-01T00:00:00+00:00")
+    h2.append_state("x", 2, None, "ai", "r", ts="2025-01-01T00:00:00+00:00")
+    if [e.after for e in h2.events()] == [1, 2]:
         _ok("⛔ `seq` 仍是唯一顺序：**ts 回拨也不重排**（不许用 ts 排序/去重）")
     else:
-        _fail(out, f"顺序被 ts 影响了：{[e.value for e in h2.events()]}")
+        _fail(out, f"顺序被 ts 影响了：{[e.after for e in h2.events()]}")
 
 
 def main() -> int:

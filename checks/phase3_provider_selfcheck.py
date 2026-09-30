@@ -263,16 +263,16 @@ def check_codeact_logs_each_subcall(out: list[str]) -> None:
             Action("no_such_op"),
         ], call_id="c1")
         # 逐子调用记日志（Phase 3 补的债）
-        steps = [e for e in hist.events() if e.key.startswith("codeact.")]
+        steps = [e for e in hist.events() if e.op.startswith("codeact.")]
         if len(steps) == 3:
             _ok("每子调用一条 History 记录（含失败步）")
         else:
-            _fail(out, f"记日志条数不符：{[e.key for e in steps]}")
+            _fail(out, f"记日志条数不符：{[e.op for e in steps]}")
         if all(e.actor == "ai" and e.call_id == "c1" for e in steps):
             _ok("子调用日志带通道 actor + call_id（可归因互引）")
         else:
             _fail(out, "子调用日志归因缺失")
-        detail2 = steps[2].value["detail"] if len(steps) > 2 else ""
+        detail2 = steps[2].after["detail"] if len(steps) > 2 else ""
         if r.stopped_at == 2 and "不在能力面" in detail2 and "提示：" in detail2:
             _ok("失败步带教学文本（message + hint 进日志）")
         else:
@@ -305,16 +305,16 @@ def check_codeact_failure_leaves_trace(out: list[str]) -> None:
                      Action("ok_op", {"word": "b"})], call_id="c9")
         except RuntimeError:
             raised = True
-        steps = [e for e in hist.events() if e.key.startswith("codeact.")]
-        if raised and [e.key for e in steps] == ["codeact.0", "codeact.1"]:
+        steps = [e for e in hist.events() if e.op.startswith("codeact.")]
+        if raised and [e.op for e in steps] == ["codeact.0", "codeact.1"]:
             _ok("中途抛普通异常 ⇒ **已跑过的步都在史里**（不再整段无账），且异常**原样抛出**")
         else:
-            _fail(out, f"崩溃留痕不符：raised={raised} steps={[e.key for e in steps]}")
-        if (len(steps) == 2 and steps[1].value["ok"] is False
-                and "RuntimeError" in str(steps[1].value["detail"])):
+            _fail(out, f"崩溃留痕不符：raised={raised} steps={[e.op for e in steps]}")
+        if (len(steps) == 2 and steps[1].after["ok"] is False
+                and "RuntimeError" in str(steps[1].after["detail"])):
             _ok("失败步也留痕，detail 带异常类型名（与 A1 同一判据）")
         else:
-            _fail(out, f"失败步的痕不对：{[e.value for e in steps]}")
+            _fail(out, f"失败步的痕不对：{[e.after for e in steps]}")
         if all(e.call_id == "c9" for e in steps):
             _ok("逐条写仍「整段可识别」：两步共用同一个 call_id（不必新增批 id）")
         else:
@@ -326,11 +326,11 @@ def check_codeact_failure_leaves_trace(out: list[str]) -> None:
         gate2 = Gate(Authority(Mode.AI), hist2, validate=accept_all)
         act2 = CodeAct(Surface(ToyEngine()), hist2, actor_provider=lambda: "ai")
         act2.run([Action("run", {"spec": {"mode": "x"}})], call_id="c10")
-        acts = [e for e in hist2.events() if e.key.startswith("codeact.")]
+        acts = [e for e in hist2.events() if e.op.startswith("codeact.")]
         if gate2.snapshot == {} and len(acts) == 1:
             _ok("`run` 动作**不产生域状态写**（快照空；只在史里留 codeact.* 一条）")
         else:
-            _fail(out, f"run 动作越界：snapshot={gate2.snapshot} 史={[e.key for e in acts]}")
+            _fail(out, f"run 动作越界：snapshot={gate2.snapshot} 史={[e.op for e in acts]}")
 
 
 def main() -> int:

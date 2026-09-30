@@ -113,7 +113,7 @@ class Gate:
         """
         self._authority.gate(channel.side)
 
-    def record(self, key: str, value: object, actor: str, reason: str,
+    def record(self, op: str, target: str, value: object, actor: str, reason: str,
                call_id: str = "", *, undoable: bool | None = None) -> Event:
         """**只记史、不改快照**（`set` 的第 4 步，单独暴露）。
 
@@ -123,8 +123,8 @@ class Gate:
         对审计**本来就没有意义**（同名命令只剩最后一次）。`set` 自己也调它 ⇒ 这一步
         **只有一份语义**。
         """
-        return self._history.append(key, value, actor, reason, call_id,
-                                    undoable=undoable)
+        return self._history.append_history(op, target, value, None, actor, reason,
+                                            call_id, undoable=undoable)
 
     def validate_only(self, key: str, value: object) -> None:
         """**dry-run**：这个值会被写口接受吗（校验 + 预检）——**不落地、不记史**。
@@ -157,8 +157,9 @@ class Gate:
         self._snapshot[key] = value
         try:
             # 5) History.append —— 落地之后才记，带当次 call_id 供互引
-            return self.record(key, value, channel.actor, reason, call_id,
-                               undoable=undoable)
+            return self._history.append_state(
+                key, value, None if prev is _MISSING else prev,
+                channel.actor, reason, call_id, undoable=undoable)
         except BaseException:
             # 写口"全有或全无"：记史没成 ⇒ 快照回到本次之前（含"本来没这个键"）
             if prev is _MISSING:
@@ -181,9 +182,11 @@ class Gate:
         归因上 actor 通常是 'session'/'bootstrap'，区别于 human/ai。
         """
         self._validate(key, value)
+        prev = self._snapshot.get(key, _MISSING)
         self._snapshot[key] = value
-        return self._history.append(key, value, actor, reason, call_id,
-                                    undoable=undoable)
+        return self._history.append_state(
+            key, value, None if prev is _MISSING else prev, actor, reason, call_id,
+            undoable=undoable)
 
     def set_batch(self, channel: Channel, items: dict[str, object], reason: str,
                   call_id: str = "") -> list[Event]:
@@ -211,8 +214,9 @@ class Gate:
         try:
             for key, value in items.items():
                 self._snapshot[key] = value
-                events.append(self._history.append(key, value, channel.actor, reason,
-                                                   call_id))
+                events.append(self._history.append_state(
+                    key, value, None if prevs[key] is _MISSING else prevs[key],
+                    channel.actor, reason, call_id))
                 done.add(key)
         except BaseException:
             # 只回滚"**史里还没有**"的键（史里已有的必须留着，否则快照与 fold(史) 不一致）
