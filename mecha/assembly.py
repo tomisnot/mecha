@@ -1,6 +1,6 @@
 """具名装配点（L6/L7：机制建好必须装配接上，判据从这里取数）。
 
-把稳定脊椎 + Provider 层 + 工具形态层组装成一台可运行的软件实例，并在此
+把软件自己的四件 + Provider 层 + 形状组装成一台可运行的软件实例，并在此
 **声明每个 seam 的角色**（§5.4 交付 1）。capability map 由
 ``scripts/gen_capability_map.py`` 调 ``build_roles()`` 生成——分类是生成的，
 不是手写的。
@@ -78,7 +78,7 @@ class Software:
 
 def declare_roles(roles: RoleRegistry, *, engine_name: str, project: str) -> None:
     """§5.4 交付 1：每个 seam 声明角色。无角色标注的扩展点 = 拒收。"""
-    # 稳定脊椎
+    # 软件自己的四件
     roles.register("gate", Role.DEFINITION, provider=project)
     roles.register("history", Role.DEFINITION, provider=project)
     roles.register("surface", Role.DEFINITION, provider=project)
@@ -111,7 +111,7 @@ def declare_roles(roles: RoleRegistry, *, engine_name: str, project: str) -> Non
                    consumer="adapter.ai")
     roles.register("provider.approval", Role.DEFINITION, provider=project)
     roles.register("provider.approval.local", Role.PROVIDER, provider="fail-closed")
-    # 工具形态层与可见性
+    # 形状与可见性
     roles.register("tools.registry", Role.CONSUMER, consumer="adapter.ai", provider=project)
     # 工具面的宿主传输 seam（定义与传输分开）：Definition 归我们，local 出厂
     # 实现是进程内直调；dsh/MCP 侧注册进 ctx.tools 的是另一个 Provider。

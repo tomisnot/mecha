@@ -56,7 +56,7 @@ output schema——声明"这个工具返回 ``{result: string}``"，而工具**
   本 extra 不 import dsh；宿主自己守（写进"怎么接"的文档，不在这里猜）。
 - **不提供"declare 即注册"的 ``ToolHost`` Provider**：曾有一个 ``McpToolHost``（把
   ``declare`` 的声明逐条注册进服务、``call`` 委托 ``LocalToolHost``），但它今天
-  **没有外部消费者**（只有判据在用）⇒ 按"每条新增必须有具名消费者"删掉，登记在
+  **没有外部消费者**（只有判据在用）⇒ 按"每条新增必须有消费"删掉，登记在
   ADR 的收口轮。**升格触发**：出现"Python 侧要经 MCP 调用远程 mecha 工具"的真实
   消费者时再加（那时 ``ToolHost`` 的远程 Provider 才有意义）。
 - ⛔ **不得假设 ``MCPServer.call_tool()`` 可在进程内直调**。根因（mcp 2.2 实测）：
@@ -341,7 +341,7 @@ def _override_declared_schema(server: MCPServer, name: str,
 
     这里**只**覆写 ``parameters``：``output_schema`` 的"不声明"由合成签名的返回
     注解留空实现（见模块 docstring），wire 层由判据断言——同一条不变式不做两份
-    实现（每一份新增都要有具名消费者；一条冗余置空今天没有）。
+    实现（每一份新增都要有消费；一条冗余置空今天没有）。
     """
     manager = getattr(server, "_tool_manager", None)
     tool = None if manager is None else manager.get_tool(name)

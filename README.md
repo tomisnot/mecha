@@ -1,15 +1,15 @@
 # mecha v2
 
-**这台软件的操作者无关层**：写入门（Gate）、域状态史（History）、能力面
+**人机同门**：写入门（Gate）、账（History）、能力面
 （Surface）、人类监控面（Monitor）。AI 适配器只是它的一个操作者适配器，和
-GUI 平级——不是主子关系。软件不依附 dsh：dsh 消失时，数据、域状态史、监控
+GUI 平级——不是主子关系。软件不依附 dsh：dsh 消失时，数据、账、监控
 面全部照常，只少一个操作者。
 
 ## 四个仓的关系（**框架与用它的项目**）
 
 | 仓 | 是什么 | 它用了 mecha 的哪一面 |
 |---|---|---|
-| **`mecha`**（本仓） | **框架**：操作者无关层 —— Gate 写入门 / History 域状态史 / Surface 能力面 / Monitor 人类监控面 + Provider 层（log_local / jobs / approval / skills / codeact / mcp） | — |
+| **`mecha`**（本仓） | **框架**：人机同门 —— Gate 写入门 / History 账 / Surface 能力面 / Monitor 人类监控面 + Provider 层（log_local / jobs / approval / skills / codeact / mcp） | — |
 | `energy-level` | 物理仿真 | **CodeAct 通道**跑 AI 演化 |
 | `get-paper` | 论文管理与推荐 | **命令面 + 工具面（MCP）** |
 | `ml-toolbox` | 机器学习方法试验台 | **宿主适配 + 面板** |
@@ -53,9 +53,9 @@ mecha @ git+https://github.com/tomisnot/mecha@v0.2.0
 ## 仓库地图
 
 ```
-mecha/          稳定脊椎：gate / history / surface / monitor / authority /
+mecha/          软件自己的四件：gate / history / surface / monitor / authority /
                 cockpit（Monitor 的只读传输）/ portfile（端口发现规则）/
-                tools（工具形态层）/ toolhost（工具定义→宿主传输）/
+                tools（形状）/ toolhost（工具定义→宿主传输）/
                 roles / format_version / data_layout / errors /
                 artifacts（宿主产物托管）+ assembly（具名装配点）
 mecha/providers/  Provider 层（dsh 的 churn 关在这里）：log_local / jobs /

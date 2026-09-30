@@ -1,4 +1,4 @@
-"""History：域状态史（总纲 §5.2②，L2）。
+"""History：账（总纲 §5.2②，L2）。
 
 append-only：只追加、永不改写；seq 单调递增；可从盘上续。它是软件自己的
 资产，与操作者无关——人操作时也写，必须能在 dsh 消失后独立工作。
@@ -29,7 +29,7 @@ from .errors import MechaError
 
 @dataclass(frozen=True)
 class Event:
-    """一条域状态史事件（append-only 的单位）。"""
+    """一条账事件（append-only 的单位）。"""
 
     seq: int
     key: str
@@ -94,7 +94,7 @@ def fold(events: Iterable[Event]) -> dict[str, object]:
 
 
 class History:
-    """域状态史句柄。append 是唯一写口，且只追加。"""
+    """账句柄。append 是唯一写口，且只追加。"""
 
     def __init__(self, sink: LogSink | None = None) -> None:
         self._sink = sink

@@ -160,7 +160,7 @@ def check_provider_layer_has_one_locator(out: list[str]) -> None:
     的 `:9` locator 不含路径分隔符、`:14` 未知/畸形 ⇒ `bad_artifact_locator`、
     `:100` `check_opaque_locator`、`:193` 非教学错误即红）。
     ⇒ 删它**不留真空**。本组只做一条**便宜的重复面核对**：模块级不再有第二套
-    "带阈值的落盘"入口（谁要造第三套，得先有具名消费者 + ADR；R13：不写"那个
+    "带阈值的落盘"入口（谁要造第三套，得先有消费 + ADR；R13：不写"那个
     东西必须不存在"的实现痕迹守卫，只核对**可观测的服务面**）。
     """
     import mecha.providers as providers

@@ -75,7 +75,7 @@ class Channel:
 
 
 class Gate:
-    """写入门。持有快照 + 域状态史，唯一写口是 set。"""
+    """写入门。持有快照 + 账，唯一写口是 set。"""
 
     def __init__(
         self,

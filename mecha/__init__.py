@@ -1,6 +1,6 @@
-"""mecha v2 —— 这台软件的操作者无关层（总纲 §1.3）。
+"""mecha v2 —— 人机同门（总纲 §1.3）。
 
-稳定脊椎四件：Gate（写入门）/ History（域状态史）/ Surface（能力面）/
+软件自己的四件：Gate（写入门）/ History（账）/ Surface（能力面）/
 Monitor（人类监控面）。操作者适配器（GUI、AI）与 Provider 层在其外。
 
 ``cockpit`` 是 Monitor 这一层的**只读传输**（零依赖、默认只绑回环），

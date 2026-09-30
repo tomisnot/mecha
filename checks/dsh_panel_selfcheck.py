@@ -9,7 +9,6 @@
 ## ⚠ 硬依赖 `node`（**缺即红，不软跳过**）
 
 "有 node 就跑、没有就跳过"正是 D 系列/R10 明令禁止的"**存在但从不执行**"的假绿。
-本仓**早有同族硬依赖**：`phase5_*` 直接 import EL 仓的 `mecha_v2`（**缺 EL 即红**）。
 ⇒ mecha 的**完整门禁需要 `node`**（这是本条的代价，已如实写进根 `README.md` 与本目录
 `README.md`）。没有 node 时**不会**假装通过。
 
@@ -38,7 +37,7 @@ src/panel/panel-data.ts(167,53): error TS2304: Cannot find name 'ConfigWire'.
 返回类型时**漏了 import** ⇒ 运行时被剥掉、**自测全绿**，而**消费者一跑 `npm run typecheck` 就红**。
 ⇒ **资产发布了框架自己无法检查的代码，第一个消费者付账**——所以本判据现在**借消费者的
 `tsc`**（`<项目>/dsh/node_modules/typescript`，与 `phase5_*` 硬编码 EL 仓根同族先例）
-跑一遍 `--strict --noUncheckedIndexedAccess`（含 `.tsx`）。**缺 tsc 即红，不软跳过。**
+跑一遍 `--strict --noUncheckedIndexedAccess`（含 `.tsx`）。
 
 ⚠ **它第一次跑就抓到了本判据作者自己的 5 处类型错**（`panel-data.test.ts` 里
 `extras.ok` 在 `noUncheckedIndexedAccess` 下是 `… | undefined`）——**这就是这条守卫的价值**。
@@ -169,8 +168,7 @@ def check(panel_dir: Path = PANEL_DIR) -> tuple[int, list[str]]:
     node = _node()
     if node is None:
         lines.append(f"[dsh_panel] 面板资产：{panel_dir}")
-        lines.append("[dsh_panel] 找不到 node：完整门禁需要它跑这份资产的自测"
-                     "（本仓另有同族硬依赖：phase5_* 需要 EL 仓）")
+        lines.append("[dsh_panel] 找不到 node：完整门禁需要它跑这份资产的自测")
         lines.append("dsh_panel_selfcheck: FAIL —— 环境缺硬依赖 node"
                      "（**不是框架 Python 故障**）：装上 node 后重跑；"
                      "若确实要移除本条目，那是**放弃**这份资产的自测覆盖（R10）")

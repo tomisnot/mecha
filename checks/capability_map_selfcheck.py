@@ -62,7 +62,7 @@ def check_roles_declared(out: list[str]) -> None:
         _fail(out, f"无合法角色标注的扩展点：{unlabeled}")
     else:
         _ok(f"全部 {len(entries)} 个能力都有 role（交付 1）")
-    # 每个能力至少一条声明；抽查已知脊椎件在表里
+    # 每个能力至少一条声明；抽查已知正职件在表里
     names = {e.name for e in entries}
     for spine in ("gate", "history", "surface", "monitor"):
         if spine in names:
@@ -362,7 +362,7 @@ def check_runtime_graph_matches(out: list[str]) -> None:
     else:
         print("  · 跳过（缺 EL 仓）：bridge surface 穿线核对（结论只能由 EL 的 bridge.py 证）")
 
-    # C：L7 对偶——裸建的表确实缺声明表的脊椎条目（守卫不是永远绿的哑守卫）
+    # C：L7 对偶——裸建的表确实缺声明表的正职条目（守卫不是永远绿的哑守卫）
     bare = {(e.name, e.role.value) for e in Surface(Toy()).roles.entries()}
     if "gate" not in bare and not declared <= bare:
         _ok("守卫自测：裸建 Surface 的表缺脊椎件（漂回裸建必被 A 抓）")

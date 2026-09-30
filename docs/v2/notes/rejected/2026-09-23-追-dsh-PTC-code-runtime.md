@@ -20,5 +20,5 @@ v1 有自研 `codeact.py`。dsh 有 code-runtime seam（`ctx.codeRuntime`）+ wo
 
 ## Alternatives considered
 
-**否决：现在就换。** 会把 churn 越过 Provider 层灌进稳定脊椎（违反硬纪律 6）。
+**否决：现在就换。** 会把 churn 越过 Provider 层灌进软件自己的四件（违反硬纪律 6）。
 **否决：删自研不补。** 丢掉 CodeAct 能力，Phase 4"像手脚"的判据受损。
