@@ -15,7 +15,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 
 from .commands import CommandSpec
@@ -62,19 +62,17 @@ def _declared_required(spec: CommandSpec) -> list[str]:
     return []
 
 
-def _not_wired(**kwargs):
-    raise MechaError(
-        "投影只给**声明面**：这个工具的 execute 还没接线",
-        kind="projection_execute_not_wired",
-        hint="宿主把命令面调用包一层当 execute（如 commands.invoke 的薄包装）",
-    )
-
-
-def project(spec: CommandSpec, *, overrides: ProjectionOverrides | None = None,
+def project(spec: CommandSpec, *, execute: Callable[..., Mapping[str, object]],
+            overrides: ProjectionOverrides | None = None,
             policy: ScopePolicy | None = None,
             required_source: Mapping[str, Sequence[str]] | None = None,
             side: str = "ai") -> ToolDefinition | None:
-    """把一条 ``CommandSpec`` 投影成 ``ToolDefinition``；**返回 None = 按 policy 不投影**。"""
+    """把一条 ``CommandSpec`` 投影成 ``ToolDefinition``；**返回 None = 按 policy 不投影**。
+
+    ⚠ ``execute`` **必填、无默认值**：投影的产物**必定可调**，不存在"未接线"的中间态
+    （"列得出、调不动"是本项目列过的六大缺陷类之一，抓到它的往往是**另一个仓的判据**
+    ⇒ 缝的形状不该邀请它）。忘了给 ⇒ **构造期**就抛（``TypeError``），不是运行时才炸。
+    """
     ov = overrides or ProjectionOverrides()
     scope = tuple(ov.scope) if ov.scope is not None else tuple(spec.scope)
     if policy is not None and scope and not all(policy.allows(side, s) for s in scope):
@@ -103,7 +101,7 @@ def project(spec: CommandSpec, *, overrides: ProjectionOverrides | None = None,
         description=ov.description if ov.description is not None else spec.description,
         parameters=params,
         output_schema=spec.output_schema,
-        execute=_not_wired,
+        execute=execute,
         # WARN 这里是**翻译**（kind="write" 能无损翻回 side_effect=True）；凡「翻不回去」的
         # 派生都是**判断** ⇒ 禁止（框架不许替项目判语义）。第三档 read_telemetry 派生不出来，
         # **只能从 overrides 进**。
