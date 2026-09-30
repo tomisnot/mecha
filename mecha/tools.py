@@ -105,6 +105,12 @@ class ToolDefinition:
     parameters: Mapping[str, object]
     output: ToolOutput
     execute: Callable[..., Mapping[str, object]] = field(repr=False, default=None)  # type: ignore[assignment]
+    #: 档位（**一处声明、透传到底**）：read / write / read_telemetry …（宿主面，不进模型可见面）
+    kind: str = ""
+    #: 与 ``CommandSpec.scope`` 同源（投影期按 ScopePolicy 过滤的依据）
+    scope: tuple[str, ...] = ()
+    #: 可逆性：**三态**（None = 未声明），与 ``Event.undoable`` 同一口径
+    reversible: bool | None = None
 
 
 def define_tool(
@@ -117,6 +123,9 @@ def define_tool(
     render: Callable[[Mapping[str, object], Mapping[str, object]], list[Mapping[str, object]]] | None = None,
     banned_prefixes: tuple[str, ...] | None = None,
     banned_words: tuple[str, ...] = (),
+    kind: str = "",
+    scope: tuple[str, ...] = (),
+    reversible: bool | None = None,
 ) -> ToolDefinition:
     """构造即校验：坏形状的工具根本注册不出来（门在执行器上）。"""
     check_tool_name(name, banned_prefixes=(OWN_PACKAGE,) if banned_prefixes is None else banned_prefixes)
@@ -148,7 +157,8 @@ def define_tool(
         name=name, description=description, parameters=dict(parameters),
         output=ToolOutput(schema=dict(output_schema), render=render or _render),
         execute=execute,
-    )
+    
+        kind=kind, scope=tuple(scope), reversible=reversible)
 
 
 class ToolRegistry:

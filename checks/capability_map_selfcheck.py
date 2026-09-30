@@ -539,6 +539,13 @@ _declare("ToolDefinition.output", "consumed", sym="output",
          files=("mecha/tools.py",), crit="check_output_contract")
 _declare("ToolDefinition.execute", "consumed", sym="execute",
          files=("mecha/tools.py",), crit="check_error_shape")
+_declare("ToolDefinition.kind", "deferred",
+         note="由 mecha/projection.py 的 project() 发出（一处声明、透传到底）；"
+              "今天框架内没有消费者与判据（演示脚本不算判据）⇒ 如实登记 deferred")
+_declare("ToolDefinition.scope", "deferred",
+         note="同 kind：投影期按 ScopePolicy 过滤的依据；今天框架内无消费者")
+_declare("ToolDefinition.reversible", "deferred",
+         note="三态（None = 未声明）；今天框架内无消费者")
 
 # ---- Mode（写权模式）----
 _declare("Mode.HUMAN", "consumed", sym="switch_mode",
