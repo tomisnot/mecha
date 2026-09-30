@@ -5,8 +5,7 @@
 **运行时 ``ScopePolicy.check`` = 做了也拒**（行为级）。本模块只管前者。
 ## Known Limitations and Deferred Work
 
-- 只投**声明面**（名字 / 文案 / 参数 / 档位 / scope / 可逆性）：``execute`` 由宿主接线
-  （投影出来的工具调它会得到 ``projection_execute_not_wired`` 的教学错误）。
+- 只投**声明面**（名字 / 文案 / 参数 / 档位 / scope / 可逆性）：``execute`` **必填**，由调用方给。
 - ``render`` 走 ``define_tool`` 的默认实现；**输出形状的呈现**归宿主（本模块不解释值语义）。
 - 漂移检查需要**独立来源**（``required_source``）：只给声明时它无从对账 —— 那是有意的
   （框架不猜谁对）。
@@ -62,6 +61,18 @@ def _declared_required(spec: CommandSpec) -> list[str]:
     return []
 
 
+def projected_required(spec: CommandSpec, *,
+                       overrides: ProjectionOverrides | None = None) -> tuple[str, ...]:
+    """投影后**仍然必填**的参数名（剔掉 ``actor`` 与 ``omit_params``）。
+
+    ⚠ 工具面的 ``parameters`` 是属性表、**没有 required 槽位** ⇒ 必填由宿主交给它的
+    ``required_source``（线上 ``required`` 归宿主签名层）。这个出口就是为此存在的。
+    """
+    ov = overrides or ProjectionOverrides()
+    omit = set(NEVER_PROJECT_PARAMS) | set(ov.omit_params)
+    return tuple(k for k in _declared_required(spec) if k not in omit)
+
+
 def project(spec: CommandSpec, *, execute: Callable[..., Mapping[str, object]],
             overrides: ProjectionOverrides | None = None,
             policy: ScopePolicy | None = None,
@@ -95,7 +106,10 @@ def project(spec: CommandSpec, *, execute: Callable[..., Mapping[str, object]],
     for k in omit:
         props.pop(k, None)
     kept_required = [k for k in declared if k not in omit]
-    params = {**dict(spec.parameters), "properties": props, "required": kept_required}
+    # ⚠ **两面不同形**：命令面 ``parameters`` 是**完整 JSON Schema**（type/properties/required），
+    # 而工具面 ``define_tool`` 要的是**逐键的属性表**（``{参数名: 声明}``；线上按属性表逐键读）
+    # ⇒ 投影这一步**必须转对**，不能原样搬运（否则 type/properties/required 会变成三个参数名）。
+    params = {k: v for k, v in props.items()}
     return define_tool(
         name=name,
         description=ov.description if ov.description is not None else spec.description,
