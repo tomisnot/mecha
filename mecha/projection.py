@@ -39,6 +39,10 @@ class ProjectionOverrides:
     omit_params: tuple[str, ...] = ()
     kind: str | None = None
     scope: tuple[str, ...] | None = None
+    #: 可逆性：**只从这个口进来**（项目的域知识），框架**不许**从别的字段推
+    #: （``cancel_supported`` 是"运行期能不能中途取消"，与"这次改动能不能撤"不等价
+    #:  ⇒ 拿 A 冒充 B 就是**假契约**）
+    reversible: bool | None = None
 
 
 def projected_name(name: str, *, overrides: ProjectionOverrides | None = None) -> str:
@@ -102,5 +106,5 @@ def project(spec: CommandSpec, *, overrides: ProjectionOverrides | None = None,
         execute=_not_wired,
         kind=ov.kind if ov.kind is not None else ("write" if spec.side_effect else "read"),
         scope=scope,
-        reversible=spec.cancel_supported if hasattr(spec, "cancel_supported") else None,
+        reversible=ov.reversible,          # ⚠ 只认 overrides：没给就是 None（未声明）
     )
