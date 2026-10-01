@@ -16,7 +16,7 @@
  * 由 TypeScript 的结构化类型自动接受项目传进来的真 `Context`。
  * ⇒ 资产**零 `@deepseek-ai/*` 依赖**（连类型都没有），换宿主版本时不必跟着改。
  */
-import type { MechaMcpBridge, ToolDef } from './mcp-bridge.ts'
+import type { MechaMcpBridge, ToolDef } from '../mcp-bridge.ts'
 
 /** 已注册工具的 disposer 表（public name → 注销函数）。 */
 export type ToolDisposers = Map<string, () => void>

@@ -11,7 +11,7 @@
  */
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
-import type { McpSession, SessionFactory, ToolDef } from './mcp-bridge.ts'
+import type { McpSession, SessionFactory, ToolDef } from '../mcp-bridge.ts'
 
 export interface HttpSessionOptions {
   /**

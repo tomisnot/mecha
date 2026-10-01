@@ -41,6 +41,7 @@ test('⭐ client 半的 **import 闭包里没有 `node:`**（浏览器安全靠�
   const dir = dirname(fileURLToPath(import.meta.url))
   const seen = new Set<string>()
   const nodeHits: string[] = []
+  const escapes: string[] = []
   const bareHits: string[] = []
   // client 半的入口（含面板层；`.tsx` 壳也在内——它只许 import react）
   const queue = ['monitor-client.ts', 'panel-config.ts', 'panel-data.ts',
@@ -66,7 +67,10 @@ test('⭐ client 半的 **import 闭包里没有 `node:`**（浏览器安全靠�
       // `?? ''`：严格 tsconfig（noUncheckedIndexedAccess）下 `m[1]` 是 `string | undefined`
       const spec = m[1] ?? ''
       if (spec.startsWith('node:')) { nodeHits.push(`${rel} → ${spec}`); continue }
+      // ⚠ **`../` 也要单独报**：本检查此前只跟 `./`，于是 `import '../host/x.ts'`
+      //   会被**静默忽略**——而那正是"两半串味"的写法（2026-10-01 修）。
       if (spec.startsWith('./')) { queue.push(spec.slice(2)); continue }
+      if (spec.startsWith('../')) { escapes.push(`${rel} → ${spec}`); continue }
       if (!ALLOWED_BARE.has(spec)) bareHits.push(`${rel} → ${spec}`)
     }
   }
@@ -76,14 +80,17 @@ test('⭐ client 半的 **import 闭包里没有 `node:`**（浏览器安全靠�
   assert.deepEqual(bareHits, [],
     `client 半 import 了非白名单的裸包：${bareHits.join('、')}`
     + ' ⇒ 资产只许依赖宿主注入的 react（以及相对路径）')
+  // ⚠ **panel 面不许"向外"走**：`../` 的目标都在本目录之外（`host/` 或根），
+  //   而"面板够到 node-only 件"正是这条边界唯一要防的事。
+  //   （反过来 host 用 `../panel/*` 是**允许**的——host 是上面那一层。）
+  assert.deepEqual(escapes, [],
+    `panel 面出现了向外的相对 import：${escapes.join('、')}`
+    + ' ⇒ panel 是叶子层，它只许 import 本目录内的件（node-only 的归 host 面）')
   // R8 自证：闭包必须**真的走过了几个文件**，否则"没命中"只是因为什么都没读到
   assert.ok(seen.size >= 5, `闭包只走了 ${seen.size} 个文件 ⇒ 检查可能没生效：${[...seen]}`)
   for (const must of ['routes.ts', 'panel-view.ts', 'MonitorTabBody.tsx']) {
     assert.ok(seen.has(must), `闭包里应当有 ${must}：${[...seen]}`)
   }
-  // 对偶（不许误报）：**node 半必须仍然依赖 node** —— 否则上一条会因为"没东西可抓"而变空洞
-  const nodeHalf = readFileSync(join(dir, 'monitor-url.ts'), 'utf8')
-  assert.match(nodeHalf, /from 'node:fs'/, 'node 半应当 import node:fs（否则本检查没有可抓之物）')
 })
 
 /** fetch 替身：按 path 决定回什么，并**记下每次调用**（判据据此自证注入生效）。 */

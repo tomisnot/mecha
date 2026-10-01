@@ -42,8 +42,8 @@ client 半 fetch 同源路由拿到地址。本目录就是这一层 + 取数骨
 
 | 类 | 件 | 谁用 |
 |---|---|---|
-| **默认件**（面板 + 地址路由） | `panel-config.ts`（**注入点**）/ `routes.ts` / `panel-view.ts` / `panel-data.ts` / `MonitorTabBody.tsx` / `monitor-client.ts` / `monitor-url.ts` + 各 `.test.ts` | **所有要"人看监控面"的项目**——这是"面板进 dsh"的最小闭环 |
-| **opt-in 件**（自愈桥 + 工具注册 + **host 半骨架**） | `mcp-bridge.ts` / `mcp-session-http.ts` / `config.ts` / `register-tools.ts` / `mount-host-plugin.ts` / `mcp-sdk-shims.d.ts` / `cordis-shims.d.ts` | **要让 dsh 里的 AI 原生调自家工具**的项目；**不调就不用**（装了包也不进 bundle） |
+| **默认件**（面板 + 地址路由） | `panel/panel-config.ts`（**注入点**）/ `panel/routes.ts` / `panel/panel-view.ts` / `panel/panel-data.ts` / `panel/MonitorTabBody.tsx` / `panel/monitor-client.ts` / **`host/monitor-url.ts`**（地址路由的 handler **住 host 面**，因为它 node-only；但**每个**要用面板的项目都要它）+ 各 `.test.ts` | **所有要"人看监控面"的项目**——这是"面板进 dsh"的最小闭环 |
+| **opt-in 件**（自愈桥 + 工具注册 + **host 半骨架**） | `mcp-bridge.ts`（根）/ `host/mcp-session-http.ts` / `host/config.ts` / `host/register-tools.ts` / `host/mount-host-plugin.ts` / `host/mcp-sdk-shims.d.ts` | **要让 dsh 里的 AI 原生调自家工具**的项目；**不调就不用**（装了包也不进 bundle） |
 
 ⚠ **按总纲 §5.3「nothing ships enabled」：桥不许默认带。** 实测已有一家明确**不**用它
 （ML 的 `dsh/src/index.ts:29-31` 自述）。⇒ 判定标准是"这个项目**用不用**"，
@@ -157,9 +157,14 @@ node_modules 里的" peer，cordis 是宿主提供的、消费者那里根本没
 - cast 本身**消不掉**——真 `Context` 在结构上**不可能**等于 `HostContext`（它是宿主自有形状）；
 - 写成 `asHostContext(ctx)` 只是把同一个 cast 从项目挪进资产，**没有减少任何东西**，
   却新增一个导出面（正是"能靠结构就别加机制"要避免的）。
-⇒ **项目各自 cast 一次就够。** 若某项目的 dsh 类型垫片**自己缺成员**（例如没声明
-`ctx.inject`）或把宿主形状写得过窄 ⇒ **那是它垫片该补的**，不是资产的问题；
-**不要**为了迁就某个垫片而放宽资产自己的接口。
+⇒ **项目各自 cast 一次就够。**
+
+⭐ **但项目的宿主类型垫片该自己补全**（实测：EL 的 `dsh/types/dsh-shims.d.ts` 的 `Context`
+**没有声明 `ctx.inject`**）⇒ 那句 `ctx as unknown as HostContext` 里的 `unknown`
+**掩盖的是"垫片漏声明"**，不是骨架缺陷。
+⚠ **垫片该补**：把宿主真实提供的成员（至少 `inject`）声明上去；
+**不要**为此放宽资产自己的接口——资产只认它真正用到的那一片，
+那正是它敢**零 import 宿主类型**的前提。
 
 ## ⭐ 参数表：项目值**注入**进来（资产零项目字面量）
 
@@ -189,12 +194,12 @@ configurePanel({
 | `mcp-bridge.ts` | `BridgeOptions.logLabel` | `'mcp-bridge'` | 日志前缀（`[<label>] …`）；项目填自己的名字 |
 | `mcp-bridge.ts` | `BridgeOptions.offlineHint` | `'请确认软件已启动；工具仍在列表但暂不可用。'` | 断联指引；"怎么把软件重新起来"是**项目知识** |
 | `mcp-bridge.ts` | `BridgeOptions.reconnect` | `initialDelayMs=300` / `maxDelayMs=15000` / `growFactor=1.5` / `maxAttempts=0`(无限) | 退避重连 |
-| `mcp-session-http.ts` | `HttpSessionOptions.clientInfo` | `{ name: 'mcp-bridge-dsh', version: '0.1.0' }` | initialize 上报的客户端标识 |
-| `config.ts` | `HubUrlConfig.defaultUrl` | `''`（**不猜端口**） | 端口文件读不到时的默认端点（**项目值**） |
-| `config.ts` | `HubUrlConfig.path` | `'/mcp'` | 端点路径 |
-| `config.ts` | `HubUrlConfig.mcpPortFile` | 未给（不读文件） | 端口文件路径（**项目值**：文件名归项目） |
-| `register-tools.ts` | `syncTools(..., serverName)` | 必填 | 工具公开名 = `mcp__<serverName>__<rawName>` |
-| `register-tools.ts` | `SyncToolsOptions.logLabel` | `'mcp-bridge'` | 工具注册失败的日志前缀（**通常与桥传同一个值**） |
+| `host/mcp-session-http.ts` | `HttpSessionOptions.clientInfo` | `{ name: 'mcp-bridge-dsh', version: '0.1.0' }` | initialize 上报的客户端标识 |
+| `host/config.ts` | `HubUrlConfig.defaultUrl` | `''`（**不猜端口**） | 端口文件读不到时的默认端点（**项目值**） |
+| `host/config.ts` | `HubUrlConfig.path` | `'/mcp'` | 端点路径 |
+| `host/config.ts` | `HubUrlConfig.mcpPortFile` | 未给（不读文件） | 端口文件路径（**项目值**：文件名归项目） |
+| `host/register-tools.ts` | `syncTools(..., serverName)` | 必填 | 工具公开名 = `mcp__<serverName>__<rawName>` |
+| `host/register-tools.ts` | `SyncToolsOptions.logLabel` | `'mcp-bridge'` | 工具注册失败的日志前缀（**通常与桥传同一个值**） |
 
 ## ⚠ 类名不是项目参数（**别每个项目改一次**）
 
@@ -206,54 +211,102 @@ configurePanel({
 
 ## ⚠ 依赖口径（如实写）
 
-* **用桥的项目**需要 `@modelcontextprotocol/sdk`（`mcp-session-http.ts` 是**唯一** import 它的地方）。
-* **框架仓不装它** ⇒ 靠 `mcp-sdk-shims.d.ts`（纯 `declare`，运行时被完全擦除）做**独立类型检查**。
+* **用桥的项目**需要 `@modelcontextprotocol/sdk`（`host/mcp-session-http.ts` 是**唯一** import 它的地方）。
+* **框架仓不装它** ⇒ 靠 `host/mcp-sdk-shims.d.ts`（纯 `declare`，运行时被完全擦除）做**独立类型检查**。
 * ⇒ **该垫片是"口径依赖"**：签名按"本资产实际调用姿势"写，**比真 SDK 宽松**；
   真 SDK 若改签名，**它不会自动红**。兜底是**用桥项目的 `npm run typecheck` + 真机冒烟**。
 
-## 目录内容
+## 入口与目录（**按入口分开**，2026-10-01）
 
-| 文件 | 是什么 | 浏览器安全？ |
+两个入口 + 一个根：
+
+| 入口 | 谁 import | peer | 里面有什么 |
+|---|---|---|---|
+| **`@mecha/dsh-panel/panel`** | **浏览器 client 半**（面板） | `react` | 面板的全部（见下表，**全部浏览器安全**） |
+| **`@mecha/dsh-panel/host`** | dsh 插件的 **host 半** | `@modelcontextprotocol/sdk` | 插件骨架 / 工具注册 / 端点解析 / SDK 会话 |
+| 根（`@mecha/dsh-panel/mcp-bridge.ts`） | **两半都会用** | 无 | 自愈桥（纯逻辑：零 import） |
+
+⭐ **"把 node-only 带进浏览器 bundle"在入口上不可表达**：包只发布 `./panel/*` 与 `./host/*`
+两个面，`panel` 侧**够不到** `host`。反向是**允许**的——`host` 是上面那一层。
+
+> 临时消费者实测（junction 装包 + `--strict --noUncheckedIndexedAccess` + `preserveSymlinks`）：
+> `'@mecha/dsh-panel/panel'` ⇒ **0 错**；`'@mecha/dsh-panel/host/mount-host-plugin.ts'` ⇒ **0 错**；
+> `'@mecha/dsh-panel/panel/config.ts'` ⇒ **TS2307**（那条路**不可表达**）。
+
+⚠ **`panel/` 与 `host/` 里不许有同名文件**：那样 `@mecha/dsh-panel/panel/x.ts` 会解析到 panel 那份，
+消费者可能"以为自己 import 的是 host 那个"。⇒ **文件唯一命名域**。⚠ 但这**不是全序**：
+`config.ts` 事实上唯一（只有 host 有），而**测试文件名在根与 panel 面重复**
+（`monitor-client.test.ts` 等）——它们各自只被本目录引用，不构成歧义。
+⇒ 这条不建判据（件很少、真重名会在 import 处立刻暴露），**但新件要放进它正确的那一半**。
+
+### `panel/`（浏览器安全；host 与客户端都用）
+
+| 文件 | 是什么 |
+|---|---|
+| `panel/panel-config.ts` | ⭐ **参数注入点**：`configurePanel({routePath, portFile, title, tabs?})` + `panelConfig()`（**未注入即抛**）。⚠ 两半都用它（host 注入面板参数也走这里）⇒ 住 panel 面（它本身浏览器安全），**不单开第三个入口**——那只会让两半又多一处要同步的地方 |
+| `panel/routes.ts` | **浏览器安全的共享常量**：`DEFAULT_ROUTE_PATH` / `BASIC_ROUTES`（零 import） |
+| `panel/monitor-client.ts` | 管道：同源取址 `fetchMonitorBase` + `readJson` + **错误档位** + **R8 非退化自证** + **`panelState` 归约（让空白不可表达）** |
+| **`panel/panel-data.ts`** | **面板数据层**：`loadPanel`（含附加页取数）+ `stateText`/`stateBadge`/`modeOf`/`selfCheckLine` + `eventsOf`/`configOf` + `tabLabel` |
+| **`panel/panel-view.ts`** | **面板视图层（纯字符串生成）**：`esc`/`fmtVal`/`recPageHtml`/`cfgPageHtml`/`extraPageHtml`/`tabsHtml`/`badgeHtml` + `TAB_CSS` |
+| **`panel/MonitorTabBody.tsx`** | **壳**（~110 行）：轮询 + CSS 注入 + 事件委托 + 一次 `dangerouslySetInnerHTML`。**唯一需要 react 的地方** |
+| `host/monitor-url.ts` | 地址路由：`resolveMonitorBase` / `sendJson` / `makeMonitorUrlHandler`。⚠ **node-only**（`node:fs` 读端口文件 + `node:path` + `node:http` 的类型）⇒ 归 host 面。**但它相对两个消费者都要用**：host 半注册路由用它，`monitor-client.ts` 的**注释**引用过它当年的缺陷；面板侧**运行时不 import 它** |
+| `panel/index.ts` | **入口**（`exports` 的 `./panel`）：把上面这些重新导出一次，供"不带后缀"的写法 |
+
+### `host/`（node-only；只有 host 半用）
+
+| 文件 | 是什么 |
+|---|---|
+| `host/mount-host-plugin.ts` | ⭐ **插件骨架** `mountHostPlugin(...)`（见上文） |
+| `host/register-tools.ts` | **工具注册**：`syncTools` / `buildDefinition` / `publicToolName`（两阶段 swap；**零 `@deepseek-ai/*`**，用结构化最小接口吃宿主 ctx） |
+| `host/config.ts` | **端点解析**：`resolveHubUrl`（显式 URL > 端口文件 > 项目默认，**缺省不猜端口**）+ `buildRequestInit`；`node:fs/promises` |
+| `host/mcp-session-http.ts` | ⭐ **唯一 import `@modelcontextprotocol/sdk` 的地方**：`httpSessionFactory`（每次建会话都拿**新** session） |
+| `host/mcp-sdk-shims.d.ts` | **口径依赖**：MCP SDK 的最小**类型垫片**（纯 `declare`，运行时零依赖） |
+| `host/index.ts` | **入口**（`exports` 的 `./host`） |
+
+⚠ **`mcp-bridge.ts` 住根**：它是**纯逻辑**（零 import），两半都会用；放任何一半都会逼另一半
+"穿过"边界去取它。⇒ **"纯"与"node-only"不是一回事**：`host/mcp-session-http.ts` 也**不碰 `node:`**
+（只碰 SDK），结构上浏览器安全，但它只会把 SDK 拖进 bundle ⇒ **归 host 面**（这是设计选择，写在这里定死）。
+
+| 测试 | 归哪一半 | 为什么 |
 |---|---|---|
-| `panel-config.ts` | ⭐ **参数注入点**：`configurePanel({routePath, portFile, title, tabs?})` + `panelConfig()`（**未注入即抛**）。⚠ 旧版这里是"项目专有的参数块文件"——依赖化后**项目不能再改资产文件**，故改为注入 | ✅ 是 |
-| `routes.ts` | **浏览器安全的共享常量**：`DEFAULT_ROUTE_PATH` / `BASIC_ROUTES` | ✅ 是 |
-| `monitor-client.ts` | 管道：同源取址 `fetchMonitorBase` + `readJson` + **错误档位** + **R8 非退化自证** + **`panelState` 归约（让空白不可表达）** | ✅ 是 |
-| **`panel-data.ts`** | **面板数据层**：`loadPanel`（含附加页取数）+ `stateText`/`stateBadge`/`modeOf`/`selfCheckLine` + `eventsOf`/`configOf` + `tabLabel` | ✅ 是 |
-| **`panel-view.ts`** | **面板视图层（纯字符串生成）**：`esc`/`fmtVal`/`recPageHtml`/`cfgPageHtml`/`extraPageHtml`/`tabsHtml`/`badgeHtml` + `TAB_CSS` | ✅ 是 |
-| **`MonitorTabBody.tsx`** | **壳**（~110 行）：轮询 + CSS 注入 + 事件委托 + 一次 `dangerouslySetInnerHTML`。**唯一需要 react 的地方** | ✅ 是（import `react`） |
-| `monitor-url.ts` | host 侧地址路由：`resolveMonitorBase` / `sendJson` / `makeMonitorUrlHandler` | ⛔ **否（node-only）** |
-| `mcp-bridge.ts` | **opt-in · 自愈 MCP 桥**：`MechaMcpBridge`（session 失效/连不上 ⇒ 拆旧连接 → 重新 initialize → 重试一次）+ `isSessionInvalidError` / `isConnectionError` | ⛔ **否（node-only）** |
-| `mcp-session-http.ts` | **opt-in · 唯一 import `@modelcontextprotocol/sdk` 的地方**：`httpSessionFactory`（每次建会话都拿**新** session） | ⛔ **否（node-only）** |
-| `config.ts` | **opt-in · 端点解析**：`resolveHubUrl`（显式 URL > 端口文件 > 项目默认，**缺省不猜端口**）+ `buildRequestInit`（远程鉴权头） | ⛔ **否（node-only，读文件）** |
-| `register-tools.ts` | **opt-in · 工具注册**：`syncTools` / `buildDefinition` / `publicToolName`（两阶段 swap；**零 `@deepseek-ai/*` 依赖**，用结构化最小接口吃宿主 ctx） | ✅ 是（只用结构化类型，无 `node:` / 无宿主类型 import） |
-| `mcp-sdk-shims.d.ts` | **口径依赖**：`@modelcontextprotocol/sdk` 的最小**类型垫片**（纯 `declare`，运行时零依赖）。⚠ 它**不是运行时依赖** | —（纯类型） |
-| `*.test.ts` | **共享单测**（随实现一起复制；`.ts` 层被 `node:test` 逐档覆盖，含桥的状态机） | —（Node 侧跑） |
-| `README.md` | 本文件（约定与纪律） | — |
+| `panel/*.test.ts` | **panel** | 按"**被测的件在哪一半**"归置，不按"用什么跑"——它们用 `node:test` 跑，但测的是浏览器安全的件 |
+| `host/mount-host-plugin.test.ts` | **host** | 被测的件在 host |
+| `mcp-bridge.test.ts` | **根** | 被测的件在根 |
 
 ## ⭐⭐ 谁能在浏览器里 import：**这条边界是硬约束**
 
-> **client 半（浏览器 bundle）只许 import：`monitor-client.ts`、`panel-config.ts`、`routes.ts`、
-> `panel-data.ts`、`panel-view.ts`、`MonitorTabBody.tsx`，以及宿主注入的 `react` /
-> `react/jsx-runtime`。**
-> **`monitor-url.ts` 是 node-only**（顶层 `node:fs` / `node:path`）——**client 半不许 import 它**，
-> 也**不许**从它取值导入常量。
-> ⚠ **其它裸包名一律不许**（这条也已机械化：闭包守卫会红）。
+> **client 半（浏览器 bundle）只许 import `@mecha/dsh-panel/panel` 下的东西，以及宿主注入的
+> `react` / `react/jsx-runtime`。**
+> **不许** import `../host/*`（那是 node-only 的一半），也不许从根上除桥以外的件取值。
+> ⚠ **其它裸包名一律不许**。
 
 **为什么把这条写成硬约束**（2026-09-26 的真实缺陷，原生消费者报回来的）：
-`monitor-client.ts` 原先从 `monitor-url.ts` 取值导入 `BASIC_ROUTES`，于是**浏览器 bundle 里
-进了 `node:fs` ⇒ 加载即失败**（`esbuild --bundle --platform=browser` 直接
-`Could not resolve "node:fs"`，指到 `monitor-url.ts`）。
+`panel/monitor-client.ts` 原先从 `monitor-url.ts`（**当年**那个版本自己读文件、是 node-only 的）
+取值导入 `BASIC_ROUTES`，于是**浏览器 bundle 里进了 `node:fs` ⇒ 加载即失败**
+（`esbuild --bundle --platform=browser` 直接 `Could not resolve "node:fs"`）。
 
 ⚠ **另一个消费者当时没炸，是工具链的运气，不是资产的性质**（它的原话：
 "**我的安全是『碰巧没用那几个导出』换来的，不是结构保证的**"）。实测：**同一个缺陷下，
 用 esbuild 打一个"完全不用那条链"的入口，一样红**（`node:fs` / `node:path` 都解析不了）——
 它当时之所以绿，是它的打包器**把常量内联、把整个模块摇掉了**。⇒ **不要依赖树摇**。
 
-**这条边界有机械守卫**（不靠打包器的聪明）：`monitor-client.test.ts` 里有一条
-**导入闭包检查**——从 client 半的两个入口出发，沿相对 import 走一遍，断言闭包里
-**没有任何 `node:`**（类型导入不算，它会被剥掉），并**自证闭包真的走过了若干文件**、
-以及**node 半确实仍依赖 node**（否则这条检查没有可抓之物）。红证：把旧 import 放回去
-⇒ 该检查**必红**（实测消息：`monitor-url.ts → node:fs、monitor-url.ts → node:path`）。
+**这条边界现在有**两层**保证（⚠ 两层管的不是同一件事，别拿一层替另一层）**：
+
+1. **入口层（2026-10-01 新增）**：`exports` 只发布 `./panel/*` 与 `./host/*` 两个面
+   ⇒ 从 panel 入口**够不到** host（实测：`'@mecha/dsh-panel/panel/config.ts'` ⇒ **TS2307**）。
+   代价是"**未来任何新文件意外成为公开面**"这类错误也没了（通配只剩面内两层，根上只有桥）。
+2. **机械守卫（在）**：`panel/monitor-client.test.ts` 的**导入闭包检查**——从 client 半入口出发，
+   沿**相对 import** 走一遍，断言闭包里**没有任何 `node:`**（类型导入不算，它会被剥掉），
+   并**自证闭包真的走过了若干文件**。
+
+⚠ **第 2 层不能因为有了第 1 层就删**：第 1 层管的是**发布出去的那条路**，而
+`panel/x.ts` 里写 `import '../host/y.ts'` 是**相对路径**——`exports` 根本管不到它。
+这正是"切分**减少了**这类错误、但**没有让它不可表达**"的地方，如实写在这里。
+红证（两层各自可重放）：
+- **入口层**：从 panel 入口 import host 件 ⇒ `TS2307`（实测见上文）；
+- **第 2 层**：在 `panel/monitor-client.ts` 里加一句 `import … from '../host/monitor-url.ts'`
+  ⇒ 该检查**必红**（实测：报"panel 面出现了向外的相对 import"，且**自证扰动真的落上了**）。
+  ⚠ 这条**以前抓不到**：旧版本只跟 `./`，`../` 会被**静默忽略**（2026-10-01 修）。
 
 ## ⭐ 严格 tsconfig 下**必须能过**（可移植性，不是风格）
 
@@ -281,7 +334,7 @@ configurePanel({
 panel-data.ts(166,53): error TS2304: Cannot find name 'Ev'.
 panel-data.ts(173,53): error TS2304: Cannot find name 'ConfigWire'.
 ```
-`Ev`/`ConfigWire` 是 `panel-view.ts` 的 export，而 `panel-data.ts` 拿它们当返回类型时**漏了 import**
+`Ev`/`ConfigWire` 是 `panel/panel-view.ts` 的 export，而 `panel/panel-data.ts` 拿它们当返回类型时**漏了 import**
 ⇒ **自测全绿、消费者一跑就红**。⚠ 而这条守卫**第一次跑就抓到本判据作者自己的 5 处类型错**
 （`panel-data.test.ts` 里 `extras.ok` 在严格模式下是 `… | undefined`）。
 ⇒ **消费者的 `npm run typecheck` 仍然是验收义务**（本判据是**底线**；消费者口径更严时它仍可能先红）。
@@ -305,7 +358,7 @@ panel-data.ts(173,53): error TS2304: Cannot find name 'ConfigWire'.
 `npm install` 之后，`node_modules/@mecha/dsh-panel` 是**指向本目录的 junction**
 （实测：`LinkType = Junction`）⇒ **磁盘上只有一份代码**，改资产就是改所有项目用的那份。
 
-**参数不再靠"改副本里的参数块"**：`panel-config.ts` 现在是**注入点**，
+**参数不再靠"改副本里的参数块"**：`panel/panel-config.ts` 现在是**注入点**，
 项目在启动时调一次 `configurePanel({ routePath, portFile, title, tabs? })`。
 ⇒ **三个项目不可能再互相覆盖**：项目专有的值住在**项目自己**的代码里（那一次注入调用），
 资产里**没有任何**项目值可改。
@@ -348,7 +401,7 @@ panel-data.ts(173,53): error TS2304: Cannot find name 'ConfigWire'.
 
 ## ⭐ 面板形态：**原生页面板是默认，也是唯一推荐**
 
-**资产现在自带面板**（`MonitorTabBody.tsx` + `panel-view.ts` + `panel-data.ts`）⇒ 项目不用再自己渲染：
+**资产现在自带面板**（`panel/MonitorTabBody.tsx` + `panel/panel-view.ts` + `panel/panel-data.ts`）⇒ 项目不用再自己渲染：
 
 | 形态 | 判断 | 说明 |
 |---|---|---|
@@ -465,16 +518,16 @@ Python 代码 import 它）。它随包分发的方式是 `pyproject.toml` 的 `
 
 | 半边 | 今天的消费者 | 状态 |
 |---|---|---|
-| **地址半边**（`monitor-url.ts` + `fetchMonitorBase` + `panel-config` + `assertNever`） | **有**：Get Paper 的 iframe 面板（真调用点已在生产路径上） | ✅ 今天就在用 |
+| **地址半边**（`host/monitor-url.ts` + `fetchMonitorBase` + `panel-config` + `assertNever`） | **有**：Get Paper 的 iframe 面板（真调用点已在生产路径上） | ✅ 今天就在用 |
 | **数据半边**（`readJson` + `panelState` + `monitorStats`/`isNonDegenerate`/`statsLine`） | **有**：**EL 与 ML 的原生面板** | ✅ 今天就在用（**2026-10-01 结清**） |
 
 **结清记录（2026-10-01，可复现）**：本节原写"数据半边 **0** 消费者，消费者是 EL/ML 的原生面板、
 **只是迁移尚未执行**"，并附条件"若 EL/ML 的迁移被取消，数据半边随之撤出"。
-实测：**迁移已执行完毕**，EL 与 ML 的 `panel-data.ts` 都从**共享模块**取数据半边——
+实测：**迁移已执行完毕**，EL 与 ML 的 `panel/panel-data.ts` 都从**共享模块**取数据半边——
 `import { … isNonDegenerate, panelState, readJson, statsLine … } from './monitor-client.ts'`，
 并在 `loadPanel()` 里真的调用（`readJson` ×2 + `panelState` ×1）。
 > 复现：在 EL / ML 两仓的 `dsh/src/dsh-panel/panel-data.ts` 里看同一个 `import`
-> （两份**逐字节相同**，与参考实现同指纹）；行尾归一的 sha256 取 `panel-data.ts` 即得。
+> （两份**逐字节相同**，与参考实现同指纹）；行尾归一的 sha256 取 `panel/panel-data.ts` 即得。
 > ⚠ **不写绝对路径**（R14/个人路径守卫：本机路径不许进仓）——按**符号名**找。
 > ⚠ **行号不写在这里**（D-26：行号是全库最易漂的东西）——按**符号名**找。
 
@@ -566,7 +619,7 @@ Python 代码 import 它）。它随包分发的方式是 `pyproject.toml` 的 `
 
 ## 仍未验证（明确不宣称）
 
-* ⭐ **`.tsx` 壳不在框架门禁的执行面里**：`node:test` 渲染不了 react ⇒ 壳（`MonitorTabBody.tsx`）
+* ⭐ **`.tsx` 壳不在框架门禁的执行面里**：`node:test` 渲染不了 react ⇒ 壳（`panel/MonitorTabBody.tsx`）
   **只过 typecheck、不被执行**。它的代价由三件事兜住：
   1. **壳保持薄**（~110 行）——**这是代价可控的前提**；壳一旦长出决策逻辑，就要搬回 `.ts` 层；
   2. **消费者各自的 `npm run typecheck` 是验收义务**（不是建议）——文件被复制进 `src/`，

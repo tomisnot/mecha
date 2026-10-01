@@ -3,13 +3,15 @@
   "version": "0.2.0",
   "private": true,
   "type": "module",
-  "description": "mecha 的 dsh 集成标准件（面板 + 地址路由 + opt-in 自愈桥/工具注册）。单一副本，供项目以 file: 依赖 junction 引用。",
+  "description": "mecha 的 dsh 集成标准件。单一副本，供项目以 file: 依赖 junction 引用；按入口分开：panel（浏览器安全）/ host（node-only）。",
   "license": "MIT",
   "exports": {
     "./package.json": "./package.json",
-    "./*.ts": "./*.ts",
-    "./*.tsx": "./*.tsx",
-    "./*.d.ts": "./*.d.ts"
+    "./panel": "./panel/index.ts",
+    "./panel/*": "./panel/*",
+    "./host": "./host/index.ts",
+    "./host/*": "./host/*",
+    "./*.ts": "./*.ts"
   },
   "peerDependencies": {
     "@modelcontextprotocol/sdk": ">=1.0.0 <3",

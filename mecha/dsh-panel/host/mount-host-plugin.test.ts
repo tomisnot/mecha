@@ -22,8 +22,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mountHostPlugin, hostPluginInject, type HostContext } from './mount-host-plugin.ts'
-import type { McpSession, ToolDef } from './mcp-bridge.ts'
-import { DEFAULT_ROUTE_PATH } from './panel-config.ts'
+import type { McpSession, ToolDef } from '../mcp-bridge.ts'
 
 // ---------------------------------------------------------------- 测试替身
 
@@ -104,7 +103,10 @@ function fakeSessionFactory(sessions: FakeSession[]): () => Promise<McpSession> 
   }
 }
 
-const PANEL = { routePath: DEFAULT_ROUTE_PATH, portFile: 'probe.port', title: 'probe' }
+// ⚠ routePath 用**中性字面量**（不借资产的默认值）：本文件断言的是"骨架把我给的路由
+//   原样注册了"，而不是"骨架用了某个特定默认"——后者是另一件事，归 panel 面的单测。
+const PROBE_ROUTE = '/probe/monitor-url'
+const PANEL = { routePath: PROBE_ROUTE, portFile: 'probe.port', title: 'probe' }
 
 /** 一份齐全的最小参数（各个用例按需覆盖/删除字段）。 */
 function baseOptions(over: Record<string, unknown> = {}) {
@@ -165,7 +167,7 @@ test('⭐ 挂载确实注册了工具与监控地址路由（**不撤时确实�
 
   assert.deepEqual([...tools.registered.keys()], ['mcp__probe__read_thing'],
     '工具应按 mcp__<serverName>__<raw> 注册')
-  assert.deepEqual([...web.routes.keys()], [DEFAULT_ROUTE_PATH], '监控地址路由应已注册')
+  assert.deepEqual([...web.routes.keys()], [PROBE_ROUTE], '监控地址路由应已注册')
   // 日志里必须出现**项目给的名字**（不是中性默认）
   assert.ok(logs.some(l => l.includes('[probe]') && l.includes('注册监控地址路由')),
     `日志里应出现项目前缀与路由：${JSON.stringify(logs)}`)
@@ -299,7 +301,7 @@ test('有 webServer ⇒ 路由照注册（**与上一条合起来 = "默认值 =
   const { ctx } = makeCtx({ tools, webServer: web })
   await mountHostPlugin(ctx, baseOptions())
   assert.equal(tools.registered.size, 1, '工具照注册')
-  assert.deepEqual([...web.routes.keys()], [DEFAULT_ROUTE_PATH], '有 web 服务时路由要注册')
+  assert.deepEqual([...web.routes.keys()], [PROBE_ROUTE], '有 web 服务时路由要注册')
 })
 
 test('⭐ hostPluginInject **恒不含 webServer**（顶层硬要它会把"没 web 服务"升级成"工具也没了"）', () => {

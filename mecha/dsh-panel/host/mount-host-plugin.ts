@@ -36,11 +36,11 @@
  * 6. ⚠ **MCP SDK 是懒加载的**：只有真的需要建会话时才 `import()` 它 ⇒ 只吃面板（不挂桥）
  *    的部署、以及注入假会话工厂的单测，都不必装 SDK。
  */
-import { MechaMcpBridge } from './mcp-bridge.ts'
-import type { BridgeLogger, BridgeOptions, BridgeStatus, SessionFactory, ToolDef } from './mcp-bridge.ts'
+import { MechaMcpBridge } from '../mcp-bridge.ts'
+import type { BridgeLogger, BridgeOptions, BridgeStatus, SessionFactory, ToolDef } from '../mcp-bridge.ts'
 import { syncTools, type ToolDisposers } from './register-tools.ts'
 import { makeMonitorUrlHandler } from './monitor-url.ts'
-import { type PanelOptions, configurePanel, panelConfig } from './panel-config.ts'
+import { type PanelOptions, configurePanel, panelConfig } from '../panel/panel-config.ts'
 
 /** cordis 的 `ctx`：只声明**我们真正用到的那一片**（结构化类型接受真 `Context`）。 */
 export interface HostContext {
