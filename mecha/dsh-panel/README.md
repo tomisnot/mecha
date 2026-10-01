@@ -372,7 +372,7 @@ panel-data.ts(173,53): error TS2304: Cannot find name 'ConfigWire'.
 * 旧模型还逼出过"消费者照文档填 `TABS` ⇒ 破坏共享判据"那类事故（共享自测 pass 41 / fail 1）：
   现在参数**本来就不在资产里**，共享单测自己注入 ⇒ **那类事故也没有了**。
 
-## ⚠ 迁移时必须知道的两件事（实测）
+## ⚠ 迁移时必须知道的**三**件事（实测）
 
 1. **`exports` 支持带 `.ts` 后缀的子路径**：项目写 `@mecha/dsh-panel/mcp-bridge.ts`
    （沿用原来的写法）。实测：`--strict --noUncheckedIndexedAccess` +
@@ -382,6 +382,22 @@ panel-data.ts(173,53): error TS2304: Cannot find name 'ConfigWire'.
    `@modelcontextprotocol/sdk`，报 `TS2307`；实测：加上它 ⇒ **0 错**）。
    原因：TS 的资源解析是 **Windows 原生**的（不跟随 junction），与本包无关，
    但**必须由消费者显式开启**——写在这里，免得下一个人以为资产坏了。
+3. ⭐⭐ **运行期绝不要给 `node` 加 `--preserve-symlinks`**（它是第 2 条的**反面陷阱**）：
+   它让模块标识**停在 `node_modules/@mecha/…`**，而 Node ≥ 22.6 的原生剥类型
+   **拒绝处理 `node_modules` 下的 `.ts`** ⇒ **`ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`**
+   （资产全是 `.ts`，于是**一条也跑不起来**）。
+   ⇒ **只有 `tsconfig` 那一侧**该开 `preserveSymlinks`（**类型检查期**）；
+   项目的 `npm test` 用**裸跑** `node --test …`，**不需要 `tsx`**。
+   🔬 **本仓自测（消费者形状，经 junction 用包名 import）**：
+   ```
+   裸跑                     ⇒ ℹ tests 1 / pass 1 / fail 0
+   --preserve-symlinks      ⇒ ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING
+                              （… node_modules/@mecha/dsh-panel/mcp-bridge.ts）
+   ```
+   ⚠ 它与 `tsx` 是**同一权宜之计的两半**：当初正是为了绕这个旗标才不得不装 `tsx`
+   ⇒ **两样一起去掉才干净**（三家实测都中过、现已全清）。
+   ⚠ 这条**只有真在消费者位置上才复现**：本仓自己 `node --test mecha/dsh-panel/*.test.ts`
+   用的是相对路径、不走 junction，加了旗标照样绿——**别拿仓内绿来否证它**。
 
 ## ⚠ 仍然有效的两条纪律（与旧模型无关，别一起删）
 
@@ -571,7 +587,9 @@ Python 代码 import 它）。它随包分发的方式是 `pyproject.toml` 的 `
 
 ⚠ **每一家都要**（迁移清单）：
 1. `"@mecha/dsh-panel": "file:<mecha 仓>/mecha/dsh-panel"` 装进来；
-2. tsconfig 开 **`preserveSymlinks: true`**（否则经 junction 找不到 SDK，见「迁移时必须知道的两件事」）；
+2. tsconfig 开 **`preserveSymlinks: true`**（否则经 junction 找不到 SDK，见「迁移时必须知道的三件事」）；
+   ⚠ **但只开这一处**：**别给 `node` 加 `--preserve-symlinks`**（那是反面陷阱 ⇒
+   `ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`；同时**删掉 `tsx`**，见第 3 条）；
 3. 各处 import 改包名（**保留 `.ts` 后缀**）；
 4. 启动时调一次 `configurePanel(...)`（值就是原来写在参数块里的那三个）；
 5. 删掉旧副本目录 + 旧指纹判据；
