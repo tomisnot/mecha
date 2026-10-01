@@ -49,6 +49,10 @@ CHECKS = [
     # （不软跳过）——理由见该脚本 docstring（R10：资产是三份副本的源头，
     # 框架不跑它的自测 ⇒ 三份一起错，而"逐字一致"判据还会强制那个错）。
     "checks/dsh_panel_selfcheck.py",
+    # 共享资产的**判据件**（`mecha/asset_check.py`）自检。
+    # ⚠ 它守的是"逐字副本 + 指纹表"这条资产约定的**机械部分**——那部分归框架拥有，
+    # 项目不该各写一遍（实测两个项目各写了 218 行同功能判据，形态还不同）。
+    "checks/asset_check_selfcheck.py",
     "checks/phase5_el_selfcheck.py",
     "checks/phase5_hub_selfcheck.py",
     "checks/phase5_bridge_selfcheck.py",
