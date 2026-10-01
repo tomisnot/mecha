@@ -35,6 +35,15 @@ include = ["mecha*"]
 # 项目现在以 `npm install file:<...>/mecha/dsh-panel` 经 junction 依赖本资产；
 # 少了这个文件，**pip 装出来的 mecha 里就没有它** ⇒ 消费侧根本装不上。
 # ⇒ 与 `.tsx` 同款：**模式清单是唯一会被漏的地方**，改完必须真出包核验。
+# ⚠⚠ **子目录也必须单独列**（2026-10-01，**同一个错误的第三次**）：资产按入口分成
+# `dsh-panel/panel/` 与 `dsh-panel/host/` 之后，`dsh-panel/*.ts` **不匹配子目录**
+# ⇒ 干净构建实测**只剩 4 个文件**（根上那四个），两半**全部丢失**、消费侧直接装不上。
+# ✔ 已实测的教训顺序：模式清单每次**只**在"这一种没列"上出错（`.tsx` → `.json` → 子目录），
+# 而**只有真出包核验能发现它**（读代码永远看不出来）。⇒ 加子目录、立刻再核验一次。
 [tool.setuptools.package-data]
-mecha = ["dsh-panel/*.ts", "dsh-panel/*.tsx", "dsh-panel/*.md", "dsh-panel/*.json"]
+mecha = [
+    "dsh-panel/*.ts", "dsh-panel/*.tsx", "dsh-panel/*.md", "dsh-panel/*.json",
+    "dsh-panel/panel/*.ts", "dsh-panel/panel/*.tsx",
+    "dsh-panel/host/*.ts",
+]
 
