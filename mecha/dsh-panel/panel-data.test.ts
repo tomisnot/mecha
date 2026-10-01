@@ -24,8 +24,29 @@ import {
   stateText,
   tabLabel,
 } from './panel-data.ts'
-import { PANEL_CONFIG } from './panel-config.ts'
+// ⚠ **本测试也是一个消费者**：参数必须由它**自己注入**（资产不再持有项目专有的值）。
+//   用中性值：路由取资产的默认、端口文件名用判据自己造的名字（**不是**任何项目的约定名）。
+import {
+  DEFAULT_ROUTE_PATH,
+  configurePanel,
+  panelConfig,
+  type Disposer,
+} from './panel-config.ts'
 import { panelState, type FetchResult } from './monitor-client.ts'
+
+/**
+ * 注入中性参数（每个用例自己决定要不要改；`tabs` 由需要它的用例单独注入）。
+ * 返回 disposer ⇒ 用例可以"临时注入、用完还原"，**不需要任何测试专用函数**。
+ */
+function inject(extra: { tabs?: { rec?: string; cfg?: string } } = {}): Disposer {
+  return configurePanel({
+    routePath: DEFAULT_ROUTE_PATH,
+    portFile: 'probe.port',
+    title: '监控',
+    ...extra,
+  })
+}
+inject()
 
 const OK_BASE: FetchResult<string> = { ok: true, data: 'http://127.0.0.1:1' }
 const okData = (d: unknown): FetchResult<unknown> => ({ ok: true, data: d })
@@ -92,31 +113,50 @@ test('⭐ eventsOf / configOf：用**基础路由键**（不是带查询串的�
   assert.equal(configOf(null), undefined)
 })
 
-test('tabLabel：**共享默认**（用"临时清空"测）与**覆盖后结果就变**（R17）', () => {
-  // ⚠ 这里**不许假定"项目没填 TABS"**：`TABS` 是文档允许项目填的可选参数，
-  // 任何照文档填了的项目都会让"写死中性默认"的断言变红（真实发生过：某项目填了
+test('⭐ 未注入即**响亮失败**（不给中性默认关卡——那会把"忘注入"演成"空面板"）', () => {
+  // 这是本次改造的**核心要求**：资产不提供默认值，忘了注入必须当场炸。
+  // 若哪天有人"为方便"加了一个默认关卡，本用例**立刻红**（R7：它守的就是这个）。
+  const dispose = inject()
+  dispose()                                  // 清回"未注入"
+  // 读参数 ⇒ 抛，且消息要说清"该怎么办"（可教学错误，L4）
+  assert.throws(() => panelConfig(), /未注入/)
+  assert.throws(() => panelConfig(), /configurePanel/)
+  // 用面板的入口也抛（不是"读参数才抛"）
+  assert.throws(() => tabLabel('rec'), /未注入/)
+  // 字段留空同样抛（空串不等于"没有这个名字"）
+  assert.throws(() => configurePanel({ routePath: '   ', portFile: 'p', title: 't' }), /routePath/)
+  assert.throws(() => configurePanel({ routePath: '/x', portFile: '', title: 't' }), /portFile/)
+  assert.throws(() => configurePanel({ routePath: '/x', portFile: 'p', title: '  ' }), /title/)
+  inject()                                   // 还原本文件其余用例的中性注入
+})
+
+test('tabLabel：**共享默认**（不注入 tabs）与**注入后结果就变**（R17）', () => {
+  // ⚠ 这里**不许假定"项目没注入 tabs"**：`tabs` 是文档允许项目注入的可选参数，
+  // 任何注入过的项目都会让"写死中性默认"的断言变红（真实发生过：某项目填了
   // `{rec: …}` ⇒ 共享自测 pass 41 / fail 1）。
-  // ⇒ 正确做法：**临时清空**参数块来测默认那一半，覆盖那一半另测。
-  const original = PANEL_CONFIG.TABS
-  try {
-    delete PANEL_CONFIG.TABS
-    assert.equal(tabLabel('rec'), '飞行记录仪')
-    assert.equal(tabLabel('cfg'), '配置态')
-    assert.equal(tabLabel('whatever'), 'whatever', '未知 id 原样返回')
+  // ⇒ 正确做法：**不注入 tabs** 来测默认那一半，注入了 tabs 另测。
+  // ⚠ 结构上的好处：`tabs` 在这个测试里**根本没被设过**，不需要"临时 delete 再恢复"
+  //   ——那是旧"可变参数块"留下的脚手架；现在靠 disposer 还原注入态即可。
+  const disposeDefault = inject()                       // 注入但**不带 tabs**
+  assert.equal(tabLabel('rec'), '飞行记录仪')
+  assert.equal(tabLabel('cfg'), '配置态')
+  assert.equal(tabLabel('whatever'), 'whatever', '未知 id 原样返回')
 
-    PANEL_CONFIG.TABS = { rec: '甲', cfg: '乙' }
-    assert.equal(tabLabel('rec'), '甲')
-    assert.equal(tabLabel('cfg'), '乙')
+  const disposeBoth = inject({ tabs: { rec: '甲', cfg: '乙' } })
+  assert.equal(tabLabel('rec'), '甲')
+  assert.equal(tabLabel('cfg'), '乙')
+  disposeBoth()                                         // 还原成"不带 tabs"
 
-    // 只覆盖一个 ⇒ 另一个仍取共享默认
-    PANEL_CONFIG.TABS = { rec: '操作流水' }
-    assert.equal(tabLabel('rec'), '操作流水')
-    assert.equal(tabLabel('cfg'), '配置态')
-  } finally {
-    PANEL_CONFIG.TABS = original
-  }
-  assert.equal(tabLabel('rec'), original?.rec ?? '飞行记录仪',
-    '恢复后应与参数块现状一致（消费者填过就跟着它）')
+  const disposeOne = inject({ tabs: { rec: '操作流水' } })
+  assert.equal(tabLabel('rec'), '操作流水')
+  assert.equal(tabLabel('cfg'), '配置态')
+  disposeOne()
+
+  // ⭐ 再证一次「未注入即响亮失败」：disposer 把注入态清掉之后，读它必须抛
+  disposeDefault()
+  assert.throws(() => tabLabel('rec'), /未注入/)
+
+  inject()                                              // 还原本文件其余用例的中性注入
 })
 
 // ---------------------------------------------------------------- loadPanel
@@ -140,7 +180,7 @@ const jsonRes = (status: number, payload: unknown): Response => ({
 
 test('⭐ loadPanel：四态各走一次，且**注入的 doFetch 真的被调用**（含用哪条路径）', async () => {
   const good = fakeFetch((p) => {
-    if (p === PANEL_CONFIG.ROUTE_PATH) return jsonRes(200, { base: 'http://127.0.0.1:1' })
+    if (p === panelConfig().routePath) return jsonRes(200, { base: 'http://127.0.0.1:1' })
     if (p.startsWith('/history')) return jsonRes(200, { events: [{ seq: 1 }, { seq: 2 }], mode: 'locked' })
     if (p === '/config') return jsonRes(200, { groups: { f: [] }, has_schema: true })
     return jsonRes(404, {})
@@ -150,7 +190,7 @@ test('⭐ loadPanel：四态各走一次，且**注入的 doFetch 真的被调�
   assert.equal(st.kind === 'ok' && st.stats.events, 2)
   assert.equal(st.kind === 'ok' && st.stats.configFamilies, 1)
   assert.equal(modeOf(st), 'locked')
-  assert.equal(good.calls[0], PANEL_CONFIG.ROUTE_PATH, '第一跳必须是地址路由')
+  assert.equal(good.calls[0], panelConfig().routePath, '第一跳必须是地址路由')
   assert.ok(good.calls.some((c) => c.includes('/history?since_seq=0')), '请求路径带全量尾')
   assert.ok(good.calls.length >= 3)
 
@@ -158,11 +198,11 @@ test('⭐ loadPanel：四态各走一次，且**注入的 doFetch 真的被调�
   assert.equal((await loadPanel(addrFail.f)).state.kind, 'address')
 
   const offline = fakeFetch((p) =>
-    p === PANEL_CONFIG.ROUTE_PATH ? jsonRes(200, { base: 'http://127.0.0.1:1' }) : jsonRes(500, {}))
+    p === panelConfig().routePath ? jsonRes(200, { base: 'http://127.0.0.1:1' }) : jsonRes(500, {}))
   assert.equal((await loadPanel(offline.f)).state.kind, 'offline')
 
   const empty = fakeFetch((p) =>
-    p === PANEL_CONFIG.ROUTE_PATH ? jsonRes(200, { base: 'http://127.0.0.1:1' })
+    p === panelConfig().routePath ? jsonRes(200, { base: 'http://127.0.0.1:1' })
       : p === '/config' ? jsonRes(200, { groups: {}, has_schema: true })
         : jsonRes(200, { events: [] }))
   assert.equal((await loadPanel(empty.f)).state.kind, 'empty')
@@ -170,7 +210,7 @@ test('⭐ loadPanel：四态各走一次，且**注入的 doFetch 真的被调�
 
 test('⭐ 附加页：各自取数；**附加路由失败不牵连标准两页**', async () => {
   const { f, calls } = fakeFetch((p) => {
-    if (p === PANEL_CONFIG.ROUTE_PATH) return jsonRes(200, { base: 'http://127.0.0.1:1' })
+    if (p === panelConfig().routePath) return jsonRes(200, { base: 'http://127.0.0.1:1' })
     if (p.startsWith('/history')) return jsonRes(200, { events: [{ seq: 1 }] })
     if (p === '/config') return jsonRes(200, { groups: { f: [] }, has_schema: true })
     if (p.startsWith('/extra-ok')) return jsonRes(200, { rows: [{ a: 1 }] })

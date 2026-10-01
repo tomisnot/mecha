@@ -26,11 +26,15 @@ include = ["mecha*"]
 # 而是自包含最小例（README"怎么起"，实测可跑）+ 指向 EL 仓真表 docs/capabilities.md。
 
 # D-24 教训：package-data 必须显式声明并真出包验证，读代码永远看不出来。
-# 随包资产：`mecha/dsh-panel/` 是 **dsh 侧边栏监控的共享资产**（TS/TSX，
-# 不是框架能力——理由见该目录 README）。它不是 Python 包（没有 __init__.py，
-# 目录名含连字符），故只能作为 `mecha` 包的**数据文件**随包分发。
+# 随包资产：`mecha/dsh-panel/` 是 **dsh 集成标准件**（TS/TSX，不是框架能力——
+# 理由见该目录 README）。它不是 Python 包（没有 __init__.py，目录名含连字符），
+# 故只能作为 `mecha` 包的**数据文件**随包分发。
 # ⚠ `.tsx` 必须**单独列**：`*.ts` 不匹配 `.tsx` —— 面板壳（`MonitorTabBody.tsx`）
 # 曾经因此不会随包发货，而出包核验（zipfile 逐名核对）才是唯一能发现它的地方。
+# ⚠ **`package.json` 也必须单独列**（2026-10-01，**同一个错误换了个扩展名**）：
+# 项目现在以 `npm install file:<...>/mecha/dsh-panel` 经 junction 依赖本资产；
+# 少了这个文件，**pip 装出来的 mecha 里就没有它** ⇒ 消费侧根本装不上。
+# ⇒ 与 `.tsx` 同款：**模式清单是唯一会被漏的地方**，改完必须真出包核验。
 [tool.setuptools.package-data]
-mecha = ["dsh-panel/*.ts", "dsh-panel/*.tsx", "dsh-panel/*.md"]
+mecha = ["dsh-panel/*.ts", "dsh-panel/*.tsx", "dsh-panel/*.md", "dsh-panel/*.json"]
 

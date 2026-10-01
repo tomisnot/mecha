@@ -28,7 +28,7 @@ import {
   type FetchResult,
   type PanelState,
 } from './monitor-client.ts'
-import { PANEL_CONFIG } from './panel-config.ts'
+import { panelConfig } from './panel-config.ts'
 // ⚠ 这两个只在**类型位置**用（`eventsOf` / `configOf` 的返回类型）⇒ 运行时被剥掉，
 // 但**类型检查需要它们被 import**：漏了会报 `TS2304: Cannot find name 'Ev'`，
 // 而**框架自己的 `node --test` 看不见**（类型剥离不做检查）。
@@ -53,9 +53,11 @@ export const CONFIG_PATH = CONFIG_ROUTE
 /** 标准页的 id（项目的附加页用它们自己的 id，见 `ExtraPageSpec`）。 */
 export type StandardPage = 'rec' | 'cfg'
 
-/** 页签文案：**共享默认 + 项目可覆盖**（覆盖在参数块 `TABS` 里）。 */
+/** 页签文案：**共享默认 + 项目可覆盖**（覆盖在注入的 `tabs` 里）。 */
 export function tabLabel(id: string): string {
-  const over = PANEL_CONFIG.TABS ?? {}
+  // ⚠ 这里**没有守卫**：`panelConfig().tabs` 的类型就是可选的
+  //   ⇒ "没注入 tabs"与"注入了一个空 tabs"在类型上就分得清（结构保证，不靠判据围堵）。
+  const over = panelConfig().tabs ?? {}
   if (id === 'rec') return over.rec ?? '飞行记录仪'
   if (id === 'cfg') return over.cfg ?? '配置态'
   return id
@@ -81,7 +83,7 @@ export interface PanelLoad {
 
 export async function loadPanel(doFetch: typeof fetch = fetch,
                                 extraRoutes: ExtraRoute[] = []): Promise<PanelLoad> {
-  const base = await fetchMonitorBase(doFetch, PANEL_CONFIG.ROUTE_PATH)
+  const base = await fetchMonitorBase(doFetch, panelConfig().routePath)
   if (base.ok !== true) return { state: panelState({ base }), extras: {} }
   const history = await readJson(base.data, HISTORY_PATH, doFetch)
   const config = await readJson(base.data, CONFIG_PATH, doFetch)

@@ -1,0 +1,24 @@
+{
+  "name": "@mecha/dsh-panel",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "mecha 的 dsh 集成标准件（面板 + 地址路由 + opt-in 自愈桥/工具注册）。单一副本，供项目以 file: 依赖 junction 引用。",
+  "license": "MIT",
+  "exports": {
+    "./package.json": "./package.json",
+    "./*.ts": "./*.ts",
+    "./*.tsx": "./*.tsx",
+    "./*.d.ts": "./*.d.ts"
+  },
+  "peerDependencies": {
+    "@modelcontextprotocol/sdk": ">=1.0.0 <3",
+    "react": ">=18"
+  },
+  "peerDependenciesMeta": {
+    "@modelcontextprotocol/sdk": { "optional": true },
+    "react": { "optional": true }
+  },
+  "dependencies": {},
+  "sideEffects": false
+}
