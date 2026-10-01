@@ -49,7 +49,7 @@ interface CtxOptions {
   tools?: FakeTools
   commands?: {
     register(cmd: { name: string; description: string;
-      handler: (a: unknown) => Promise<{ kind: 'success' | 'error'; text: string }> }): () => void
+      handler: (a: unknown) => unknown }): () => void
   }
   /** 不给 ⇒ 完全模拟"没有 webServer 的部署"。 */
   webServer?: FakeWebServer
@@ -243,7 +243,7 @@ test('command 是可选的：**不传就什么都不注册**（不留"按了没�
   assert.deepEqual(registered, [], '关着时不许注册任何 command')
 })
 
-test('传了 registerCommand ⇒ 注册；收尾时**被注销**', async () => {
+test('传了 registerCommand ⇒ 注册；收尾时**被注销**（且回执形状**不设约束**）', async () => {
   const live: string[] = []
   let teardown: (() => Promise<void>) | undefined
   const ctx: HostContext = {
@@ -259,8 +259,12 @@ test('传了 registerCommand ⇒ 注册；收尾时**被注销**', async () => {
     inject(_n, fn) { fn({}) },
   }
   await mountHostPlugin(ctx, baseOptions({
+    // ⚠ 刻意返回一种**宿主自有形状**（不是 `{kind,text}`）：骨架只创建、不解释命令
+    //   ⇒ 它不该对回执形状设约束（那是宿主契约，不是本资产的）。
     registerCommand: (c: HostContext) => c.commands!.register({
-      name: 'probe-command', description: 'd', handler: async () => ({ kind: 'success' as const, text: 'ok' }),
+      name: 'probe-command',
+      description: 'd',
+      handler: async () => ({ ok: true, rendered: 'anything' }),
     }),
   }))
   assert.deepEqual(live, ['probe-command'], '开着时应注册')
@@ -268,14 +272,41 @@ test('传了 registerCommand ⇒ 注册；收尾时**被注销**', async () => {
   assert.deepEqual(live, [], '收尾后必须注销')
 })
 
-test('无 webServer（或没注入）⇒ **跳过路由但不炸**，桥照活', async () => {
+test('无 webServer ⇒ **跳过路由但不炸**，桥与工具照活', async () => {
   const tools = new FakeTools()
-  const { ctx } = makeCtx({ tools })                 // 刻意不给 webServer
+  const web = new FakeWebServer()
+  let teardown: (() => Promise<void>) | undefined
+  /** scoped 里**没有** webServer（模拟 headless / 无 web 服务的部署）。 */
+  const ctx: HostContext = {
+    tools,
+    logger: {},
+    async effect(fn) { teardown = await fn() as () => Promise<void> },
+    inject(_n, fn) { void fn({}) },            // 刻意不给 webServer
+  }
   await mountHostPlugin(ctx, baseOptions())
   assert.equal(tools.registered.size, 1, '桥与工具注册不受"没有 web 服务"影响')
+  assert.equal(web.routes.size, 0, '没给 webServer ⇒ 那条替身本就不该被用')
+  // 收尾也不能因为"从没注册过路由"而炸
+  await teardown!()
+  assert.equal(tools.registered.size, 0, '收尾照常撤工具')
 })
 
-test('hostPluginInject：要用地址路由就要 webServer；不用就只要 tools', () => {
-  assert.deepEqual(hostPluginInject(), ['tools', 'webServer'])
-  assert.deepEqual(hostPluginInject({ needsWebServer: false }), ['tools'])
+test('有 webServer ⇒ 路由照注册（**与上一条合起来 = "默认值 == 正确语义"**）', async () => {
+  // ⭐ 上一条 + 这一条是 `hostPluginInject()` 恒返回 `['tools']` 的**两个方向**：
+  //   顶层不再硬要 webServer，而"有没有路由"完全由骨架内部的 `ctx.inject` 条件决定。
+  const tools = new FakeTools()
+  const web = new FakeWebServer()
+  const { ctx } = makeCtx({ tools, webServer: web })
+  await mountHostPlugin(ctx, baseOptions())
+  assert.equal(tools.registered.size, 1, '工具照注册')
+  assert.deepEqual([...web.routes.keys()], [DEFAULT_ROUTE_PATH], '有 web 服务时路由要注册')
+})
+
+test('⭐ hostPluginInject **恒不含 webServer**（顶层硬要它会把"没 web 服务"升级成"工具也没了"）', () => {
+  // 为什么要有这条：顶层 `inject` 里列了 `webServer` ⇒ **缺该服务时整个插件不激活**，
+  // 而地址路由是**可选**能力（骨架内部用 `ctx.inject(['webServer'],…)` 条件注册）。
+  // 两者不一致的后果有实测分叉：一家下游传 `false` 绕过、另一家继承了脆弱默认。
+  // ⇒ 参数已删，默认值即正确语义。
+  assert.deepEqual(hostPluginInject(), ['tools'])
+  assert.ok(!hostPluginInject().includes('webServer'), '顶层不许硬要 webServer')
 })

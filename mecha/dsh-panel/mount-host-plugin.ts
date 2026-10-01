@@ -47,12 +47,16 @@ export interface HostContext {
   logger?: BridgeLogger
   /** 工具注册表（顶层 `inject` 里声明 `tools` 后才在）。 */
   tools?: { register(def: unknown): () => void }
-  /** 注册一个命令；返回 disposer。项目的能力开关关着时**不要**调它。 */
+  /** 注册一个命令；返回 disposer。项目的能力开关关着时**不要**调它。
+   *  ⚠ 入参与返回值都是 `unknown`：骨架**只创建、不解释**命令（"命令回执长什么样"是
+   *  宿主的形状，不是本资产的契约）。写成 `(args) => Promise<{kind,text}>` 会凭空给
+   *  两个真实消费者加一道**它们本来不需要的**类型约束（实测：cordis 传的是
+   *  `{agent, rawInput}`、回执也是宿主自有形状）⇒ 那是假约束，不是契约。 */
   commands?: {
     register(command: {
       name: string
       description: string
-      handler: (args: unknown) => Promise<{ kind: 'success' | 'error'; text: string }>
+      handler: (args: unknown) => unknown | Promise<unknown>
     }): () => void
   }
   /** 生命期包裹：回调返回的收尾函数在插件卸载时执行；其返回值即"挂载完成"的句柄。 */
@@ -274,10 +278,18 @@ export async function mountHostPlugin(
 
 /**
  * 顶层 `inject` 数组（cordis 要求它在**模块顶层**给出，故只能由项目自己 `export`）。
- * 骨架恒要 `tools`；要用面板地址路由就需要 `webServer`。
+ *
+ * ⚠ **恒为 `['tools']`，不含 `webServer`**——这不是省事，是**与骨架内部语义保持一致**：
+ * 顶层 `inject` 里列了 `webServer` ⇒ **缺该服务时整个插件不激活**；
+ * 而地址路由是**可选**能力（骨架内部用 `ctx.inject(['webServer'], …)`，没它就跳过注册）。
+ * 两者若不一致，就会出现"**面板没有 web 服务**"被升级成"**AI 工具也没了**"（headless 部署实测踩过）。
+ *
+ * ⚠ 曾经这里是 `hostPluginInject({ needsWebServer })`，默认恰好是**错的那一档**：
+ * 一家下游发现了并传 `false` 绕过，另一家没发现、继承了脆弱默认 ⇒ **默认值选错的典型**。
+ * 参数已删：**没有任何调用方需要它**（要不要路由由骨架内部的条件处理，不由顶层硬要）。
  */
-export function hostPluginInject(opts: { needsWebServer?: boolean } = {}): string[] {
-  return opts.needsWebServer === false ? ['tools'] : ['tools', 'webServer']
+export function hostPluginInject(): string[] {
+  return ['tools']
 }
 
 // ---------------------------------------------------------------------------
