@@ -269,11 +269,19 @@ def main() -> int:
             if journal.exists():
                 recs = [json.loads(l) for l in
                         journal.read_text(encoding="utf-8").splitlines() if l.strip()]
+                # ⚠ `target` 不是 `key`：事件形状在 `key`→`target` / `value`→`after` 那次迁移里改过，
+                # 而本行原先仍读旧键名 `key` ⇒ 该条件**永远为假**，且把红伪装成"归因异常"
+                # （2026-10-01 实测：recs 全是 actor='ai'，真正不成立的是这个旧键名）。
                 if recs and all(r.get("actor") == "ai" for r in recs) \
-                        and any(r.get("key") == "field.B_gauss" for r in recs):
+                        and any(r.get("target") == "field.B_gauss" for r in recs):
                     _ok(f"journal {len(recs)} 条全 actor=ai（写经 v2 门，磁盘为证）")
                 else:
-                    _fail(out, f"journal 归因异常：{recs[:3]}")
+                    # 报错要指向**真正**不成立的那一半（原先把前 3 条全打出来，而它们是合规的）。
+                    bad_actor = [r for r in recs if r.get("actor") != "ai"]
+                    _fail(out, "journal 归因异常："
+                               f"非 ai 的条目 {len(bad_actor)} 条 {bad_actor[:2]}；"
+                               f"含 target=field.B_gauss 的条目 "
+                               f"{sum(1 for r in recs if r.get('target') == 'field.B_gauss')} 条")
                 # 审查 2.7：AI 侧 call_id 互引——每条写事件带非空 call_id
                 # （MCP wire request id），与 dsh 行为史可双向走查（§5.2②）。
                 if recs and all(r.get("call_id") for r in recs):
