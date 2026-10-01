@@ -45,14 +45,11 @@ CHECKS = [
     "checks/phase10_monitor_contract_selfcheck.py",
     "checks/phase11_cockpit_selfcheck.py",
     "checks/phase12_mcp_projection_selfcheck.py",
-    # dsh 面板参考实现（共享资产）的共享自测。⚠ **硬依赖 node**：缺 node 即红
-    # （不软跳过）——理由见该脚本 docstring（R10：资产是三份副本的源头，
-    # 框架不跑它的自测 ⇒ 三份一起错，而"逐字一致"判据还会强制那个错）。
+    # dsh 集成资产（共享资产）的共享自测。⚠ **硬依赖 node**：缺 node 即红（不软跳过）。
+    # ⚠ 2026-10-01 起**这里成了资产回归的唯一发现点**：资产改为包依赖（junction）后，
+    #   接入项目不再持有副本、也不再跑这份共享单测 ⇒ 本判据不跑或跑假，三家都发现不了。
+    #   （此前是三个消费者各跑一遍；减负的代价如实记在 docs/v2/清点-公共部分与上提候选.md §3.6.9。）
     "checks/dsh_panel_selfcheck.py",
-    # 共享资产的**判据件**（`mecha/asset_check.py`）自检。
-    # ⚠ 它守的是"逐字副本 + 指纹表"这条资产约定的**机械部分**——那部分归框架拥有，
-    # 项目不该各写一遍（实测两个项目各写了 218 行同功能判据，形态还不同）。
-    "checks/asset_check_selfcheck.py",
     "checks/phase5_el_selfcheck.py",
     "checks/phase5_hub_selfcheck.py",
     "checks/phase5_bridge_selfcheck.py",
