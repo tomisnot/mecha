@@ -56,6 +56,11 @@ def _check(name: str, cond: bool, extra: object = "") -> None:
 
 
 def main() -> int:
+    # ⚠ 与同目录其它判据同款：中文 Windows 的默认控制台编码是 GBK，而本判据打印 `✔`/`✖`
+    #   ⇒ **不加这一行会以 UnicodeEncodeError 崩**（不是判据红，是它自己跑不完）。
+    #   2026-10-01 实测踩到：这条判据此前被 run_all 的旧清单遮蔽、从未真跑过。
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     print("[asset_check_selfcheck] 共享资产判据件自检")
     print("  — A. text_sha256：行尾归一 + 内容敏感 —")
     _check("CRLF 与 LF 同指纹（行尾配置不许打败比对）",
