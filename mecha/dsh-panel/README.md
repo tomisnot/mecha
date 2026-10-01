@@ -43,11 +43,84 @@ client 半 fetch 同源路由拿到地址。本目录就是这一层 + 取数骨
 | 类 | 件 | 谁用 |
 |---|---|---|
 | **默认件**（面板 + 地址路由） | `panel-config.ts`（**注入点**）/ `routes.ts` / `panel-view.ts` / `panel-data.ts` / `MonitorTabBody.tsx` / `monitor-client.ts` / `monitor-url.ts` + 各 `.test.ts` | **所有要"人看监控面"的项目**——这是"面板进 dsh"的最小闭环 |
-| **opt-in 件**（自愈桥 + 工具注册） | `mcp-bridge.ts` / `mcp-session-http.ts` / `config.ts` / `register-tools.ts` / `mcp-sdk-shims.d.ts` | **要让 dsh 里的 AI 原生调自家工具**的项目；**不调就不用**（装了包也不进 bundle） |
+| **opt-in 件**（自愈桥 + 工具注册 + **host 半骨架**） | `mcp-bridge.ts` / `mcp-session-http.ts` / `config.ts` / `register-tools.ts` / `mount-host-plugin.ts` / `mcp-sdk-shims.d.ts` / `cordis-shims.d.ts` | **要让 dsh 里的 AI 原生调自家工具**的项目；**不调就不用**（装了包也不进 bundle） |
 
 ⚠ **按总纲 §5.3「nothing ships enabled」：桥不许默认带。** 实测已有一家明确**不**用它
 （ML 的 `dsh/src/index.ts:29-31` 自述）。⇒ 判定标准是"这个项目**用不用**"，
 不是"资产里有没有"——**装进来但没被 import 的文件不进 bundle**（实测过）。
+
+## ⭐ host 半骨架：`mountHostPlugin(...)`（2026-10-01 上提）
+
+**为什么有它**：资产做成依赖包后 `client 半` 已共用，但每个项目的 `src/index.ts`（host 半）
+**仍各手写一遍同一套骨架**——建桥、`onTools → syncTools` 两阶段 swap、logger 转发、
+`onStatus` 三态日志、监控地址路由、可选的 command、teardown 顺序，连 `host/*-hub.ts`
+都几乎逐字同形。⇒ 那段固化成一份，项目侧只剩**参数**与自身分支。
+
+**项目侧现在长这样**（`apply` 的全部内容）：
+
+```ts
+import type { Context } from '@deepseek-ai/cordis'          // 项目自己的宿主类型（peer）
+import {
+  hostPluginInject,
+  mountHostPlugin,
+  type HostContext,                                        // 骨架的**结构化最小接口**
+} from '@mecha/dsh-panel/mount-host-plugin.ts'
+import { MY_BRIDGE, MY_FEATURES, MY_PANEL } from './my-params.ts'
+import { myResolveUrl } from './host/my-hub.ts'
+
+export const name = MY_BRIDGE.serverName
+export const inject = hostPluginInject()   // ['tools','webServer']；不用面板地址路由就传 {needsWebServer:false}
+
+export async function apply(ctx: Context, config: MyConfig = {}): Promise<void> {
+  // ⚠ 这个 cast 是**"资产不认识 cordis"**的代价，刻意写在项目侧：
+  //   骨架对 @deepseek-ai/* **零 import**（连类型都不 import），所以由项目把宿主 ctx 适配进来。
+  await mountHostPlugin(ctx as unknown as HostContext, {
+    serverName: MY_BRIDGE.serverName,
+    logLabel: MY_BRIDGE.logLabel,
+    projectRoot: config.projectRoot?.trim() || process.cwd(),
+    resolveUrl: () => myResolveUrl(config),
+    clientInfo: MY_BRIDGE.clientInfo,
+    offlineHint: MY_BRIDGE.offlineHint,
+    panelConfig: MY_PANEL,
+    // 可选：项目自己的 command。⚠ 能力关着时**不要传** ⇒ 骨架什么都不注册（不留死缝）
+    ...(MY_FEATURES.switchToGui ? {
+      registerCommand: (c) => c.commands!.register({
+        name: '…', description: '…', handler: async () => ({ kind: 'success' as const, text: '…' }),
+      }),
+    } : {}),
+  })
+}
+```
+
+| 参数 | 必填 | 不给时 |
+|---|---|---|
+| `serverName` | ✅ | **抛**（工具命名空间 = `mcp__<serverName>__<tool>`） |
+| `logLabel` | ✅ | **抛**。它**同时也是服务名**（`[x] x 离线…`）——拆成两个字段会造成第二处真值 |
+| `projectRoot` | ✅ | **抛**（面板端口文件所在目录） |
+| `resolveUrl` | ✅ | **抛**。端点怎么算（显式 URL > 端口文件 > 项目默认）是**项目知识** |
+| `clientInfo` | ✅ | **抛**（`initialize` 上报的 `name`/`version`，两者都非空） |
+| `panelConfig` | ✅ | **抛**（面板参数必须由项目注入；资产不存项目值） |
+| `offlineHint` / `reconnect` / `requestInit` / `onStatus` | ❌ | 用桥自己的默认；`onStatus` 不给 ⇒ 骨架打默认三态日志 |
+| `sessionFactory` | ❌ | **只给单测**：注入假会话 ⇒ 完全不碰 MCP SDK |
+| `registerCommand` | ❌ | 不注册任何 command（**能力关着时就不该传**） |
+
+**骨架替你保证的四件事**（别在项目里再手写一遍）：
+
+1. **端点每次建会话现解**（端口漂移自愈）；骨架只保存 `resolveUrl` 的**引用**、不缓存结果
+   （判据：挂载期解析次数必须为 0 —— 退化成"只解一次"会当场红）；
+2. **没有 webServer 时跳过地址路由，而不是整个插件不激活**
+   （顶层 `inject` 缺服务会让插件整个不激活 ⇒ headless 部署会连 AI 工具一起丢）；
+3. **收尾顺序**：路由 → command → 工具 → 关桥 → 面板注入态，每步各自吞错
+   （不因一处失败泄漏其余）；
+4. **MCP SDK 懒加载**：不挂桥、或注入假会话的路径**不需要**装 SDK。
+
+⚠ **`mode-request` 那类"写文件请某某接手"的东西不在骨架里**：它依赖"有人在轮询"，
+只有有看门人的项目才有 ⇒ 骨架只给**注册 command 的口子**，写什么文件留在项目。
+
+⚠ **`@deepseek-ai/cordis` 只有类型垫片**（`cordis-shims.d.ts`）：资产对 `@deepseek-ai/*`
+**只做 `import type`**（out-of-tree 插件的 node_modules 里没有它，运行时 import 会让加载不稳）。
+⇒ 与 MCP SDK 垫片同族：**口径依赖**，真 cordis 改签名它不会自动红，兜底是宿主的
+`npm run typecheck` + 真机冒烟。
 
 ## ⭐ 参数表：项目值**注入**进来（资产零项目字面量）
 
