@@ -142,8 +142,14 @@ def _tsc() -> tuple[Path, Path] | None:
 
 
 def _typecheck(panel_dir: Path, tsc: Path, types: Path) -> tuple[int, list[str], int]:
-    """对资产做**严格类型检查**（`--noEmit`）。返回 (退出码, 错误行, 检查的文件数)。"""
-    files = sorted(str(p) for p in list(panel_dir.glob("*.ts")) + list(panel_dir.glob("*.tsx")))
+    """对资产做**严格类型检查**（`--noEmit`）。返回 (退出码, 错误行, 检查的文件数)。
+
+    ⚠ **递归**收集（`rglob`）：资产自 2026-10-01 起**按入口分开**（`panel/` 浏览器安全、
+    `host/` node-only），非递归的 `glob` 会**只看到根目录的两个文件**——那是一次真实的
+    覆盖率回归（本判据当时仍打印 PASS，因为"跑到了空集合"不等于红）。
+    与 `*.test.ts` 的收集同源：**都不写文件清单**（D4：手抄清单会漂），靠目录说话。
+    """
+    files = sorted(str(p) for p in list(panel_dir.rglob("*.ts")) + list(panel_dir.rglob("*.tsx")))
     cmd = ["node", str(tsc), "--noEmit", "--strict",
            "--noUncheckedIndexedAccess", "--allowImportingTsExtensions",
            "--target", "es2022", "--module", "esnext", "--moduleResolution", "bundler",
@@ -174,7 +180,10 @@ def check(panel_dir: Path = PANEL_DIR) -> tuple[int, list[str]]:
                      "若确实要移除本条目，那是**放弃**这份资产的自测覆盖（R10）")
         return 1, lines
 
-    tests = sorted(panel_dir.glob("*.test.ts"))
+    # ⚠ **递归**收集测试（同 `_typecheck`）：资产按入口分开后，单测住在
+    # `panel/` 与 `host/` 里（按"被测的件在哪一半"归置，而不是按"用什么跑"）。
+    # 非递归会漏掉它们 ⇒ 本判据会拿"根目录那一个文件"报 PASS（覆盖率静默缩水）。
+    tests = sorted(panel_dir.rglob("*.test.ts"))
     lines.append(f"[dsh_panel] 面板资产：{panel_dir}")
     lines.append(f"[dsh_panel] node：{node}")
     if not tests:
