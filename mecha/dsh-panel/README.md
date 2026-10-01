@@ -69,7 +69,7 @@ import { MY_BRIDGE, MY_FEATURES, MY_PANEL } from './my-params.ts'
 import { myResolveUrl } from './host/my-hub.ts'
 
 export const name = MY_BRIDGE.serverName
-export const inject = hostPluginInject()   // ['tools','webServer']；不用面板地址路由就传 {needsWebServer:false}
+export const inject = hostPluginInject()   // → ['tools']（地址路由由骨架内部条件处理）
 
 export async function apply(ctx: Context, config: MyConfig = {}): Promise<void> {
   // ⚠ 这个 cast 是**"资产不认识 cordis"**的代价，刻意写在项目侧：
@@ -83,9 +83,10 @@ export async function apply(ctx: Context, config: MyConfig = {}): Promise<void> 
     offlineHint: MY_BRIDGE.offlineHint,
     panelConfig: MY_PANEL,
     // 可选：项目自己的 command。⚠ 能力关着时**不要传** ⇒ 骨架什么都不注册（不留死缝）
+    // ⚠ 回执形状由**宿主**定（骨架只创建、不解释命令）⇒ 这里怎么写都行，资产不设约束。
     ...(MY_FEATURES.switchToGui ? {
       registerCommand: (c) => c.commands!.register({
-        name: '…', description: '…', handler: async () => ({ kind: 'success' as const, text: '…' }),
+        name: '…', description: '…', handler: async () => ({ kind: 'success', text: '…' }),
       }),
     } : {}),
   })
@@ -114,13 +115,51 @@ export async function apply(ctx: Context, config: MyConfig = {}): Promise<void> 
    （不因一处失败泄漏其余）；
 4. **MCP SDK 懒加载**：不挂桥、或注入假会话的路径**不需要**装 SDK。
 
+⚠ ⭐ **代价（与第 4 条是一体两面，下游实测撞到）**：懒加载让**构建产物不再只有一个文件**。
+EL 实测的 `lib/`：
+
+```
+index.mjs                       36607
+mcp-session-http-<hash>.mjs      2294   ← 动态分包（`await import()` 的产物）
+client.js                       40977
+```
+
+⇒ **部署 / Docker / 打包脚本「只拷 `index.mjs`」会在运行时才炸**（动态 import 找不到分包）。
+**带产物就要整目录带。** 这一条只写"好处"是不够的：
+*它换来"不装 SDK 也能只吃面板"，代价是"产物多一个文件、必须整目录带"* —— 两者必须一起写，
+否则下一个人会在部署脚本里踩一个**只在运行时出现**的坑。
+
+## ⭐ 顶层 `inject`：**只要 `tools`**
+
+```ts
+export const inject = hostPluginInject()   // → ['tools']
+```
+
+⚠ **恒不含 `webServer`**，这不是省事，而是**与骨架内部语义一致**：
+顶层 `inject` 里列了 `webServer` ⇒ **缺该服务时整个插件不激活**；而地址路由是**可选**能力
+（骨架内部用 `ctx.inject(['webServer'], …)` 条件注册）。两者不一致，就会把
+"**面板没有 web 服务**"升级成"**AI 工具也没了**"（headless 部署实测踩过）。
+
+⚠ 这里**曾经**是 `hostPluginInject({ needsWebServer })`，而默认恰好是**错的那一档**：
+一家下游发现了、传 `false` 绕过；另一家没发现、继承了脆弱默认 ⇒ **默认值选错的典型**
+（**参数的存在往往说明默认值选错了**）。参数已删——没有任何调用方需要它。
+
 ⚠ **`mode-request` 那类"写文件请某某接手"的东西不在骨架里**：它依赖"有人在轮询"，
 只有有看门人的项目才有 ⇒ 骨架只给**注册 command 的口子**，写什么文件留在项目。
 
-⚠ **`@deepseek-ai/cordis` 只有类型垫片**（`cordis-shims.d.ts`）：资产对 `@deepseek-ai/*`
-**只做 `import type`**（out-of-tree 插件的 node_modules 里没有它，运行时 import 会让加载不稳）。
-⇒ 与 MCP SDK 垫片同族：**口径依赖**，真 cordis 改签名它不会自动红，兜底是宿主的
-`npm run typecheck` + 真机冒烟。
+⚠ **资产对 `@deepseek-ai/*` 零 import（连类型都不 import）**：out-of-tree 插件的
+node_modules 里没有它，而**垫片也救不了**（实测：`preserveSymlinks` 只能救"装在消费者
+node_modules 里的" peer，cordis 是宿主提供的、消费者那里根本没有它）。
+⇒ 骨架对 `ctx` 只用**结构化最小接口** `HostContext`，项目侧一处
+`ctx as unknown as HostContext` 适配；**这是刻意的解耦代价，不是待补的垫片**。
+
+⚠ **那一处 cast 不提供适配器**（评估结论，不是省事）：
+- cast 本身**消不掉**——真 `Context` 在结构上**不可能**等于 `HostContext`（它是宿主自有形状）；
+- 写成 `asHostContext(ctx)` 只是把同一个 cast 从项目挪进资产，**没有减少任何东西**，
+  却新增一个导出面（正是"能靠结构就别加机制"要避免的）。
+⇒ **项目各自 cast 一次就够。** 若某项目的 dsh 类型垫片**自己缺成员**（例如没声明
+`ctx.inject`）或把宿主形状写得过窄 ⇒ **那是它垫片该补的**，不是资产的问题；
+**不要**为了迁就某个垫片而放宽资产自己的接口。
 
 ## ⭐ 参数表：项目值**注入**进来（资产零项目字面量）
 
