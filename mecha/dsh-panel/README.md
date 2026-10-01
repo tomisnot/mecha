@@ -1,16 +1,24 @@
-# dsh 侧边栏监控面板 —— **参考实现**（共享资产）
+# dsh 集成**标准件**（共享资产）
 
 > ## ⚠ 先读这三句
 >
 > 1. **这不是框架能力。** 它是**宿主（dsh）侧的共享资产**——一份可被项目**逐字复制**的
->    参考实现。**框架不拥有这个面板**：既有 ADR 已裁定
+>    标准件。**框架不拥有它**：既有 ADR 已裁定
 >    「**消费面归宿主，库不 import UI**」
 >    （`docs/v2/notes/archived/2026-09-24-写权模式UI面-Authority通知缝.md:24-25`）——
->    Qt 编组在项目的面板里做、HTTP 轮询在端点页里做，**库只保证"变更会通知到订阅者"**。
-> 2. **面板是只读的。** 同一份 ADR 的 `:48-50` 明确**否决**「把驾驶舱面板塞回 dsh 插件
->    当 web 按钮」：**人类控制权依附 dsh 进程 = 软件依附 dsh**（总纲 §1.2 事实 3）。
->    ⇒ **这个面板不许有写口/控制口**（不许出现"切模式""改配置"这类从 dsh 可达的路径）。
-> 3. **本项目今天没有运行时消费者。** 见下面「R1 的诚实立场」。
+>    库不 import 任何 UI 库，**它是"不是框架能力"的依据**。
+> 2. ⚠ **「→GUI 交权」不违反"软件不依附 dsh"，反而是它的执行者**（**2026-10-01 裁决，
+>    取代本处旧述**）。旧述引同一份 ADR 的 `:48-50` 否决「把驾驶舱面板塞回 dsh 插件当 web 按钮」，
+>    并据此说"这个面板不许有写口/控制口"。**那条否决已过时，不适用于本资产**：
+>    它否的是"**控制权依附 dsh**"（dsh 一死就没法控制软件）；而「交权给桌面 GUI」做的是
+>    **相反的事**——请 dsh **退出**、把控制权交给**独立进程**。
+>    ⇒ 「→GUI 交权」是**合法的 opt-in 标准件**，不是禁区。
+>    ⛔ **但必须有能力开关**：它依赖"另有看门人进程在轮询 `.mode-request`"；
+>    **没有看门人的部署按了没人接** ⇒ **开关关着时按钮不该出现在界面上**
+>    （不许留"按了没反应"的按钮）。
+> 3. **框架仓里没有运行时读取方。** 见下面「R1 的诚实立场」——这句话说的是
+>    **"框架自己不会在运行时读它"**（与"三家项目在用副本"**不矛盾**）。
+>    ⭐ **默认件 / opt-in 件的划分与参数表见下文「它是什么 / 解决什么」之后那两节。**
 
 ---
 
@@ -26,6 +34,46 @@ client 半 fetch 同源路由拿到地址。本目录就是这一层 + 取数骨
 漏掉了地址路由这一个文件**。⇒ 本资产的存在理由不是"少写几行"，是**让"漏一个文件"这件事
 变成机械可抓**。
 
+## ⭐ 标准件的两类：**默认件** 与 **opt-in 件**
+
+| 类 | 件 | 谁该抄 |
+|---|---|---|
+| **默认件**（面板 + 地址路由） | `panel-config.ts` / `routes.ts` / `panel-view.ts` / `panel-data.ts` / `MonitorTabBody.tsx` / `monitor-client.ts` / `monitor-url.ts` + 各 `.test.ts` | **所有要"人看监控面"的项目**——这是"面板进 dsh"的最小闭环 |
+| **opt-in 件**（自愈桥 + 工具注册） | `mcp-bridge.ts` / `mcp-session-http.ts` / `config.ts` / `register-tools.ts` / `mcp-sdk-shims.d.ts` | **要让 dsh 里的 AI 原生调自家工具**的项目；**不调就不抄** |
+
+⚠ **按总纲 §5.3「nothing ships enabled」：桥不许默认带。** 实测已有一家明确**不**移植它
+（ML 的 `dsh/src/index.ts:29-31` 自述）。⇒ 默认件与 opt-in 件的**判定标准是"这个项目用不用"**，
+不是"资产里有没有"。
+
+## ⭐ 参数表（可注入项——**资产零项目字面量**）
+
+| 文件 | 参数 | 默认值 | 用途 |
+|---|---|---|---|
+| `mcp-bridge.ts` | `BridgeOptions.logLabel` | `'mcp-bridge'` | 日志前缀（`[<label>] …`）；项目填自己的名字 |
+| `mcp-bridge.ts` | `BridgeOptions.offlineHint` | `'请确认软件已启动；工具仍在列表但暂不可用。'` | 断联指引；"怎么把软件重新起来"是**项目知识** |
+| `mcp-bridge.ts` | `BridgeOptions.reconnect` | `initialDelayMs=300` / `maxDelayMs=15000` / `growFactor=1.5` / `maxAttempts=0`(无限) | 退避重连 |
+| `mcp-session-http.ts` | `HttpSessionOptions.clientInfo` | `{ name: 'mcp-bridge-dsh', version: '0.1.0' }` | initialize 上报的客户端标识 |
+| `config.ts` | `HubUrlConfig.defaultUrl` | `''`（**不猜端口**） | 端口文件读不到时的默认端点（**项目值**） |
+| `config.ts` | `HubUrlConfig.path` | `'/mcp'` | 端点路径 |
+| `config.ts` | `HubUrlConfig.mcpPortFile` | 未给（不读文件） | 端口文件路径（**项目值**：文件名归项目） |
+| `register-tools.ts` | `syncTools(..., serverName)` | 必填 | 工具公开名 = `mcp__<serverName>__<rawName>` |
+| `register-tools.ts` | `SyncToolsOptions.logLabel` | `'mcp-bridge'` | 工具注册失败的日志前缀（**通常与桥传同一个值**） |
+
+## ⚠ 类名不是项目参数（**别每个项目改一次**）
+
+**类名 `MechaMcpBridge` 是资产自己的标识，不是品牌位**——本资产就叫 mecha。
+项目要自己的名字，改的是**参数**：`logLabel`（日志前缀）与 `offlineHint`（断联指引）。
+⇒ 这样"逐字复制"才成立；否则每抄一次都要动文件内容，比对立刻失效。
+（已有项目按自己的桥名（如 `PaperPilotMcpBridge`）复制，那是**它们的选择**，不是本资产的约定。）
+> **唯一权威在本文件**（D1）：`mcp-bridge.ts` 头部只留链接，不复述这段。
+
+## ⚠ 依赖口径（如实写）
+
+* **用桥的项目**需要 `@modelcontextprotocol/sdk`（`mcp-session-http.ts` 是**唯一** import 它的地方）。
+* **框架仓不装它** ⇒ 靠 `mcp-sdk-shims.d.ts`（纯 `declare`，运行时被完全擦除）做**独立类型检查**。
+* ⇒ **该垫片是"口径依赖"**：签名按"本资产实际调用姿势"写，**比真 SDK 宽松**；
+  真 SDK 若改签名，**它不会自动红**。兜底是**用桥项目的 `npm run typecheck` + 真机冒烟**。
+
 ## 目录内容
 
 | 文件 | 是什么 | 浏览器安全？ |
@@ -37,7 +85,12 @@ client 半 fetch 同源路由拿到地址。本目录就是这一层 + 取数骨
 | **`panel-view.ts`** | **面板视图层（纯字符串生成）**：`esc`/`fmtVal`/`recPageHtml`/`cfgPageHtml`/`extraPageHtml`/`tabsHtml`/`badgeHtml` + `TAB_CSS` | ✅ 是 |
 | **`MonitorTabBody.tsx`** | **壳**（~110 行）：轮询 + CSS 注入 + 事件委托 + 一次 `dangerouslySetInnerHTML`。**唯一需要 react 的地方** | ✅ 是（import `react`） |
 | `monitor-url.ts` | host 侧地址路由：`resolveMonitorBase` / `sendJson` / `makeMonitorUrlHandler` | ⛔ **否（node-only）** |
-| `*.test.ts` | **共享单测**（随实现一起复制；`.ts` 层被 `node:test` 逐档覆盖） | —（Node 侧跑） |
+| `mcp-bridge.ts` | **opt-in · 自愈 MCP 桥**：`MechaMcpBridge`（session 失效/连不上 ⇒ 拆旧连接 → 重新 initialize → 重试一次）+ `isSessionInvalidError` / `isConnectionError` | ⛔ **否（node-only）** |
+| `mcp-session-http.ts` | **opt-in · 唯一 import `@modelcontextprotocol/sdk` 的地方**：`httpSessionFactory`（每次建会话都拿**新** session） | ⛔ **否（node-only）** |
+| `config.ts` | **opt-in · 端点解析**：`resolveHubUrl`（显式 URL > 端口文件 > 项目默认，**缺省不猜端口**）+ `buildRequestInit`（远程鉴权头） | ⛔ **否（node-only，读文件）** |
+| `register-tools.ts` | **opt-in · 工具注册**：`syncTools` / `buildDefinition` / `publicToolName`（两阶段 swap；**零 `@deepseek-ai/*` 依赖**，用结构化最小接口吃宿主 ctx） | ✅ 是（只用结构化类型，无 `node:` / 无宿主类型 import） |
+| `mcp-sdk-shims.d.ts` | **口径依赖**：`@modelcontextprotocol/sdk` 的最小**类型垫片**（纯 `declare`，运行时零依赖）。⚠ 它**不是运行时依赖** | —（纯类型） |
+| `*.test.ts` | **共享单测**（随实现一起复制；`.ts` 层被 `node:test` 逐档覆盖，含桥的状态机） | —（Node 侧跑） |
 | `README.md` | 本文件（约定与纪律） | — |
 
 ## ⭐⭐ 谁能在浏览器里 import：**这条边界是硬约束**
@@ -79,8 +132,12 @@ client 半 fetch 同源路由拿到地址。本目录就是这一层 + 取数骨
 
 ⭐ **框架自己现在也会跑类型检查**（`checks/dsh_panel_selfcheck.py` 的第二关）：
 它**借接入项目装的那份 `tsc`**（`<项目>/dsh/node_modules/typescript`，缺即红，
-与 `phase5_*` 硬编码 EL 仓根同族先例），对本目录 **11 个文件（`.ts` + `.tsx`）**跑
+与 `phase5_*` 硬编码 EL 仓根同族先例），对本目录**全部 `.ts` + `.tsx`**（数量以判据打印为准）跑
 `--strict --noUncheckedIndexedAccess`。
+⚠ **要看到这一关真的跑，必须先给 `tsc` 一个来源**：设
+`$env:MECHA_TSC_ROOT='<某个接入项目的 dsh 目录（含 node_modules 的那一层）>'`。
+**没设时它 SKIP**（外部依赖缺失只有一种语义），**容易让人误以为"类型检查默认在跑"**——
+末行会写 `SKIP: 缺一份可用的 tsc…`，看到它就别当成绿。
 **为什么必需**：`node --test` **只剥类型、不做检查** ⇒ **只在类型位置的错它一个都看不见**。
 真实缺口（2026-09-26，第一个跑 `tsc` 的消费者抓到的）：
 ```
@@ -243,26 +300,37 @@ Node ≥ 22.6 **原生剥类型**，不需要 `tsx`、不需要 `npm install`（
 
 ## R1 的诚实立场（**这一句是刻意的**）
 
-> **参考实现没有运行时消费者**：它的消费者是**三个项目的插件源码**（它们持有副本），
+> **框架仓里没有运行时读取方**：它的消费者是**三个项目的插件源码**（它们持有副本），
 > 而**新鲜度判据不算消费者**（本仓 D-29 同口径）。⇒ 若你要求"这份资产必须有运行时读取方"，
-> **那它就不该进框架**。本资产进 mecha 的正当性来自**三个真实项目**（n=3，其中一家今天是坏的），
+> **那它就不该进框架**。本资产进 mecha 的正当性来自**三个真实项目**（n=3），
 > **不来自它的判据**。
+> ⚠ 注意这句的**作用域**（R3）：它说的是"**框架自己**不会在运行时读它"——
+> **不是**"没有人在用这份面板"。**三家都在用**（见下一节的实测）。
 
 因此**不要**为它造运行时消费者，也不要把它做成 Python 的 extra/依赖（它是 TS，没有任何
 Python 代码 import 它）。它随包分发的方式是 `pyproject.toml` 的 `package-data` 声明。
 
-## ⚠ R1 的**灰区**：两半的消费者状态**不同**（如实记，并附条件）
+## ⚠ R1 的**灰区**：两半的消费者状态**不同**（**已于 2026-10-01 结清**）
 
 2026-09-26（Get Paper 迁移落地后）实测的调用点分布：
 
 | 半边 | 今天的消费者 | 状态 |
 |---|---|---|
 | **地址半边**（`monitor-url.ts` + `fetchMonitorBase` + `panel-config` + `assertNever`） | **有**：Get Paper 的 iframe 面板（真调用点已在生产路径上） | ✅ 今天就在用 |
-| **数据半边**（`readJson` + `panelState` + `monitorStats`/`isNonDegenerate`/`statsLine`） | **0**（Get Paper 是 iframe，天然用不到） | ⏳ 它的消费者是 **EL / ML 的原生面板**——那两份代码**今天就在自己取数**（EL 两处、ML 一处），**只是迁移尚未执行** |
+| **数据半边**（`readJson` + `panelState` + `monitorStats`/`isNonDegenerate`/`statsLine`） | **有**：**EL 与 ML 的原生面板** | ✅ 今天就在用（**2026-10-01 结清**） |
 
-**为什么保留而不是撤掉**：消费者代码**已存在**（不是"将来可能需要"），且**迁移已决定并在队列里**（"Get Paper 先迁，然后 EL/ML"）。
-⚠ **附条件（R1 的成对性）**：**若 EL/ML 的迁移被取消，数据半边随之撤出**——那时它就只剩"零消费者的预建"，按 R1 应当删掉。
-> 这是 R1 灰区的正确处理方式：**不靠删掉它，也不靠假装它在用，而是把状态写清楚并附条件。**
+**结清记录（2026-10-01，可复现）**：本节原写"数据半边 **0** 消费者，消费者是 EL/ML 的原生面板、
+**只是迁移尚未执行**"，并附条件"若 EL/ML 的迁移被取消，数据半边随之撤出"。
+实测：**迁移已执行完毕**，EL 与 ML 的 `panel-data.ts` 都从**共享模块**取数据半边——
+`import { … isNonDegenerate, panelState, readJson, statsLine … } from './monitor-client.ts'`，
+并在 `loadPanel()` 里真的调用（`readJson` ×2 + `panelState` ×1）。
+> 复现：在 EL / ML 两仓的 `dsh/src/dsh-panel/panel-data.ts` 里看同一个 `import`
+> （两份**逐字节相同**，与参考实现同指纹）；行尾归一的 sha256 取 `panel-data.ts` 即得。
+> ⚠ **不写绝对路径**（R14/个人路径守卫：本机路径不许进仓）——按**符号名**找。
+> ⚠ **行号不写在这里**（D-26：行号是全库最易漂的东西）——按**符号名**找。
+
+⇒ **"今天的消费者 0"不成立**；**"若迁移被取消则撤出"这个条件已以相反方向结清**
+（迁移完成了 ⇒ **保留**）。**不是删掉它、也不是假装它在用，而是把状态写清楚。**
 
 ## 三条设计点（为何这样写）
 
@@ -285,7 +353,9 @@ Python 代码 import 它）。它随包分发的方式是 `pyproject.toml` 的 `
 ## 谁在用它 / 迁移顺序（不在本目录）
 
 **顺序：EL → ML → Get Paper**（一个同步点，各自只抄一次）。
-**进度（2026-09-26）**：GP 已迁完管道并在真 dsh 实测通过；EL 已收尾管道；**面板进资产后三家都要重抄一次**。
+**进度（2026-10-01 更新）：三家都已重抄完毕。**
+（2026-09-26 旧述写"面板进资产后三家都要重抄一次"——**那个动作已完成**。
+复现：四仓的受钉文件**逐字节相同**，各仓用自己的指纹表核；下面那张表就是它们的落点。）
 
 | 序 | 谁 | 副本落点 | 迁移内容 | 备注 |
 |---|---|---|---|---|
