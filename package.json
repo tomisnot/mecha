@@ -1,0 +1,18 @@
+{
+  "name": "mecha-node-deps",
+  "version": "0.0.0",
+  "private": true,
+  "description": "框架仓的 node 侧依赖（**只为 dsh 集成资产服务**，不是 npm 包）。",
+  "//为什么有它": [
+    "资产 mecha/dsh-panel/ 用 junction 被三个项目依赖，Node 找包是从【文件真实所在目录】往上翻 ⇒",
+    "资产里的 mcp-session-http.ts 要 import '@modelcontextprotocol/sdk'，而它住在框架仓里 ⇒",
+    "框架仓必须【自己】能解析到这些 peer，否则三家消费侧全部 ERR_MODULE_NOT_FOUND（2026-10-02 实测）。",
+    "⚠ 这不是把 node 生态塞进 Python 包：本文件不进 wheel（package-data 只列 dsh-panel/），",
+    "   只影响【本机源码检出】。没有 node_modules 也能用 mecha 的 Python 部分，只是 dsh 插件跑不起来。"
+  ],
+  "devDependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "react": "^18.3.1",
+    "@types/react": "^18.3.1"
+  }
+}

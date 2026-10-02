@@ -11,5 +11,11 @@ _wheeltest/
 build/
 *.egg-info/
 
+# node 侧依赖（package.json 的 `//为什么有它` 说明了用途）：
+# dsh 集成资产 mecha/dsh-panel/ 经 junction 被三个项目依赖，而资产里的
+# `@modelcontextprotocol/sdk` 必须由**框架仓自己**解析得到（Node 从文件真实
+# 路径往上翻）。装出来的是 node_modules，不进仓；`package-lock.json` **进仓**
+# （本工程靠它保证版本一致 —— EL/GP 的 lock 都在仓里）。
+node_modules/
 
 .trae/
