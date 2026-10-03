@@ -61,6 +61,16 @@ export {
   tabsHtml,
   type ExtraPageSpec,
 } from './panel-view.ts'
+export {
+  fmtMs,
+  fmtNum,
+  tokenPageHtml,
+  type ContextBreakdownWire,
+  type ContextPressureWire,
+  type SessionStatsWire,
+  type TokenUsageWire,
+  type TokenViews,
+} from './panel-token.ts'
 // ⚠ 地址路由（`monitor-url.ts`）**不在本入口**：它是 node-only（`node:fs`/`http`/`path`），
 //   归 `host` 面。面板侧要它，请从 `@mecha/dsh-panel/host/monitor-url.ts` 取。
 export { MonitorTabBody } from './MonitorTabBody.tsx'

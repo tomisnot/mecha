@@ -34,10 +34,12 @@ import { DEFAULT_ROUTE_PATH } from './routes.ts'
 /** 可逆副作用的收尾函数（本仓通用形状：注册/订阅都返回它）。 */
 export type Disposer = () => void
 
-/** 标准页的**页签文案覆盖**（可选；不填则用共享默认「飞行记录仪」/「配置态」）。 */
+/** 标准页的**页签文案覆盖**（可选；不填则用共享默认「飞行记录仪」/「配置态」/「仪表盘」）。 */
 export interface PanelTabOverrides {
   rec?: string
   cfg?: string
+  /** ⭐ 仪表盘页（token 计量）。第三个标准页。 */
+  dash?: string
 }
 
 /** 注入用的完整参数（**三个必填**，没有默认值可回落）。 */

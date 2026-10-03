@@ -51,7 +51,7 @@ export const HISTORY_PATH = '/history?since_seq=0'
 export const CONFIG_PATH = CONFIG_ROUTE
 
 /** 标准页的 id（项目的附加页用它们自己的 id，见 `ExtraPageSpec`）。 */
-export type StandardPage = 'rec' | 'cfg'
+export type StandardPage = 'rec' | 'cfg' | 'dash'
 
 /** 页签文案：**共享默认 + 项目可覆盖**（覆盖在注入的 `tabs` 里）。 */
 export function tabLabel(id: string): string {
@@ -60,6 +60,7 @@ export function tabLabel(id: string): string {
   const over = panelConfig().tabs ?? {}
   if (id === 'rec') return over.rec ?? '飞行记录仪'
   if (id === 'cfg') return over.cfg ?? '配置态'
+  if (id === 'dash') return over.dash ?? '仪表盘'
   return id
 }
 

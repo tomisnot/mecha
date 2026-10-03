@@ -269,4 +269,11 @@ export const TAB_CSS = `
 .mecha-tab-native td:first-child{color:#0550ae}
 .mecha-tab-native td.muted{color:#8b949e}
 .mecha-tab-native h4{margin:0 0 6px;color:#0969da;font-size:11px;letter-spacing:.1em;text-transform:uppercase}
+.mecha-tab-native h4:not(:first-child){margin-top:14px}
+.mecha-tab-native .mecha-note{padding:0 8px 8px;color:#57606a;line-height:1.5}
+.mecha-tab-native .mecha-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:6px;padding:0 8px}
+.mecha-tab-native .mecha-card{border:1px solid #d0d7de;border-radius:6px;background:#fff;padding:6px 8px}
+.mecha-tab-native .mecha-card-k{color:#57606a;font-size:11px}
+.mecha-tab-native .mecha-card-v{color:#1f2328;font-size:16px;font-weight:600;margin-top:2px}
+.mecha-tab-native .mecha-card-h{color:#8b949e;font-size:11px;margin-top:2px;line-height:1.4}
 `

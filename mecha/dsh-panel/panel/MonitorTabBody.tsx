@@ -48,6 +48,13 @@ import {
   TAB_CSS,
   type ExtraPageSpec,
 } from './panel-view.ts'
+import {
+  tokenPageHtml,
+  type ContextBreakdownWire,
+  type ContextPressureWire,
+  type SessionStatsWire,
+  type TokenUsageWire,
+} from './panel-token.ts'
 
 /** 轮询间隔（展示刷新，非正确性依赖；**共享常量、不开旋钮**——三家实测都是这个值）。 */
 const POLL_MS = 3000
@@ -57,13 +64,25 @@ const openSet = new Set<string>()
 let savedPage = 'rec'
 const isOpen = (k: string) => openSet.has(k)
 
-/** 标准两页（页签文案可在参数块 `TABS` 里覆盖）。 */
+/** 标准三页（页签文案可在参数块 `TABS` 里覆盖）。 */
 function standardPages(): { id: string; label: string }[] {
-  const ids: StandardPage[] = ['rec', 'cfg']
+  const ids: StandardPage[] = ['rec', 'cfg', 'dash']
   return ids.map((id) => ({ id, label: tabLabel(id) }))
 }
 
-export function MonitorTabBody({ extraPages = [] }: { extraPages?: ExtraPageSpec[] } = {}) {
+/**
+ * **仪表盘的取数面**：dsh 的 `useProjection`（会话槽位的标准 hook 座位之一）。
+ *
+ * ⚠ 它是**注入进来的**（不 import dsh 包）：本资产对 dsh **零依赖**，
+ * 连类型都不 import ⇒ 这里用**结构化签名**描述"我们会怎么用它"。
+ * 缺它（未在会话槽位挂载 / 宿主没提供）时整页显示"未接入"，**不假装是 0**。
+ */
+type UseProjectionLike = <K extends string>(key: K) => unknown
+
+export function MonitorTabBody({ extraPages = [], useProjection }: {
+  extraPages?: ExtraPageSpec[]
+  useProjection?: UseProjectionLike
+} = {}) {
   const ref = useRef<HTMLDivElement>(null)
   const [page, setPage] = useState<string>(savedPage)
   // ⭐ **唯一状态**（`PanelState` 判别联合）：没有"取数失败就什么都不画"的分支——
@@ -118,6 +137,16 @@ export function MonitorTabBody({ extraPages = [] }: { extraPages?: ExtraPageSpec
     if (key) { if (openSet.has(key)) openSet.delete(key); else openSet.add(key) }
   }
 
+  // ⚠ **四个 hook 恒定按序调用**：`useProjection` 在组件生命周期里是恒定的
+  //   （由槽位 kit 注入）⇒ `?.` 只影响"取不取得到值"，**不改变 hook 数量**。
+  //   写成条件调用会破坏 hooks 规则（渲染期报错），所以这里刻意不分支。
+  const tokenViews = {
+    usage: useProjection?.('tokenUsage') as TokenUsageWire | undefined,
+    breakdown: useProjection?.('contextBreakdown') as ContextBreakdownWire | undefined,
+    pressure: useProjection?.('contextPressure') as ContextPressureWire | undefined,
+    stats: useProjection?.('sessionStats') as SessionStatsWire | undefined,
+  }
+
   const b = stateBadge(state)
   const pages = [...standardPages(), ...extraPages.map((p) => ({ id: p.id, label: p.label }))]
   const head = tabsHtml(pages, page, badgeHtml(b.cls, b.text))
@@ -133,6 +162,12 @@ export function MonitorTabBody({ extraPages = [] }: { extraPages?: ExtraPageSpec
       ? extraPageHtml(spec, got)
       : `<div class="mecha-page"><div class="mecha-msg muted">${
           esc(state ? '该附加页还没取到数据' : '连接中…')}</div></div>`
+  } else if (page === 'dash') {
+    // ⭐ 仪表盘**不依赖那条只读端点**（它的数据来自 dsh 投影）⇒ 权威离线时它照样能显示。
+    body = useProjection
+      ? tokenPageHtml(tokenViews)
+      : `<div class="mecha-page"><div class="mecha-msg muted">${
+          esc('未接入会话投影（本页需要 dsh 的 useProjection；挂在会话槽位时由宿主注入）')}</div></div>`
   } else if (state?.kind === 'ok') {
     body = page === 'rec'
       ? recPageHtml(eventsOf(state), isOpen)
