@@ -19,3 +19,7 @@ build/
 node_modules/
 
 .trae/
+
+# 统一启动器的运行期产物（pid / 日志）：**每台机器各自生成**，不入库。
+# ⚠ 由 `mecha/supervise.py` 写在「启动时的 cwd」下；它含本机 pid，入库会让每次启动都脏工作区。
+_mecha_runtime/

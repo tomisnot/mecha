@@ -64,13 +64,16 @@ class Service:
     manual: ChildSpec | None = None
     default_on: bool = True
     env: Mapping[str, str] = field(default_factory=dict)
-    #: 日志/child 名；``None`` ⇒ 用 ``id``。
-    log_id: str | None = None
 
     def child(self) -> ChildSpec:
-        """把声明翻成 supervisor 要的 :class:`ChildSpec`（一处翻译，别处别抄）。"""
+        """把声明翻成 supervisor 要的 :class:`ChildSpec`（一处翻译，别处别抄）。
+
+        ⚠ 曾经有一个 ``log_id`` 字段想让"日志名"与"child id"分开 —— 已删：
+        ``ChildSpec.id`` 本身就是 ``<svc_id>``，第二个名字**没有任何消费者**
+        （R17：参数没人读就是死缝）。
+        """
         return ChildSpec(
-            id=self.log_id or self.id,
+            id=self.id,
             argv=self.argv, cwd=self.cwd, env=dict(self.env),
             ready=self.ready, data_root=self.data_root,
         )

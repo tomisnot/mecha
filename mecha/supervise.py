@@ -78,6 +78,19 @@ class ReadySpec:
     #: 对回读到的端口做 TCP 连通性探测。
     tcp: bool = False
     timeout_s: float = 90.0
+    #: 探活可接受的状态码；``None`` ⇒ **默认只接受 2xx**。
+    #: ``()`` ⇒ **任何 HTTP 响应（含 4xx）都算"在听"**。
+    #:
+    #: ⚠ **为什么需要这个口子（实测，不是设想）**：某项目的 MCP 端点在
+    #: ``GET /mcp`` 上回 **406（非 2xx）**，而该端点上**没有**任何回 2xx 的只读路由
+    #: （``/summary``/``/runs`` 等属**监控端点**，在**另一个端口**）。
+    #: 而"就绪"要表达的是"**这个服务真的在听**" —— 该项目原有判据正是
+    #: "有 HTTP 响应即算在听（4xx 也是响应）"，理由是"TCP 连得上还不够，
+    #: 同端口可能是别的东西"。⇒ 若框架只认 2xx，**该项目会永远判不就绪**。
+    #:
+    #: ⚠ **使用纪律**：``ok_codes=()`` 只用于"**有响应即证明服务在听**"的场景；
+    #: 不许用它掩盖"端点真的在报错"。**默认严格，放宽必须在声明处写理由。**
+    ok_codes: tuple[int, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -579,15 +592,28 @@ class _Child:
         url = (ready.probe or "").replace("{port}", str(port))
         import urllib.error
         import urllib.request
+        #: 可接受的状态码：``None`` ⇒ 默认只认 2xx；``()`` ⇒ 任何 HTTP 响应都算在听。
+        want = ready.ok_codes
+        any_ok = want is not None and len(want) == 0
         try:
             with urllib.request.urlopen(url, timeout=2.0) as resp:   # noqa: S310 - http(s) 由声明给
                 code = int(getattr(resp, "status", 0))
         except urllib.error.HTTPError as exc:
+            # ⚠ "有 HTTP 响应"也是一种"在听"的证据：某些端点（如 MCP 的 `GET /mcp`）
+            # 正常就回 406 ⇒ 声明方可用 `ok_codes=()` 表达"我要的是它在听，不是 2xx"。
+            if any_ok:
+                return True, f"{url} 返回 {exc.code}（有 HTTP 响应即算在听）"
+            if want is not None and exc.code in want:
+                return True, f"{url} 返回 {exc.code}（在声明的可接受集内）"
             return False, f"{url} 返回 {exc.code}（非 2xx）"
         except OSError as exc:
             return False, f"{url} 连不上（{type(exc).__name__}）"
         if 200 <= code < 300:
             return True, f"{url} 返回 {code}"
+        if any_ok:
+            return True, f"{url} 返回 {code}（有 HTTP 响应即算在听）"
+        if want is not None and code in want:
+            return True, f"{url} 返回 {code}（在声明的可接受集内）"
         return False, f"{url} 返回 {code}（非 2xx）"
 
     def _evidence(self, port: int | None, why: str) -> str:
