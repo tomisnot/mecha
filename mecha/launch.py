@@ -35,7 +35,7 @@ import json
 import os
 import socket
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -285,6 +285,10 @@ class LaunchController:
         self._started = False
         self._enabled: tuple[str, ...] = ()
         self._last_error = ""
+        #: 起完 child 之后的挂点（``launch.main`` 用它在启动后把后端接进聚合端点）。
+        #: ⚠ 做成**属性**而不是构造参数：控制器不该认识聚合端点（那是 launcher 的编排），
+        #: 而"起完之后做点什么"是它唯一需要提供的口子。
+        self.after_start: Callable[[], None] | None = None
 
     # ---- 读 ----
     def last_status(self) -> dict:
@@ -330,6 +334,9 @@ class LaunchController:
             for child in plan.ordered:                  # ⭐ 按**显式顺序**起
                 self.super.start(child)
             self._started = True
+            # ⭐ 起完之后把"已就绪的 svc"接进聚合端点（有回读端口才挂，见 sync_backends）
+            if self.after_start is not None:
+                self.after_start()
             self._save_status()
             return {"ok": True, "started": list(self._enabled),
                     "cleaned": list(self.super.cleaned)}
@@ -361,6 +368,82 @@ class LaunchController:
 # --------------------------------------------------------------------------- CLI
 
 
+def build_aggregate_wiring(*, site: Site, supervisor: Supervisor,
+                           services: Sequence[Service] | None = None):
+    """把**聚合端点**接起来，返回 ``(endpoint, runtime, registry_facade)``。
+
+    ## 三条设计决定（都不是随手）
+
+    1. **聚合端点是 launcher 自己持有的进程内服务端，不是 supervisor 的 child**：
+       dsh 的 overlay 要写"聚合端点的地址"，而"对 dsh 稳定"最自然的做法是
+       让它在**同一个进程**里、由 launcher 直接持有 ⇒ 不占 child 名额、不用再套一层
+       启停与端口发现。**理由（若将来要做成 child）**：那时它自己的生存期要独立于
+       launcher；当前没有这个需求（n=1 不预建）。
+    2. ⭐ **必须在起任何 child 之前建**：dsh 的 ``--patch`` 要指向它，地址得先存在
+       （所以本函数在 ``Supervisor`` 起 child 之前调用，并由 ``prepare_hook`` 在
+       spawn 那一刻把 overlay 塞进 dsh 的 argv）。
+    3. ⭐ **工具表用"门面"喂给服务端**：``build_mcp_server`` 是**纯构造、快照工具表**，
+       而聚合端点的工具表**随后端 attach/detach 变**。若把 ``Aggregator.registry()``
+       的**结果**直接给出去，表就被冻在上线那一刻。
+       ⇒ 这里传一个**每次 ``schemas()`` 都重新问 ``Aggregator`` 的门面**——
+       不引入新机制（只要 ``schemas()``，与 ``build_mcp_server`` 的用法一致），
+       却让"开关软件"立刻反映到服务端。
+    """
+    from .aggregate import Aggregator
+    from .aggregate_runtime import AggregateRuntime, make_prepare_hook
+    from .providers.mcp import McpEndpoint
+    from .providers.mcp_client import Backend
+
+    agg = Aggregator(server_name=site.name)
+
+    class _LiveRegistry:
+        """聚合端点的**活工具表门面**：每次问它都现算，别冻在上线那一刻。
+
+        ⚠ 需要 ``schemas()`` **与** ``get()``：``build_mcp_server`` 先列
+        ``schemas()``、再用 ``registry.get(name)`` 取回定义本体去注册
+        （``providers/mcp.py:451``）⇒ 只给 ``schemas()`` 会当场
+        ``AttributeError: 'get'``（本门面第一版就是这样红的）。
+        ⚠ 两个方法**各自**读一次当前表（不缓存）：缓存会让"刚摘掉的后端"仍出现在
+        ``get()`` 里，那是另一种陈旧。
+        """
+
+        def schemas(self) -> list[dict]:
+            return agg.registry().schemas()
+
+        def get(self, name: str):
+            return agg.registry().get(name)
+
+    registry = _LiveRegistry()
+    endpoint = McpEndpoint(registry, server_name=site.name,
+                           instructions=f"{site.name} 的聚合端点（各软件一条脊椎合在这里）")
+    endpoint.start()                       # ⚠ 起在任何 child 之前；端口**回读**
+    mcp_port = endpoint.port
+    if mcp_port is None:
+        raise MechaError("聚合端点起来了但拿不到回读端口", kind="aggregate_port_unknown",
+                         hint="McpEndpoint.start() 应回读真实 bind 端口")
+
+    def backend_factory(url: str, *, server_name: str) -> object:
+        import asyncio
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(
+                Backend.connect(url, server_name=server_name, timeout_s=30.0))
+        finally:
+            loop.close()
+
+    runtime = AggregateRuntime(supervisor=supervisor,
+                               services=tuple(services or site.services),
+                               aggregator=agg, backend_factory=backend_factory)
+    # ⭐ 铁律 7：进程事实**只有一个来源**（supervisor）；``known`` 交出**声明里全部** id
+    #   （否则"存在但没跑"会被误报成"压根没有这个软件"）。
+    agg.wire(state_fn=supervisor.state,
+             open_fn=runtime.open_service, close_fn=runtime.close_service,
+             known=[s.id for s in (services or site.services)])
+    # ⭐ spawn dsh **之前那一刻**把 overlay 塞进它的 ``--patch``（端口此时已确定）。
+    supervisor._prepare_hooks = (make_prepare_hook(runtime, site, lambda: mcp_port),)
+    return endpoint, runtime, registry
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         prog="python -m mecha",
@@ -386,11 +469,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     controller = LaunchController(sites=sites, runtime=runtime, supervisor=supervisor)
 
     if args.dry_run:
+        # ⚠ **dry-run 起聚合端点之前就返回**：它只是打印计划，
+        #   不许因为接线把 dry-run 变成"会起网络/进程"的动作。
         plan = controller.plan([s.id for s in sites[0].services if s.default_on])
         print(f"站点：{sites[0].name}")
         print("启动顺序：" + " → ".join(c.id for c in plan.ordered))
         print("待清理残留：" + (", ".join(i.target for i in plan.stale) or "（无）"))
         return 0
+
+    # ⭐ 聚合端点：**起在任何 child 之前**（dsh 的 overlay 要指向它）
+    endpoint, agg_runtime, _ = build_aggregate_wiring(site=sites[0], supervisor=supervisor)
+    controller.after_start = lambda: agg_runtime.sync_backends()
 
     if args.all:
         enabled = [s.id for s in sites[0].services if s.default_on]
@@ -410,4 +499,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     finally:
         page.stop()
         controller.shutdown()
+        try:
+            endpoint.stop()            # 聚合端点是我们自己起的 ⇒ 也要自己收
+        except Exception:              # noqa: BLE001 - 收尾失败不该盖住退出码
+            pass
     return 0

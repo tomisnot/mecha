@@ -399,6 +399,56 @@ def _run_await(coro):
         loop.close()
 
 
+META_NAMES = ("query_software", "open_software", "close_software")
+
+
+def check_launch_wiring_at_the_launch_layer() -> None:
+    """⭐ ``launch`` 那一层的接线：聚合端点起来 ⇒ **dsh child 的 ``--patch``** 指向它。
+
+    ## 为什么这条要单独在 launch 层再钉一次
+    "``AggregateRuntime`` 能生成 overlay" 与 "``launch`` 真的把它挂到 dsh 上"
+    是**两件事**。只在 runtime 层断言的话，**钩子根本没挂**（或挂到别的 child 上）
+    照样绿——文件仍会被别处生成。⇒ 必须断言 **dsh 那个 child 的 ``--patch`` 值**。
+    """
+    import shutil
+    import tempfile
+
+    from mecha.launch import build_aggregate_wiring
+
+    d = Path(tempfile.mkdtemp(prefix="launch-wire-"))
+    site = Site(name="wire-site",
+                services=(Service(id="MOCK", brief="x",
+                                  argv=(sys.executable, "-c", "pass"), cwd=d,
+                                  ready=ReadySpec(tcp=True, timeout_s=1.0),
+                                  data_root=d / "data"),),
+                dsh=DSHSpec(command=(sys.executable, "-c", "pass"), cwd=d))
+    sup = Supervisor(log_dir=d / "logs")
+    ep, _rt, reg = build_aggregate_wiring(site=site, supervisor=sup)
+    try:
+        port = ep.port
+        _check("⑦ 聚合端点起来了并**回读**到端口", isinstance(port, int) and port > 0,
+               f"port={port!r}")
+        _check("⑦ 门面是**活**的（初始含元工具；不是构造期快照）",
+               set(META_NAMES) <= {s["name"] for s in reg.schemas()},
+               f"names={[s['name'] for s in reg.schemas()]}")
+        # ⭐ 走 **Supervisor 的真钩子路径**（不是直接调 runtime.prepare_dsh）
+        dsh = ChildSpec(id="dsh", argv=("dsh", "web", "--port", "3081"), cwd=d)
+        patched = sup._run_prepare(dsh)
+        _check("⑦ ⭐ dsh 那个 child 的 argv 里出现了 `--patch`", "--patch" in patched.argv,
+               f"argv={patched.argv}")
+        ov = Path(patched.argv[patched.argv.index("--patch") + 1])
+        _check("⑦ ⭐ 那份 overlay 里的端口 = 聚合端点**回读**端口",
+               str(port) in ov.read_text(encoding="utf-8"), f"file={ov}")
+        _check("⑦ 且带 `toolCallTimeoutMs: 600000`（长训练不假失败）",
+               "toolCallTimeoutMs: 600000" in ov.read_text(encoding="utf-8"))
+        _check("⑦ 别的 child 不被改（钩子只认 dsh）",
+               sup._run_prepare(ChildSpec(id="MOCK", argv=("x",), cwd=d)).argv == ("x",))
+    finally:
+        ep.stop()
+        sup.shutdown()
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def main() -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -409,6 +459,7 @@ def main() -> int:
     check_overlay_keeps_timeout()
     check_prepare_hook_injects_overlay_into_dsh()
     check_end_to_end_real_mcp_backend()
+    check_launch_wiring_at_the_launch_layer()
     if FAILS:
         print(f"aggregate_runtime_selfcheck: FAIL（{len(FAILS)} 条）：{FAILS}")
         return 1
