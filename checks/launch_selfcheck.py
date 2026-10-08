@@ -526,6 +526,61 @@ def check_startup_plan_order_and_stale() -> None:
         env.close()
 
 
+def check_dry_run_has_no_side_effects() -> None:
+    """⭐ 判据 ⑫：``--dry-run`` **不许有任何副作用**（尤其**不许造目录**）。
+
+    ## 为什么必须有这条（接入仓实测报出来的真 bug）
+
+    原实现先 ``acquire_singleton(runtime)`` 再判 ``--dry-run``，
+    而 ``acquire_singleton`` 会 ``runtime.mkdir(...)``
+    ⇒ ⭐ **一次 `--dry-run`（甚至只在判据里调一次 `load_sites()`）
+      就会在 cwd 下造出 `_mecha_runtime/`** ⇒ 接入仓的工作区**无缘无故变脏**。
+
+    ⚠ **本条是"边界"判据，不是"功能"判据** —— 它测的是"**不该发生的事有没有发生**"。
+    这类判据最容易被写成假绿："跑完没报错"不等于"没副作用"。
+
+    ⚠ **怎么故意退化还能让它绿**（所以下面要**两段都断言**）：
+    ① 只断言"`_mecha_runtime` 不存在"—— 若实现改成把目录建到**别处**（比如项目根），
+       这条照样绿 ⇒ 所以还要断言 ② **整个临时 cwd 里没有新增任何文件/目录**。
+    """
+    import contextlib
+    import io
+    import tempfile
+
+    from mecha import launch as L
+
+    td = Path(tempfile.mkdtemp(prefix="mecha-dry-"))
+    site_dir = td / "site"
+    site_dir.mkdir()
+    (site_dir / "mecha_site.py").write_text(
+        "from pathlib import Path\n"
+        "from mecha.site import DSHSpec, ReadySpec, Service, Site\n"
+        "ROOT = Path(__file__).resolve().parent\n"
+        "SITE = Site(name='dry-probe', services=(\n"
+        "    Service(id='D', brief='x', argv=('x',), cwd=ROOT,\n"
+        "            ready=ReadySpec(port_file='.p'), data_root=ROOT),\n"
+        "), dsh=DSHSpec(command=('dsh',), cwd=ROOT))\n",
+        encoding="utf-8")
+    try:
+        cwd = os.getcwd()
+        os.chdir(td)
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                rc = L.main(["--dry-run", "--root", str(site_dir), "--no-browser"])
+        finally:
+            os.chdir(cwd)
+        _check("⑫ dry-run 返回 0（它只是打印计划）", rc == 0, f"rc={rc}")
+        _check("⑫ ⭐ dry-run **不造** `_mecha_runtime/`（原实现会造，脏接入仓的工作区）",
+               not (td / "_mecha_runtime").exists(),
+               f"被造出来了：{(td / '_mecha_runtime')}")
+        #: ② 对偶：**整个 cwd 里一个新东西都不许有**（防止"建到别处去"照样绿）
+        left = sorted(p.name for p in td.iterdir() if p.name != "site")
+        _check("⑫ ⭐ 且 **cwd 里没有任何新增**（对偶：防'改个地方建目录'照样绿）",
+               left == [], f"多出来的：{left}")
+    finally:
+        shutil.rmtree(td, ignore_errors=True)
+
+
 def check_status_page_phases() -> None:
     """阶段 A/B 同页 + **"启动失败"与"读不到状态"措辞分开**。"""
     from mecha.providers.status_page import render_page
@@ -581,6 +636,7 @@ def main() -> int:
     check_child_env_is_utf8_and_empty_means_unset()
     check_lease_exclusive_and_switch()
     check_startup_plan_order_and_stale()
+    check_dry_run_has_no_side_effects()
     check_status_page_phases()
     if FAILS:
         print(f"launch_selfcheck: FAIL（{len(FAILS)} 条）：{FAILS}")

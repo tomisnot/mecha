@@ -461,6 +461,21 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     roots = [Path(r) for r in args.root] if args.root else None
     sites = load_sites(roots)
+
+    if args.dry_run:
+        #: ⚠ **dry-run 必须在"任何副作用"之前返回**（实测抓到的真 bug）：
+        #: 原实现先 `acquire_singleton(runtime)`，而那个函数会 `runtime.mkdir(...)`
+        #: ⇒ **一次 `--dry-run`（或只在判据里调 `load_sites`）就会在 cwd 下造出
+        #: `_mecha_runtime/`** ⇒ 脏工作区（接入仓的判据就地跑一次就多一个目录）。
+        #: ⇒ 所以这里**只读地**算计划：**不建目录、不抢单实例锁、不起任何东西**。
+        #: ⚠ 连 `Supervisor(...)` 都不许构造 —— 它的 `__init__` 里也有 `log_dir.mkdir`
+        #:   （第一版我在这里构造了它 ⇒ dry-run 照样建目录；**判据没抓到，是我读代码抓到的**）。
+        plan = plan_startup(sites[0], [s.id for s in sites[0].services if s.default_on])
+        print(f"站点：{sites[0].name}")
+        print("启动顺序：" + " → ".join(c.id for c in plan.ordered))
+        print("待清理残留：" + (", ".join(i.target for i in plan.stale) or "（无）"))
+        return 0
+
     runtime = _runtime_root(sites[0])
     try:
         acquire_singleton(runtime)
@@ -469,15 +484,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
     supervisor = Supervisor(log_dir=runtime / "logs", state_path=runtime / "state.json")
     controller = LaunchController(sites=sites, runtime=runtime, supervisor=supervisor)
-
-    if args.dry_run:
-        # ⚠ **dry-run 起聚合端点之前就返回**：它只是打印计划，
-        #   不许因为接线把 dry-run 变成"会起网络/进程"的动作。
-        plan = controller.plan([s.id for s in sites[0].services if s.default_on])
-        print(f"站点：{sites[0].name}")
-        print("启动顺序：" + " → ".join(c.id for c in plan.ordered))
-        print("待清理残留：" + (", ".join(i.target for i in plan.stale) or "（无）"))
-        return 0
 
     # ⭐ 聚合端点：**起在任何 child 之前**（dsh 的 overlay 要指向它）
     endpoint, agg_runtime, _ = build_aggregate_wiring(site=sites[0], supervisor=supervisor)
