@@ -48,6 +48,9 @@ CHECKS = [
     # supervisor / 站点声明 / 启动入口 / 两阶段页面的判据（**全用 mock 子进程**：
     # 不依赖任何真实软件，也不需要 EL 仓）。见 checks/launch_selfcheck.py 的 docstring。
     "checks/launch_selfcheck.py",
+    # 聚合端点（2a：工具表 / 转发 / 失败语义）。⚠ 也是**零外部依赖**：全用假后端，
+    # 不起真进程（真跨进程端到端留给 2b）。
+    "checks/aggregate_selfcheck.py",
     # dsh 集成资产（共享资产）的共享自测。⚠ **硬依赖 node**：缺 node 即红（不软跳过）。
     # ⚠ 2026-10-01 起**这里成了资产回归的唯一发现点**：资产改为包依赖（junction）后，
     #   接入项目不再持有副本、也不再跑这份共享单测 ⇒ 本判据不跑或跑假，三家都发现不了。
