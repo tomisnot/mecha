@@ -48,6 +48,12 @@ from .authority import Mode
 #: 服务名的形状（它将来也是**工具前缀**，所以现在就要约束住）。
 _SERVICE_ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
 
+#: ⭐ 框架往**软件进程**里送的两个"启动者声明"（三层架构 §5.1）。
+#: ⚠ 它们是**框架与软件之间的约定名字**，不是项目的字段 ⇒ 项目**不该**自己拼这两个名字。
+#: ⚠ 走 env（而不是 argv）的理由见 :meth:`Service.child`。
+MECHA_MODE_ENV = "MECHA_INITIAL_MODE"
+MECHA_ROOT_ENV = "MECHA_SOFTWARE_ROOT"
+
 
 @dataclass(frozen=True)
 class Service:
@@ -91,10 +97,33 @@ class Service:
         ⚠ 曾经有一个 ``log_id`` 字段想让"日志名"与"child id"分开 —— 已删：
         ``ChildSpec.id`` 本身就是 ``<svc_id>``，第二个名字**没有任何消费者**
         （R17：参数没人读就是死缝）。
+
+        ## ⭐ 这里注入两个"启动者声明"的环境变量（三层架构 §5.1）
+
+        闸门在**软件进程内**（公理 A3）⇒ "把值送到软件"是双方约定：
+
+        | 变量 | 含义 |
+        |---|---|
+        | ``MECHA_SOFTWARE_ROOT`` | 这份软件的数据根（≈ ``data_root``） |
+        | ``MECHA_INITIAL_MODE`` | 启动者声明的初始写权（``locked``/``human``/``ai``/``open``） |
+
+        ⚠ **为什么走 env 而不是 argv**：三家的 CLI 风格完全不同（argparse / typer / …），
+        env 是**唯一**对三家都一样的通道；且它**不占**软件自己的参数面。
+
+        ⚠ **取值必须用 `.value`**：``Mode`` 是 ``str`` 枚举，而 ``str(Mode.AI)`` 给的是
+        ``'Mode.AI'`` 而**不是** ``'ai'`` —— 这个坑框架里踩过一次（``SvcState.DOWN``），
+        三家接入时**又各自踩了一次**（实测：三个子代理都断在这上面）。
+
+        ⚠ **软件的显式声明优先**：若项目在自己的 ``env`` 里给了同名键，**以项目为准**
+        （``setdefault`` 语义，与框架统一注入 ``PYTHONIOENCODING`` 同一纪律）。
         """
+        env = dict(self.env)
+        env.setdefault(MECHA_ROOT_ENV, str(self.data_root))
+        env.setdefault(MECHA_MODE_ENV,
+                       str(getattr(self.initial_mode, "value", self.initial_mode)))
         return ChildSpec(
             id=self.id,
-            argv=self.argv, cwd=self.cwd, env=dict(self.env),
+            argv=self.argv, cwd=self.cwd, env=env,
             ready=self.ready, data_root=self.data_root,
         )
 

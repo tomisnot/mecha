@@ -646,6 +646,57 @@ def check_dry_run_has_no_side_effects() -> None:
         shutil.rmtree(td, ignore_errors=True)
 
 
+def check_declared_env_is_injected_with_values() -> None:
+    """⭐ 判据 ⑭：`initial_mode` / `data_root` **真的注入**进软件进程的 env，
+    且**取的是 `.value` 而不是 `str(枚举)`**。
+
+    ## 为什么必须有这条（**三个接入仓各自踩了同一个坑**）
+
+    ``Mode`` 是 ``str`` 枚举 ⇒ ``str(Mode.AI)`` 给的是 **``'Mode.AI'``**，
+    而软件读 ``MECHA_INITIAL_MODE`` 时想要的是 **``'ai'``**。
+    ⚠ 这个坑框架里踩过一次（``SvcState.DOWN`` 同款），
+    三家接入时**又各自踩了一次**（实测：三个子代理都断在这上面）。
+
+    ⚠ **怎么故意退化还能让它绿**（所以下面要断言具体值）：
+    只断言"env 里有这个键"是不够的 —— 把实现改成 ``str(self.initial_mode)``
+    **照样有这个键**，只是值是 ``'Mode.AI'``。
+
+    ⚠ 还有一段**对偶**：项目**显式给**的同名变量**不许被覆盖**
+    （与框架统一注入 ``PYTHONIOENCODING`` 同一纪律：``setdefault`` 语义）。
+    """
+    from mecha.authority import Mode
+    from mecha.site import MECHA_MODE_ENV, MECHA_ROOT_ENV, Service
+    from mecha.site import ReadySpec as _RS
+
+    svc = Service(id="probe", brief="x", argv=("x",),
+                  cwd=Path.cwd(), ready=_RS(port_file=".p"),
+                  data_root=Path.cwd() / "data", initial_mode=Mode.AI)
+    kid = svc.child()
+    _check("⑭ ⭐ `MECHA_INITIAL_MODE` 注入的是 **`'ai'`**（`.value`），不是 `'Mode.AI'`",
+           kid.env.get(MECHA_MODE_ENV) == "ai", f"got={kid.env.get(MECHA_MODE_ENV)!r}")
+    _check("⑭ `MECHA_SOFTWARE_ROOT` 注入 = 声明的 `data_root`",
+           kid.env.get(MECHA_ROOT_ENV) == str(svc.data_root),
+           f"got={kid.env.get(MECHA_ROOT_ENV)!r}")
+
+    #: 对偶：**项目显式给的优先**（不许被框架覆盖）
+    svc2 = Service(id="probe2", brief="x", argv=("x",),
+                   cwd=Path.cwd(), ready=_RS(port_file=".p"),
+                   data_root=Path.cwd() / "data2", initial_mode=Mode.AI,
+                   env={MECHA_MODE_ENV: "human"})
+    kid2 = svc2.child()
+    _check("⑭ 对偶：项目**显式给**的同名变量优先（不许被框架覆盖）",
+           kid2.env.get(MECHA_MODE_ENV) == "human", f"got={kid2.env.get(MECHA_MODE_ENV)!r}")
+
+    #: 每一档都要是"小写裸值"（防将来加新档时漏了 `.value`）
+    for m in (Mode.LOCKED, Mode.HUMAN, Mode.AI, Mode.OPEN):
+        s = Service(id="p3", brief="x", argv=("x",), cwd=Path.cwd(),
+                    ready=_RS(port_file=".p"), data_root=Path.cwd() / "d3",
+                    initial_mode=m)
+        got = s.child().env.get(MECHA_MODE_ENV)
+        _check(f"⑭ `{m.value}` 档注入的是 `{m.value!r}`（不是 `{str(m)!r}`）",
+               got == m.value, f"got={got!r}")
+
+
 def check_status_page_phases() -> None:
     """阶段 A/B 同页 + **"启动失败"与"读不到状态"措辞分开**。"""
     from mecha.providers.status_page import render_page
@@ -703,6 +754,7 @@ def main() -> int:
     check_declaration_shape_three_layer()
     check_startup_plan_order_and_stale()
     check_dry_run_has_no_side_effects()
+    check_declared_env_is_injected_with_values()
     check_status_page_phases()
     if FAILS:
         print(f"launch_selfcheck: FAIL（{len(FAILS)} 条）：{FAILS}")
