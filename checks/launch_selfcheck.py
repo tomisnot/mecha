@@ -697,43 +697,101 @@ def check_declared_env_is_injected_with_values() -> None:
                got == m.value, f"got={got!r}")
 
 
-def check_status_page_phases() -> None:
-    """阶段 A/B 同页 + **"启动失败"与"读不到状态"措辞分开**。"""
-    from mecha.providers.status_page import render_page
+def check_status_page_console() -> None:
+    """⑪ **常驻控制台**（一页）+ 三个控件分工 + 四条布局要求。
+
+    ## 红证怎么造
+    - **只渲染"勾过的"** ⇒ "始终展示全部声明项目"那几条红（造法：把 services() 过滤成
+      "intent 为真的"）；
+    - **把写权栏渲染成能点的按钮** ⇒ "不许谎称可点"那条红（造法：给它加 onclick）；
+    - **把折叠改成"缩小内边距"** ⇒ "折叠真的让出宽度"那条红（造法：只改 padding）。
+    """
+    from mecha.providers.status_page import MODE_PENDING_TEXT, render_page
+
+    class Svc:
+        def __init__(self, sid, brief, has_gui):
+            self.id = sid
+            self.brief = brief
+            self.has_gui = has_gui
 
     class Ctl:
+        """最小控制面（只为渲染）。⚠ 三个软件：两个有 GUI、一个没有。"""
+
         def __init__(self) -> None:
             self._started = False
             self._err = ""
+            self._svcs = (Svc("ML", "传统机器学习 / 神经网络 / 自动调参", True),
+                          Svc("EL", "仿真与参数扫描", True),
+                          Svc("GP", "论文管理与推荐", False))
+            self._intent = {"ML": True, "EL": True, "GP": False}
+            self._rows: list[dict] = []
+
         def sites(self):
-            class Svc:
-                id = "Demo"; brief = "演示"
             class St:
-                services = (Svc(),)
+                name = "demo"
             return (St(),)
+
+        def services(self):
+            return self._svcs
+
         def started(self) -> bool:
             return self._started
+
+        def intent(self) -> dict:
+            return dict(self._intent)
+
+        def set_intent(self, sid, on): self._intent[sid] = on
+        def set_service_enabled(self, sid, on): self._intent[sid] = on
         def last_status(self) -> dict:
             return {"children": [], "last_error": self._err}
+
         def state(self) -> dict:
-            return {"children": [], "started": self._started, "enabled": [],
-                    "sites": ["demo"], "cleaned": [], "last_error": self._err}
+            return {"children": list(self._rows), "started": self._started, "enabled": [],
+                    "sites": ["demo"], "cleaned": [], "last_error": self._err,
+                    "intent": dict(self._intent)}
+
         def start(self, enabled): return {"ok": True}
         def shutdown(self): return {"ok": True}
 
     c = Ctl()
-    sel = render_page(c)
-    _check("⑪ 阶段 A（未启动）渲染**选择页**，且默认全勾",
-           "选择要启用的项目" in sel and "checked" in sel)
+    p1 = render_page(c)
+    # ⭐ 判据 3：**始终**展示全部声明项目（启动前）
+    _check("⑪ ⭐ 启动前就列出**全部声明项目**（未勾的 GP 也在）",
+           all(s in p1 for s in ("ML", "EL", "GP")), "少了某个项目")
+    _check("⑪ `has_gui=False` 的 GP 也在列表里（只是写权栏不同）",
+           "GP" in p1 and "论文管理与推荐" in p1)
+    # ⭐ 判据 4：写权栏本轮"待接"，且**不可点**
+    _check("⑪ ⭐ 写权栏显示「待接」并注明依赖控制通道",
+           MODE_PENDING_TEXT in p1, f"p1 里没有 {MODE_PENDING_TEXT!r}")
+    _check("⑪ ⭐ 写权栏**不是**能点的按钮（不许谎称可点）",
+           "onclick=\"mode" not in p1 and "写权：" in p1)
+    _check("⑪ `has_gui=False` ⇒ 写权栏「—」（它没有手动这一档）", "—" in p1)
+    # ⭐ 同页：不是两步向导
+    _check("⑪ 是**常驻控制台**（一页）：标题就是控制台，没有「选择页」这一步",
+           "控制台" in p1 and "选择要启用的项目" not in p1)
+    # ⭐ 四条布局要求
+    _check("⑪ 布局①：折叠切换**整列宽度**（grid-template-columns 260px ↔ 0）",
+           "grid-template-columns:260px 1fr" in p1 and "#shell.collapsed{grid-template-columns:0 1fr}" in p1)
+    _check("⑪ 布局②：列表在**自己的格子**里滚动（overflow-y:auto + min-height:0），页面不被撑长",
+           "overflow-y:auto" in p1 and "min-height:0" in p1)
+    _check("⑪ 布局③：**没有卡片框**（不给行套 border+radius 的卡片容器）",
+           "border-radius:10px" not in p1 and "card" not in p1)
+    _check("⑪ 布局④：**没有「详情」那种占一整行的标题**", "详情" not in p1)
+
     c._started = True
-    st = render_page(c)
-    _check("⑪ 阶段 B（已启动）**同页**变成状态页", "运行状态" in st)
-    _check("⑪ 「还没启动」与「启动失败」措辞**不同**（不许都写「未知」）",
-           "还没启动" in st and "启动失败" not in st, f"含「未知」? {'未知' in st}")
+    c._rows = [{"id": "ML", "pid": 4321, "state": "ready", "port": 5111}]
+    p2 = render_page(c)
+    _check("⑪ 启动后**仍是同一页**（还是控制台，不是另一张状态页）",
+           "控制台" in p2 and "运行状态" not in p2)
+    _check("⑪ 启动后**仍然列出全部项目**（含没起的 GP）",
+           all(s in p2 for s in ("ML", "EL", "GP")))
+    _check("⑪ 存活那一栏读的是 `state()` 的真事实（打得出 pid）", "4321" in p2)
+    _check("⑪ 「还没启动」与「启动失败」措辞**不同**",
+           "还没启动" in p1 and "启动失败" not in p1)
     c._err = "child_spawn_failed：找不到可执行文件"
-    st2 = render_page(c)
+    p3 = render_page(c)
     _check("⑪ 有 last_error 时显示**具体原因**（不是「未知」）",
-           "启动失败" in st2 and "child_spawn_failed" in st2)
+           "启动失败" in p3 and "child_spawn_failed" in p3)
 
 
 def main() -> int:
@@ -755,7 +813,7 @@ def main() -> int:
     check_startup_plan_order_and_stale()
     check_dry_run_has_no_side_effects()
     check_declared_env_is_injected_with_values()
-    check_status_page_phases()
+    check_status_page_console()
     if FAILS:
         print(f"launch_selfcheck: FAIL（{len(FAILS)} 条）：{FAILS}")
         return 1

@@ -290,6 +290,11 @@ class LaunchController:
         #: ⚠ 做成**属性**而不是构造参数：控制器不该认识聚合端点（那是 launcher 的编排），
         #: 而"起完之后做点什么"是它唯一需要提供的口子。
         self.after_start: Callable[[], None] | None = None
+        #: 运行中开关单个软件要走**聚合端点**那条正规路径（含端点同步）；
+        #: 没接时退化成"只动 supervisor"（判据/最小装配够用）。
+        self.agg_runtime: object | None = None
+        #: 面板在**启动之前**也要能表达"我打算开哪几个" ⇒ 意图单独存一份。
+        self._intent: dict[str, bool] = {}
 
     # ---- 读 ----
     def last_status(self) -> dict:
@@ -308,7 +313,82 @@ class LaunchController:
         #    - last_error 非空 ⇒ 启动/清理**失败过**（有具体原因）
         #    - 否则 state 为空列表 ⇒ 还没起（不是"读不到"）
         st["last_error"] = self._last_error
+        #: 启动**之前**的勾选意图（面板在未启动时也要能表达"我打算开哪几个"）。
+        st["intent"] = self.intent()
         return st
+
+    def services(self) -> tuple[Service, ...]:
+        """**全部已声明**的软件（⚠ 与"勾过的"无关：面板**始终**展示全部）。"""
+        return tuple(self.sites[0].services)
+
+    def intent(self) -> dict[str, bool]:
+        """每个软件"打算开着 / 打算关着"。
+
+        ⚠ 它是**意图**、不是运行事实：启动前由勾选决定；启动后由**真状态**决定
+        （面板上"存活"那一栏永远读 `supervisor.state()`，不读这里——铁律 7）。
+        """
+        out: dict[str, bool] = {}
+        for svc in self.services():
+            if svc.id in self._intent:
+                out[svc.id] = self._intent[svc.id]
+            else:
+                out[svc.id] = bool(svc.default_on)
+        return out
+
+    def set_intent(self, svc_id: str, enabled: bool) -> None:
+        """只记**意图**（启动前用）——它不下任何"起/停"的副作用。"""
+        if svc_id not in {s.id for s in self.services()}:
+            raise MechaError(
+                f"没有这个软件：{svc_id!r}",
+                kind="unknown_service",
+                hint=f"已知软件：{sorted(s.id for s in self.services())}（见站点声明）",
+            )
+        self._intent[svc_id] = bool(enabled)
+
+    def set_service_enabled(self, svc_id: str, enabled: bool) -> dict:
+        """⭐ **运行中开关单个软件**（面板的"存活滑块"）。
+
+        - 关 ⇒ ``supervisor.stop(child_id)``（**停进程、不删声明** ⇒ 面板那项不消失）；
+        - 开 ⇒ ``supervisor.start(svc.child())``（⚠ 走 ``Service.child()`` 那**一处**翻译：
+          ``MECHA_SOFTWARE_ROOT`` / ``MECHA_INITIAL_MODE`` 的注入就在那里，**别在这儿抄第二遍**）；
+        - ⚠ **端点侧跟着同步**（``sync_backends``）：否则 AI 手里还留着已关软件的工具。
+          （"调它响亮失败"由 2a 的墓碑语义负责 —— 那是**第二条**防线，不是替代。）
+
+        未启动整站时 ⇒ **只记意图**（不 spawn）：面板在启动前也要能表达"我打算开哪几个"。
+        """
+        svc = next((s for s in self.services() if s.id == svc_id), None)
+        if svc is None:
+            raise MechaError(
+                f"没有这个软件：{svc_id!r}",
+                kind="unknown_service",
+                hint=f"已知软件：{sorted(s.id for s in self.services())}",
+            )
+        self._intent[svc_id] = bool(enabled)
+        if not self._started:
+            return {"ok": True, "id": svc_id, "enabled": bool(enabled), "applied": "intent"}
+        try:
+            if self.agg_runtime is not None:
+                # ⭐ 正规路径在 AggregateRuntime 里（它在 supervisor 控制面之外**还**管端点同步）
+                if enabled:
+                    self.agg_runtime.open_service(svc_id)
+                else:
+                    self.agg_runtime.close_service(svc_id)
+            else:                       # 没接聚合端点时（判据/最小装配）也能开关
+                cid = svc.child().id
+                if enabled:
+                    self.super.start(svc.child())
+                elif cid in self.super.state_ids():
+                    self.super.stop(cid)
+            if enabled:
+                self._enabled = tuple(dict.fromkeys((*self._enabled, svc_id)))
+            else:
+                self._enabled = tuple(x for x in self._enabled if x != svc_id)
+            self._save_status()
+            return {"ok": True, "id": svc_id, "enabled": bool(enabled), "applied": "live"}
+        except MechaError as exc:
+            self._last_error = f"{exc.kind}：{exc.message}"
+            self._save_status()
+            return {"ok": False, "id": svc_id, "error": self._last_error}
 
     def plan(self, enabled: Sequence[str]) -> StartupPlan:
         site = self.sites[0]
@@ -489,6 +569,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     # ⭐ 聚合端点：**起在任何 child 之前**（dsh 的 overlay 要指向它）
     endpoint, agg_runtime, _ = build_aggregate_wiring(site=sites[0], supervisor=supervisor)
     controller.after_start = lambda: agg_runtime.sync_backends()
+    controller.agg_runtime = agg_runtime   # 面板的存活滑块走它那条正规路径（含端点同步）
 
     if args.all:
         enabled = [s.id for s in sites[0].services if s.default_on]

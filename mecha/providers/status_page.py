@@ -1,28 +1,46 @@
-"""选择页 / 状态页（**一个页面、两个阶段**）——``Monitor`` 那一层的只读传输。
+"""常驻控制台（**一页**，不是"选完就换状态页"的向导）。
 
-## 为什么是"一个页面两个阶段"
+## 形态（三层架构 §7：面板是**常驻控制台**）
 
-阶段 A（选择页）：列出扫到的项目（一句话简介 + 上次状态），**默认全勾**，点「启动 ▸」。
-阶段 B（状态页）：**同一个页面原地**变成运行状态（每 child 一行 + 日志链接 + 「收尾退出」）。
+```
+┌────────────────────────────────────────────────────────────┐
+│ mecha · 控制台                              [◀ 收起]        │
+├──────────────┬─────────────────────────────────────────────┤
+│ 侧栏（可折叠）│ ☑ │ Machine Learning │ [●──] │ ready │ 写权… │
+│  ML          │   │ 传统机器学习 / 神经网络 / 自动调参          │
+│  EL          │ ☑ │ Energy Level     │ [●──] │ ready │ 写权… │
+│  GP          │ ☐ │ Get Paper        │ [──○] │ stopped│  —   │
+├──────────────┴─────────────────────────────────────────────┤
+│ [全部启用] [全部停用] [启动 ▸] [收尾退出]                     │
+└────────────────────────────────────────────────────────────┘
+```
 
-⇒ 不做两个路由/两次跳转：用户的心智是"选完就看它跑"，刷新/跳转只会丢上下文。
-传输用 ``http.server.ThreadingHTTPServer``（框架已有先例：``cockpit.py``），
-**只读 + 一个 POST**（``POST /start``）。
+⭐ **三个控件分工**（§7 的表）：
+- **存活滑块** ⇒ 动 ①（起/停软件）——**本轮唯一真正能用的控件**；
+- **写权那栏** ⇒ 动 ③（切 AI/手动）——⚠ **本轮显示"待接"**：它需要 §7.1.1 那条
+  **控制通道**（两条端点），**那是下一轮**。
+  ⛔ **不许把它渲染成能点的按钮**：半成的通道比没有更坏（用户裁决口径）。
+- `has_gui=False` 的项目 ⇒ 写权那栏显示 **"—"**（它只有 AI 一条腿，没有"手动"这一档）。
 
-## ⚠ 一条刻意的文案纪律（实测要求）
+## ⚠ 用户给的四条布局要求（**必须遵守**，别退回旧形态）
 
-**"启动失败"与"读不到状态"必须用不同措辞**，不许都写"未知"：
-- 前者：有 ``last_error``（**具体原因**：哪个 child、什么错）⇒ 显示原因；
-- 后者：还没起、没有状态 ⇒ 显示"还没启动（不是读不到）"。
-把两者混成"未知"，人就没法判断"该去查日志"还是"该去点启动"。
+1. **左侧列表可折叠**，且折叠后**真的让出宽度**（不是"变窄一点"）——
+   用 ``grid-template-columns`` 在 260px 与 0 之间切换，而不是缩小字体/内边距；
+2. **不要固定高度**：列表在**自己的格子里滚动**（``overflow-y:auto`` + ``min-height:0``），
+   **页面本身不被撑长**；
+3. **不要卡片框**（没有 border+radius 的"卡片"容器）；
+4. **不许出现"详情"这种占一整行的标题**——每行只放控件与状态。
 
 ## Known Limitations and Deferred Work
 
-- **不做鉴权、不做 TLS**：只读 + 回环是全部安全模型（与 ``cockpit`` 同一立场）；
-  要暴露到非回环得由宿主在前面加真正的网关。
-- **不做访问日志与限流**：``log_message`` 静音；轮询频率归页面。
-- 页面是无依赖的手写字符串（**不引前端框架**）：框架零第三方依赖是纪律；
-  这里要的只是"一屏状态 + 一个按钮"。
+- **写权控件不做**（本轮）：它要控制通道（§7.1.1 两条端点）。页面显示"待接"并**注明依赖**，
+  **不假装能点**（半成品通道比没有更坏）。
+- **不做鉴权 / TLS**：只读为主 + 几个 POST，绑回环（与 ``cockpit`` 同一立场）。
+- **不做访问日志与限流**：``log_message`` 静音；轮询/刷新归页面。
+- **不引前端框架**：零依赖是纪律；这里要的是"一屏控件 + 几个 POST"。
+- **勾选框（左侧那列）只表达"打算开"**（意图），**不可点**：真正的控件是存活滑块。
+  启动前的意图存在 ``LaunchController.intent()`` 里；启动后"存活"一律读
+  ``supervisor.state()``（铁律 7：进程事实只有一个来源）。
 """
 
 from __future__ import annotations
@@ -33,21 +51,28 @@ import threading
 import webbrowser
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
 from typing import Protocol
 from urllib.parse import parse_qs, urlsplit
 
-__all__ = ["PageOptions", "StatusPage"]
+__all__ = ["PageOptions", "StatusPage", "render_page", "MODE_PENDING_TEXT"]
+
+#: 写权那栏在本轮的文案（⚠ 刻意叫"待接"：它现在**不能点**，依赖控制通道）
+MODE_PENDING_TEXT = "待接（需控制通道 §7.1.1）"
+_TITLE = "mecha"
 
 
 class Controller(Protocol):
     """页面需要的最小控制面（``launch.LaunchController`` 结构上满足它）。"""
 
     def sites(self) -> object: ...
+    def services(self) -> object: ...
     def started(self) -> bool: ...
+    def intent(self) -> dict: ...
     def last_status(self) -> dict: ...
     def state(self) -> dict: ...
-    def start(self, enabled: list[str]) -> dict: ...
+    def start(self, enabled: list) -> dict: ...
+    def set_service_enabled(self, svc_id: str, enabled: bool) -> dict: ...
+    def set_intent(self, svc_id: str, enabled: bool) -> None: ...
     def shutdown(self) -> dict: ...
 
 
@@ -60,29 +85,45 @@ class PageOptions:
 
 
 _CSS = """
+*{box-sizing:border-box}
 body{font:14px/1.6 system-ui,"Segoe UI",sans-serif;margin:0;background:#0f1115;color:#e6e6e6}
-main{max-width:960px;margin:0 auto;padding:24px 20px 64px}
-h1{font-size:20px;margin:0 0 4px}
-.sub{color:#8b93a1;margin:0 0 20px}
-.card{background:#171a21;border:1px solid #242a35;border-radius:10px;padding:14px 16px;margin:0 0 10px}
-.row{display:flex;gap:12px;align-items:flex-start}
-.grow{flex:1}
-.id{font-weight:600}
-.brief{color:#9aa3b2}
-.badge{font-size:12px;padding:2px 8px;border-radius:999px;border:1px solid #2d3442;color:#9aa3b2}
+header{display:flex;align-items:center;gap:12px;padding:13px 18px;border-bottom:1px solid #242a35}
+h1{font-size:18px;margin:0;flex:1}
+h3{font-size:13px;margin:8px 0 4px;color:#8b93a1;font-weight:600}
+/* ⚠ 折叠：整列宽度在 260px 与 0 之间切换 ⇒ **真的让出宽度**（不是缩小内边距） */
+#shell{display:grid;grid-template-columns:260px 1fr;height:calc(100vh - 104px)}
+#shell.collapsed{grid-template-columns:0 1fr}
+#side{border-right:1px solid #242a35;overflow-y:auto;min-height:0}
+#shell.collapsed #side{display:none}
+#main{overflow-y:auto;min-height:0;padding:4px 18px 14px}
+.row{display:grid;grid-template-columns:24px 170px 92px 88px 1fr;gap:10px;align-items:center;
+     padding:8px 2px;border-bottom:1px solid #1b2029}   /* ⚠ 只有分隔线，**不套卡片框** */
+.brief{grid-column:2 / span 4;color:#8b93a1;font-size:12px;margin:-4px 0 2px}
+.name{font-weight:600}
+.badge{font-size:12px;padding:1px 8px;border-radius:999px;border:1px solid #2d3442;color:#9aa3b2;
+       justify-self:start}
 .b-ready{color:#7ee787;border-color:#2ea043}
 .b-unhealthy{color:#ff7b72;border-color:#8b2c26}
 .b-starting,.b-running{color:#d29922;border-color:#8a6d1f}
-.b-stopped,.b-exited{color:#9aa3b2}
-.ev{color:#8b93a1;font-size:12px;word-break:break-all}
-.err{color:#ff7b72;font-size:13px;margin-top:6px}
-button{background:#2f81f7;color:#fff;border:0;border-radius:8px;padding:9px 16px;font:inherit;cursor:pointer}
+.pending{color:#8b93a1;font-size:12px}
+.muted{color:#8b93a1}
+.err{color:#ff7b72}
+button{background:#2f81f7;color:#fff;border:0;border-radius:8px;padding:8px 14px;font:inherit;cursor:pointer}
 button.ghost{background:transparent;border:1px solid #2d3442;color:#e6e6e6}
-button:disabled{opacity:.5;cursor:default}
-label{display:flex;gap:8px;align-items:center;cursor:pointer}
+footer{display:flex;gap:10px;align-items:center;padding:11px 18px;border-top:1px solid #242a35}
+/* 存活滑块：checkbox + 纯 CSS 开关（零依赖） */
+.sw{position:relative;display:inline-block;width:50px;height:23px}
+.sw input{display:none}
+.sw label{position:absolute;inset:0;background:#2d3442;border-radius:999px;cursor:pointer;
+          transition:background .15s}
+.sw label:after{content:"";position:absolute;top:3px;left:3px;width:17px;height:17px;border-radius:50%;
+                background:#e6e6e6;transition:left .15s}
+.sw input:checked + label{background:#2ea043}
+.sw input:checked + label:after{left:30px}
+.sideitem{padding:7px 12px;border-bottom:1px solid #1b2029;font-size:13px}
+.sideitem.on{color:#7ee787}
 pre{background:#0b0e13;border:1px solid #242a35;border-radius:8px;padding:10px;overflow:auto;max-height:280px}
 a{color:#79c0ff}
-.note{color:#8b93a1;font-size:12px}
 """
 
 
@@ -90,96 +131,112 @@ def _badge(state: str) -> str:
     return f'<span class="badge b-{html.escape(state)}">{html.escape(state)}</span>'
 
 
-def _render_select(rows: list[dict], last: dict, last_error: str) -> str:
-    prev = {str(c.get("id")): c for c in last.get("children", [])}
-    items = []
-    for row in rows:
-        sid, brief = row["id"], row["brief"]
-        old = prev.get(sid)
-        old_txt = "上次：" + (str(old.get("state")) if old else "无记录")
-        items.append(
-            f'<div class="card"><div class="row">'
-            f'<label><input type="checkbox" name="svc" value="{html.escape(sid)}" checked></label>'
-            f'<div class="grow"><div class="id">{html.escape(sid)} '
-            f'<span class="badge">{html.escape(old_txt)}</span></div>'
-            f'<div class="brief">{html.escape(brief)}</div></div></div></div>')
-    # ⚠ 文案纪律：这里只说"还没启动"；**失败**另有 _render_error 的那一路
-    err = (f'<div class="err">上次启动失败：{html.escape(last_error)}</div>'
-           if last_error else '')
-    return (f'<h1>{html.escape(_TITLE)} · 选择要启用的项目</h1>'
-            f'<p class="sub">默认全勾。<b>这不会启动 GUI</b>——纯 GUI 用户不走 mecha。</p>'
-            f'{err}'
-            f'<form method="post" action="/start">{items}'
-            f'<div class="row" style="margin-top:14px">'
-            f'<button type="submit">启动 ▸</button>'
-            f'<button type="button" class="ghost" onclick="allOn(true)">全部启用</button>'
-            f'<button type="button" class="ghost" onclick="allOn(false)">全部取消</button>'
-            f'</div></form>'
-            f'<script>function allOn(v){{document.querySelectorAll(\'input[name=svc]\')'
-            f'.forEach(function(c){{c.checked=v}})}}</script>')
+def _mode_cell(svc: object) -> str:
+    """写权那栏（③）：⚠ 本轮**一律不可点**。
+
+    - ``has_gui=False`` ⇒ ``—``（没有"手动"这一档）；
+    - ``has_gui=True`` ⇒ 显示**待接** + 依赖说明（**不谎称可点**）。
+    """
+    if not getattr(svc, "has_gui", False):
+        return '<span class="muted" title="它只有 AI 一条腿，没有手动这一档">—</span>'
+    return f'<span class="pending">写权：{html.escape(MODE_PENDING_TEXT)}</span>'
 
 
-def _render_status(st: dict) -> str:
-    kids = st.get("children", [])
-    last_error = str(st.get("last_error") or "")
-    cleaned = st.get("cleaned") or []
-    if last_error:
-        head = f'<div class="err">启动失败：{html.escape(last_error)}</div>'
-    elif not kids:
-        # ⚠ 与"启动失败"**不同措辞**（这一路是"还没起"，不是"读不到"）
-        head = '<p class="sub">还没启动任何 child（不是读不到状态）。</p>'
-    else:
-        head = ''
-    rows = []
-    for c in kids:
-        cid = html.escape(str(c.get("id")))
-        lease = c.get("holds_write_lease")
-        lease_txt = ('<span class="badge b-ready">写权</span>' if lease
-                     else '<span class="badge">非写宿主</span>')
-        ev = html.escape(str(c.get("ready_evidence") or ""))
-        err = (f'<div class="err">{html.escape(str(c.get("last_error")))}</div>'
-               if c.get("last_error") else '')
-        port = c.get("port")
-        port_txt = f'端口 <b>{port}</b>' if port else '端口 —'
-        rows.append(
-            f'<div class="card"><div class="row"><div class="grow">'
-            f'<div class="id">{cid} {_badge(str(c.get("state")))} {lease_txt}</div>'
-            f'<div class="ev">pid {c.get("pid")} · {port_txt} · 重启 {c.get("restarts")}'
-            f' · exit {c.get("exit_code")}</div>'
-            f'<div class="ev">{ev}</div>{err}'
-            f'<div class="note"><a href="/logs/{cid}">看日志</a></div>'
-            f'</div></div></div>')
-    cleaned_txt = ''
-    if cleaned:
-        items = ''.join(f'<li>{html.escape(str(x))}</li>' for x in cleaned)
-        cleaned_txt = (f'<div class="card"><div class="id">启动前清掉的陈旧残留</div>'
-                       f'<ul class="ev">{items}</ul></div>')
-    return (f'<h1>{html.escape(_TITLE)} · 运行状态</h1>'
-            f'<p class="sub">启用：{html.escape(", ".join(st.get("enabled") or []) or "—")}'
-            f'（每 2s 自动刷新）</p>{head}{cleaned_txt}{"".join(rows)}'
-            f'<form method="post" action="/shutdown" '
-            f'onsubmit="return confirm(\'收尾退出：逆序停掉全部 child？\')">'
-            f'<button class="ghost" type="submit">收尾退出</button></form>'
-            f'<script>setTimeout(function(){{location.reload()}},2000)</script>')
+def _service_row(svc: object, row: dict | None, intent: bool, started: bool) -> str:
+    sid = html.escape(str(getattr(svc, "id", "")))
+    running = bool((row or {}).get("pid"))
+    state = str((row or {}).get("state") or ("stopped" if started else "stopped"))
+    checked = " checked" if (running or (not started and intent)) else ""
+    port = (row or {}).get("port")
+    tail = f'pid {(row or {}).get("pid")}' if running else "未运行"
+    if port:
+        tail += f" · 端口 {port}"
+    return (
+        f'<div class="row">'
+        # 左侧勾选**只表达"打算开"**（意图）⇒ 不可点：真正的控件是右边那个滑块
+        f'<input type="checkbox"{checked} disabled title="打算开（启动前）">'
+        f'<span class="name">{sid}</span>'
+        f'<span class="sw"><input type="checkbox" id="sw-{sid}"{checked}'
+        f' onchange="toggle(\'{sid}\', this.checked)"><label for="sw-{sid}"></label></span>'
+        f'{_badge(state)}'
+        f'{_mode_cell(svc)}'
+        f'<span class="brief">{html.escape(str(getattr(svc, "brief", "")))}'
+        f' · <span class="muted">{html.escape(tail)}</span></span>'
+        f'</div>')
 
 
-_TITLE = "mecha"
+def _dsh_row(row: dict | None) -> str:
+    sid = "dsh"
+    running = bool((row or {}).get("pid"))
+    return (
+        f'<div class="row"><span></span><span class="name">dsh</span>'
+        f'<span class="sw"><input type="checkbox" id="sw-{sid}"{" checked" if running else ""}'
+        f' onchange="toggle(\'{sid}\', this.checked)"><label for="sw-{sid}"></label></span>'
+        f'{_badge(str((row or {}).get("state") or "stopped"))}'
+        f'<span class="muted">—</span>'
+        f'<span class="brief muted">它只是 AI 那条腿的载体</span></div>')
 
 
 def render_page(controller: Controller) -> str:
-    """整页 HTML（**阶段 A / B 同页**：由 ``started()`` 决定渲染哪一版）。"""
-    if not controller.started():
-        rows = []
-        for site in controller.sites():                    # type: ignore[union-attr]
-            for svc in site.services:
-                rows.append({"id": svc.id, "brief": svc.brief})
-        body = _render_select(rows, controller.last_status(),
-                              str(controller.last_status().get("last_error") or ""))
+    """常驻控制台整页。
+
+    ⭐ **始终列出全部已声明项目**（启动前、启动后、未启用、``has_gui=False`` 都在）
+    —— 这正是"常驻控制台"与"选完就换页的向导"的分界。
+    """
+    started = controller.started()
+    st = controller.state()
+    rows = {str(r.get("id")): r for r in st.get("children", [])}
+    intent = controller.intent()
+    services = list(controller.services())          # type: ignore[arg-type]
+
+    items: list[str] = []
+    side: list[str] = []
+    for svc in services:
+        sid = str(getattr(svc, "id", ""))
+        row = rows.get(sid)
+        items.append(_service_row(svc, row, bool(intent.get(sid)), started))
+        on = bool((row or {}).get("pid")) or (not started and bool(intent.get(sid)))
+        side.append(f'<div class="sideitem{" on" if on else ""}">{html.escape(sid)}</div>')
+
+    err = str(st.get("last_error") or "")
+    if err:
+        head = f'<div class="row err">启动失败：{html.escape(err)}</div>'
+    elif not started:
+        # ⚠ 与"启动失败"**不同措辞**（"还没起"≠"读不到"）
+        head = '<div class="row muted">还没启动（不是读不到状态）：用滑块选好，再点「启动 ▸」。</div>'
     else:
-        body = _render_status(controller.state())
-    return (f'<!doctype html><html lang="zh"><head><meta charset="utf-8">'
-            f'<title>{html.escape(_TITLE)}</title><style>{_CSS}</style></head>'
-            f'<body><main>{body}</main></body></html>')
+        head = ""
+    cleaned = st.get("cleaned") or []
+    if cleaned:
+        lis = "".join(f"<li>{html.escape(str(x))}</li>" for x in cleaned)
+        items.append(f'<h3>启动前清掉的陈旧残留</h3><ul class="muted">{lis}</ul>')
+    if rows.get("dsh") is not None:
+        items.append(_dsh_row(rows.get("dsh")))
+
+    return (
+        '<!doctype html><html lang="zh"><head><meta charset="utf-8">'
+        f'<title>{html.escape(_TITLE)}</title><style>{_CSS}</style></head><body>'
+        f'<header><h1>{html.escape(_TITLE)} · 控制台</h1>'
+        f'<span class="muted">{html.escape(str((st.get("sites") or ["?"])[0]))}</span>'
+        '<button class="ghost" onclick="fold()">◀ 收起</button>'
+        '<button class="ghost" onclick="location.reload()">刷新</button></header>'
+        f'<div id="shell"><div id="side">{"".join(side)}</div>'
+        f'<div id="main">{head}{"".join(items)}</div></div>'
+        '<footer><button type="button" onclick="allOn(true)">全部启用</button>'
+        '<button type="button" onclick="allOn(false)">全部停用</button>'
+        '<button onclick="startNow()">启动 ▸</button>'
+        '<button class="ghost" onclick="shutdownNow()">收尾退出</button>'
+        '<span class="muted">存活滑块随时可动</span>'
+        f'<span class="pending">写权 {html.escape(MODE_PENDING_TEXT)}</span></footer>'
+        '<script>'
+        'function fold(){document.getElementById("shell").classList.toggle("collapsed")}'
+        'async function post(p,b){const r=await fetch(p,{method:"POST",body:b||""});'
+        'document.documentElement.innerHTML=await r.text()}'
+        'function toggle(id,on){post("/service", new URLSearchParams({svc:id,on:on?"1":"0"}))}'
+        'function allOn(v){post("/all", new URLSearchParams({on:v?"1":"0"}))}'
+        'function startNow(){post("/start")}'
+        'function shutdownNow(){if(confirm("收尾退出：逆序停掉全部 child？"))post("/shutdown")}'
+        '</script></body></html>')
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -208,29 +265,41 @@ class _Handler(BaseHTTPRequestHandler):
             return self._send(200, json.dumps(self.controller.state(), ensure_ascii=False)
                               .encode("utf-8"), "application/json; charset=utf-8")
         if path == "/health":
-            # 给"就绪探活"用的：状态页自己也是一个可探活的服务
             return self._send(200, b'{"ok":true}', "application/json; charset=utf-8")
         if path.startswith("/logs/"):
-            cid = path[len("/logs/"):]
-            return self._html(200, self.page.render_log(cid))
+            return self._html(200, self.page.render_log(path[len("/logs/"):]))
         return self._html(404, "<h1>404</h1><p>没有这个页面。</p>")
+
+    def _body(self) -> str:
+        length = int(self.headers.get("Content-Length") or 0)
+        return self.rfile.read(length).decode("utf-8") if length else ""
 
     def do_POST(self) -> None:                             # noqa: N802
         path = urlsplit(self.path).path
-        length = int(self.headers.get("Content-Length") or 0)
-        raw = self.rfile.read(length).decode("utf-8") if length else ""
-        if path == "/start":
-            enabled = parse_qs(raw).get("svc", [])
-            self.controller.start(list(enabled))
-            return self._html(200, render_page(self.controller))
-        if path == "/shutdown":
-            self.controller.shutdown()
-            return self._html(200, render_page(self.controller))
-        return self._html(404, "<h1>404</h1><p>只读 + 一个 /start。</p>")
+        form = parse_qs(self._body())
+        try:
+            if path == "/start":
+                enabled = [s for s, v in self.controller.intent().items() if v]
+                self.controller.start(enabled)
+            elif path == "/service":                       # ⭐ 存活滑块（单个软件）
+                svc = (form.get("svc") or [""])[0]
+                on = (form.get("on") or ["0"])[0] == "1"
+                self.controller.set_service_enabled(svc, on)
+            elif path == "/all":                           # 批量：只改**意图**（不 spawn）
+                on = (form.get("on") or ["1"])[0] == "1"
+                for svc in self.controller.services():     # type: ignore[union-attr]
+                    self.controller.set_intent(str(getattr(svc, "id", "")), on)
+            elif path == "/shutdown":
+                self.controller.shutdown()
+            else:
+                return self._html(404, "<h1>404</h1><p>只有 /start 与 /service。</p>")
+        except Exception as exc:                           # noqa: BLE001 - 页面如实报故障
+            return self._html(200, f'<div class="row err">{html.escape(str(exc))}</div>')
+        return self._html(200, render_page(self.controller))
 
 
 class StatusPage:
-    """两阶段页面的传输层（起/停/URL；实际渲染见 :func:`render_page`）。"""
+    """常驻控制台的传输层（起/停/URL；渲染见 :func:`render_page`）。"""
 
     def __init__(self, controller: Controller, opts: PageOptions = PageOptions()) -> None:
         self.controller = controller
@@ -257,7 +326,7 @@ class StatusPage:
         return port
 
     def serve_forever(self) -> None:
-        """阻塞到 Ctrl-C（``--all`` 之后仍要让状态页可看）。"""
+        """阻塞到 Ctrl-C（``--all`` 之后仍要让控制台可看）。"""
         if self._httpd is None:
             raise RuntimeError("先 start() 再 serve_forever()")
         try:
@@ -275,7 +344,7 @@ class StatusPage:
         return f"http://{self.opts.host}:{self.port}/"
 
     def render_log(self, child_id: str) -> str:
-        """日志末尾若干行（页面上的"看日志"）。"""
+        """日志末尾若干行（面板上的"看日志"）。"""
         try:
             c = self.controller.super.child(child_id)      # type: ignore[attr-defined]
             lines = c.log_tail(200)
@@ -285,8 +354,8 @@ class StatusPage:
             body = "（没有这个 child 的日志）"
             path = ""
         return (f'<h1>日志 · {html.escape(child_id)}</h1>'
-                f'<p class="sub">{path}</p><pre>{body}</pre>'
-                f'<p><a href="/">← 回状态页</a></p>')
+                f'<p class="muted">{path}</p><pre>{body}</pre>'
+                f'<p><a href="/">← 回控制台</a></p>')
 
     def stop(self) -> None:
         if self._httpd is not None:
@@ -296,11 +365,3 @@ class StatusPage:
             except OSError:
                 pass
             self._httpd = None
-
-
-def render_log_path_only(controller: Controller, child_id: str) -> Path | None:
-    """给判据/脚本用：拿日志路径而不渲染 HTML。"""
-    try:
-        return controller.super.child(child_id).log_path      # type: ignore[attr-defined]
-    except Exception:                                        # noqa: BLE001
-        return None

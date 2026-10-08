@@ -46,6 +46,7 @@ from mecha.aggregate_runtime import (DEFAULT_TOOL_CALL_TIMEOUT_MS,  # noqa: E402
                                     AggregateRuntime, make_prepare_hook,
                                     overlay_text, stable_server_name, with_overlay_patch)
 from mecha.errors import MechaError  # noqa: E402
+from mecha.launch import LaunchController  # noqa: E402
 from mecha.site import DSHSpec, ReadySpec, Service, Site  # noqa: E402
 from mecha.tools import ToolRegistry, define_tool  # noqa: E402
 
@@ -487,6 +488,59 @@ def _run_await(coro):
 META_NAMES = ("query_software", "open_software", "close_software")
 
 
+def check_controller_survival_toggle() -> None:
+    """⑧ 面板的存活滑块（``LaunchController.set_service_enabled``）——**真起真停**。
+
+    ## 红证怎么造
+    只断言"面板的账里它变了"⇒ 把实现退化成"**只改 ``_enabled``、不碰 supervisor**"
+    照样绿。⇒ 必须断言 ``supervisor.state()`` 里那个 child **真的停了 / 真的起了**。
+
+    ⚠ 它复用的是 ``AggregateRuntime.open_service/close_service``（判据 ⑦ 已三轮钉过），
+    这里只验**面板入口真的走到了那条正规路径**（不是复制一份实现）。
+    """
+    rig = Rig()
+    try:
+        rig.rt.open_service("MOCK")
+        rig.rt.sync_backends()
+        ctl = LaunchController(sites=(rig.site,), runtime=rig.dir / "rt",
+                               supervisor=rig.super)
+        ctl.agg_runtime = rig.rt
+        ctl._started = True                      # 面板只有"整站启动之后"才真开关
+
+        out = ctl.set_service_enabled("MOCK", False)
+        row = _rows(rig.super)["MOCK"]
+        _check("⑧ ⭐ 面板关 ⇒ supervisor 里那个 child **真的停了**",
+               out.get("applied") == "live" and row["state"] == "stopped" and row["pid"] is None,
+               f"out={out} row={row}")
+        _check("⑧ 关之后**声明仍在**（面板那项不消失）", "MOCK" in rig.super.state_ids())
+        _check("⑧ 关之后端点侧**跟着摘了**（AI 手里不留工具）",
+               rig.agg.states().get("MOCK") == "down", f"states={rig.agg.states()}")
+
+        out2 = ctl.set_service_enabled("MOCK", True)
+        row2 = _rows(rig.super)["MOCK"]
+        _check("⑧ ⭐ 面板开 ⇒ 它**真的起来了**（pid 有、ready）",
+               out2.get("applied") == "live" and row2["state"] == "ready" and row2["pid"],
+               f"out={out2} row={row2}")
+        _check("⑧ 开之后端点侧**跟着挂上**（sync_backends 真的调了）",
+               "MOCK" in rig.agg.attached(), f"attached={rig.agg.attached()}")
+
+        loud = False
+        try:
+            ctl.set_service_enabled("NOPE", False)
+        except MechaError:
+            loud = True
+        _check("⑧ 对不存在的 id ⇒ **响亮失败**（不静默）", loud)
+
+        # 未启动整站时：只记意图、**不 spawn**（面板在启动前也要能表达意图）
+        ctl2 = LaunchController(sites=(rig.site,), runtime=rig.dir / "rt2",
+                                supervisor=rig.super)
+        ctl2.set_service_enabled("MOCK", False)
+        _check("⑧ 整站未启动时 ⇒ `applied=intent`（不 spawn），意图被记下",
+               ctl2.intent()["MOCK"] is False, f"intent={ctl2.intent()}")
+    finally:
+        rig.close()
+
+
 def check_launch_wiring_at_the_launch_layer() -> None:
     """⭐ ``launch`` 那一层的接线：聚合端点起来 ⇒ **dsh child 的 ``--patch``** 指向它。
 
@@ -560,6 +614,7 @@ def main() -> int:
     print("[aggregate_runtime_selfcheck] 2b：接上 supervisor + dsh overlay + 端到端")
     _run_guarded("1 close 到达 supervisor", check_close_reaches_supervisor)
     _run_guarded("7 开关滑块连做三轮", check_toggle_on_off_three_times)
+    _run_guarded("8 面板存活滑块（LaunchController 入口）", check_controller_survival_toggle)
     _run_guarded("2 元工具报 supervisor 事实", check_meta_tool_reports_supervisor_fact)
     _run_guarded("6 未知 id 响亮失败", check_meta_tool_unknown_id_is_loud)
     _run_guarded("3 overlay 保住超时", check_overlay_keeps_timeout)
