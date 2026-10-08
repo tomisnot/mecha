@@ -186,6 +186,7 @@ class Site:
                 hint="站点声明至少要有一条 Service（空站点不是合法状态，不许静默起个空站）",
             )
         seen: set[str] = set()
+        seen_lower: dict[str, str] = {}
         for svc in self.services:
             svc.validate()
             if svc.id in seen:
@@ -195,6 +196,18 @@ class Site:
                     hint="id 是全局唯一的（将来也是工具前缀）",
                 )
             seen.add(svc.id)
+            #: ⚠ **大小写不敏感的唯一性**：暴露给模型的工具名会**小写化**
+            #: （`Aggregator._compose` = ``f"{svc_id.lower()}_{tool}"``）⇒
+            #: 只有大小写不同的两个 id 会**静默撞成同一批工具名**（后挂的覆盖先挂的）。
+            #: ⇒ 必须在声明期就响亮拒绝，不能等运行期"工具怎么少了一批"。
+            low = svc.id.lower()
+            if low in seen_lower:
+                raise MechaError(
+                    f"服务 id 大小写不敏感地重复：{svc.id!r} 与 {seen_lower[low]!r}",
+                    kind="duplicate_service_id",
+                    hint="工具名会小写化（<svc_id.lower()>_<tool>）⇒ 两者会撞名；改掉其中一个",
+                )
+            seen_lower[low] = svc.id
             if svc.manual is not None and svc.manual.id in seen:
                 raise MechaError(
                     f"human adapter id 与服务 id 撞了：{svc.manual.id!r}",

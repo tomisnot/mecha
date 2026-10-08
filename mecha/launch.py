@@ -2,7 +2,7 @@
 
 ## 一件事，两次交付
 
-``python -m mecha.launch`` 起 supervisor + 打开**选择页**（阶段 A）；
+``python -m mecha`` 起 supervisor + 打开**选择页**（阶段 A）；
 勾完点「启动 ▸」后**同一个页面**原地变成**状态页**（阶段 B）。``--all`` 跳过选择页
 （默认全启用）——给 ``.bat`` 用。
 
@@ -363,7 +363,7 @@ class LaunchController:
 
 def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
-        prog="python -m mecha.launch",
+        prog="python -m mecha",
         description="从 mecha 启动 = 永远是 AI 组：起各软件脊椎 + dsh，并给一个选择/状态页。")
     ap.add_argument("--all", action="store_true",
                     help="跳过选择页：默认全启用（给 .bat 用）")
