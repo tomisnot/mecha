@@ -131,9 +131,10 @@ class ChildSpec:
     #: 先礼后兵：``terminate`` 后等这么久，超时才杀树。
     stop_timeout: float = 8.0
     #: 该 child 要持的**写租约根**（``write_lease`` 按数据根独占）。
-    #: ⚠ 它让"**同一数据根同一时刻只许一个 child 在跑**"可**机械校验**：
-    #: 软件本体与它的 human adapter（``…:manual``）同根 ⇒ **互斥**，这正是
-    #: "切手动 = 换一条腿"而不是"两条腿同时活"的表达（修正 4）。
+    #: ⚠ 三层架构（A1）：写租约是**软件自己的**锁——软件是它数据状态的**唯一写宿主**。
+    #: 人机两条腿**都是客户端**、可以同时挂着（A2）；它们之间**没有存活性互斥**。
+    #: 这里互斥的一直是"**同一数据根两个软件实例**"（例如旧实例还没退出就起新的），
+    #: 与"换操作者"无关。
     data_root: Path | None = None
 
 
@@ -739,7 +740,7 @@ class Supervisor:
     - ``ready_hooks``：就绪**之后**调 ``fn(spec, child)``（步骤 2 用它把 svc 端口交给聚合端点）。
 
     ⚠ **不要**在这里留"两个操作者同时活"的抽象：同一数据根只能一个写宿主
-    （``write_lease`` 独占锁）⇒ 人机两条腿是**换腿**，不是同时跑（见 :meth:`switch_leg`）。
+    （``write_lease`` 独占锁）⇒ "**同一数据根起两个实例**"仍必须互斥（见 :meth:`restart`）。
     """
 
     def __init__(self, *, log_dir: Path, state_path: Path | None = None,
@@ -841,54 +842,56 @@ class Supervisor:
                 f"同一数据根有多个 child 在跑：{bad}",
                 kind="lease_not_exclusive",
                 hint="同一数据根只能一个写宿主（write_lease 的独占锁）"
-                     "⇒ 换腿必须先停旧腿、等它真退出（switch_leg）",
+                     "⇒ 要换实例必须先停旧的、等它真退出（restart）",
             )
 
-    def switch_leg(self, *, stop_id: str, start: ChildSpec,
-                   timeout: float | None = None) -> dict:
-        """**换腿**：停旧腿 ⇒ 等**真退出**（写租约随之释放）⇒ 起新腿 ⇒ 返回交接记录。
+    def restart(self, child_id: str, *, timeout: float | None = None) -> dict:
+        """**重启**一个 child：停干净（等**真退出**、写租约随之释放）⇒ 再起 ⇒ 返回记录。
 
-        ⚠ **顺序不能反**：先起新的会**抢不到租约**（``write_lease`` 独占，
-        ``MechaError(kind="writer_lease_held")``，fail-closed）⇒ 必须在**旧腿真退出之后**
-        才 spawn 新腿。
+        ## ⚠ 名字与用途改了，**机制一字未动**（三层架构 §9 / 施工方案 §1.1）
 
-        ⚠ **这不是"两条腿同时活"**：框架的账是"**当前状态是它的折叠**"
-        （``docs/v2/使用模式与核心原则.md``），所以换腿之后**账不间断**——
-        GUI 起来读的就是刚才那份账，人看到的是"AI 干到哪儿了"。
-        同一数据根**同一时刻只有一个写宿主**，这是硬约束，不是实现选择。
+        它原来叫 ``switch_leg``，定位是"**换操作者**：把人那条腿换成 AI 那条腿"。
+        ⭐ **那个前提已被证伪**：写租约是**软件自己的**锁，人机两条腿**都是客户端**、
+        **可以同时挂着**；切写权（``Mode``）**不动进程、不动连接**（A2/A3）。
+        ⇒ 操作者**不换进程**，所以"换腿"这个动作在新架构里**不存在**。
 
-        @returns 交接记录（写进状态页/日志）：谁交给谁、花了多久、租约怎么让出来的。
+        但**"停 → 等真退出 → 起"这段时序仍然有用**，而且是**重启**唯一正确的做法：
+        写租约随进程退出释放，**先起新的会抢不到锁**（``writer_lease_held``，fail-closed）。
+        ⇒ 本方法保留那段时序、改名换用途；判据也跟着改成钉"重启"。
+
+        @returns 重启记录（写进状态页/日志）：旧实例怎么退出的、新实例的 pid/端口。
         """
-        if stop_id not in self._children:
+        if child_id not in self._children:
             raise MechaError(
-                f"switch_leg 的旧腿不存在：{stop_id!r}",
+                f"restart 的 child 不存在：{child_id!r}",
                 kind="unknown_child",
                 hint=f"已知：{sorted(self._children)}",
             )
-        wait = float(timeout if timeout is not None else self._children[stop_id].current.stop_timeout)
+        old = self._children[child_id]
+        old_pid = old.proc.pid if old.proc is not None else None
+        wait = float(timeout if timeout is not None else old.current.stop_timeout)
         t0 = _now()
-        self.stop(stop_id)
-        c = self._children[stop_id]
+        self.stop(child_id)                                # 停干净（内部含"等真退出"+杀树）
         released = _now() - t0
-        # 自证"真退出了"：写租约随进程退出释放，所以这里必须确认进程不在
-        proc = c.proc
+        # 自证"真退出了"：写租约随进程退出释放 ⇒ 必须先确认它不在，再起新的
+        proc = old.proc
         gone = proc is None or proc.poll() is not None
-        record = {
-            "from": stop_id, "to": start.id,
+        record: dict = {
+            "id": child_id, "old_pid": old_pid,
             "stopped": True, "exited": gone, "release_s": round(released, 3),
             "waited_timeout": wait,
-            "lease_root": str(start.data_root) if start.data_root else None,
         }
         if not gone:
-            record["error"] = "旧腿未确认退出 ⇒ 不起新腿（先起会抢不到租约）"
-            self.cleaned.append(f"换腿失败：{stop_id} 未确认退出")
+            record["error"] = "旧实例未确认退出 ⇒ 不起新的（先起会抢不到写租约）"
+            self.cleaned.append(f"重启失败：{child_id} 未确认退出")
             self._write_state()
             return record
-        self.start(start)                                  # 旧腿已退出 ⇒ 现在起是安全的
+        self.start(old.spec)                               # 旧实例已退出 ⇒ 现在起是安全的
         record["started"] = True
-        record["port"] = self._children[start.id].port
+        record["new_pid"] = self._children[child_id].proc.pid if self._children[child_id].proc else None
+        record["port"] = self._children[child_id].port
         self.cleaned.append(
-            f"换腿：{stop_id} → {start.id}（旧腿释放用了 {released:.2f}s）")
+            f"重启 {child_id}（旧实例释放用了 {released:.2f}s）")
         self._write_state()
         return record
 
@@ -948,7 +951,7 @@ class Supervisor:
                     raise MechaError(
                         f"数据根 {child.data_root} 已被 {holders} 持有 ⇒ 不能再起 {child.id!r}",
                         kind="lease_not_exclusive",
-                        hint="同一数据根同一时刻只能一个写宿主；换腿请用 switch_leg"
+                        hint="同一数据根同一时刻只能一个写宿主；要换实例请用 restart（停→等真退出→起）"
                              "（停旧腿 → 等真退出 → 再起新腿）",
                     )
             c = _Child(child, self)
@@ -1018,7 +1021,7 @@ class Supervisor:
                     "restarts": c.restarts,
                     "exit_code": c.exit_code,
                     "significant": c.spec.significant,
-                    #: ⭐ **写权归属**（修正 4）：换腿时人最需要看的一件事。
+                    #: ⭐ **写权归属**：谁此刻持着那个数据根的写租约（状态页/面板最需要看的一件事）——`status` 页的写权开关按它渲染
                     #: 声明了 data_root **且** 进程在跑 = 它此刻是那个数据根的写宿主。
                     "data_root": (str(root) if root is not None else None),
                     "holds_write_lease": bool(

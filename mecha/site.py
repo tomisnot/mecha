@@ -13,10 +13,12 @@
 ## 字段为什么长这样（每条都对着一条既有纪律）
 
 - ``Service.data_root``：**各软件自己的写租约根**（``write_lease`` 按数据根独占）。
-  它同时是"**换腿互斥**"的依据：软件本体与它的 human adapter 同根 ⇒ 不可能同时跑。
-- ``Service.manual``：**"接手动" = 某项目提供了 human adapter**（§4.5 既有词，
-  **不造新词**）。它的类型是 ``ChildSpec`` 而不是裸 argv——因为 GUI 也要**探活 / 记日志 /
-  能收尾**（Qt 起不来要能报出来）；裸 argv 会逼步骤 3 再写第二套 spawn。
+  三层架构 A1：它是**软件自己的**锁（软件是它状态数据的唯一写宿主）；
+  互斥的是"**同一数据根两个软件实例**"，与"换操作者"无关。
+- ``Service.has_gui``：这个项目**有没有 GUI 窗口**（⇒ 面板据此决定显不显示"切到手动"）。
+  ⚠ 人那条腿**不是 child**，它跑在**软件进程内**（A1/A2）⇒ 这里只声明"有没有"，
+  不声明"怎么起它"。
+- ``Service.initial_mode``：开始时用什么写权，**由启动者（人）声明**。
 - ``DSHSpec.command`` 是 ``tuple`` 而不是单个字符串：dsh 有时要经 ``cmd /c`` 起
   （EL/ML 的实测形态），有时是裸可执行——由声明决定，框架不猜。
 - ``Strategy`` 的取值与 OTP **同名**（``one_for_one`` / ``rest_for_one`` / ``one_for_all``）；
@@ -41,6 +43,7 @@ from collections.abc import Mapping
 
 from .errors import MechaError
 from .supervise import ChildSpec, ReadySpec
+from .authority import Mode
 
 #: 服务名的形状（它将来也是**工具前缀**，所以现在就要约束住）。
 _SERVICE_ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
@@ -48,22 +51,39 @@ _SERVICE_ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
 
 @dataclass(frozen=True)
 class Service:
-    """一个软件（"各自一条脊椎"）。"""
+    """一个软件（"各自一条脊椎"）。
+
+    ⚠ **三层架构（2026-10-08 定稿）改了本类的形状**：
+    - ➖ 删 ``manual: ChildSpec``：**人那条腿不是 supervisor 的子进程**，
+      它是**软件进程内的一个窗口**（A1/A2）⇒ 不该在这里声明成要 spawn 的东西；
+    - ➕ 加 ``has_gui`` / ``initial_mode``：前者决定面板显不显示"切到手动"，
+      后者由**启动者**（人）在 spawn 时声明。
+    """
 
     #: 全局唯一；将来也是工具前缀（``mcp__<id>__<tool>``）。
     id: str
     #: 选择页上的一句话简介（人看的）。
     brief: str
+    #: 怎么起**软件自己**——它自带状态、自带写租约、自带能力面、（可选）自带 GUI 窗口。
     argv: tuple[str, ...]
     cwd: Path
     ready: ReadySpec
-    #: 该软件**自己的**写租约根（不跨软件共享）⇒ 也是"换腿互斥"的依据。
+    #: 该软件**自己的**写租约根（不跨软件共享）。⚠ 它是**软件自己的锁**（A1），
+    #: 不是"人机互斥"的东西：两条腿都是客户端、可以同时挂着（A2）。
     data_root: Path
-    #: **"接手动" = 本项目的 human adapter**（§4.5 既有词）；``None`` = 该项目没有。
-    #: ⚠ 它是"**换腿时要起的那个 child**"，与本体**互斥**（同一数据根同一时刻一个写宿主）。
-    manual: ChildSpec | None = None
+    #: ⭐ 开始时用什么写权（**由启动者声明** —— 人是启动者，故合法）。
+    initial_mode: Mode = Mode.LOCKED
+    #: ⭐ 这个项目**有没有 GUI 窗口** ⇒ 面板据此决定显不显示"切到手动"。
+    #: ``False`` ⇒ 它只有 AI 一条腿，面板上**不该**出现那一档。
+    has_gui: bool = False
     default_on: bool = True
     env: Mapping[str, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        # ⚠ 这里原本用 None 再补默认值（避免把 LOCKED 抄第二遍）；但 dataclass 的默认值
+        #   直接写 ``Mode.LOCKED`` 更好：它就是 ``authority.DEFAULT_MODE`` 的值，
+        #   而"默认写权是 LOCKED"这条纪律由 ``authority`` 拥有 —— 这里只消费它。
+        return None
 
     def child(self) -> ChildSpec:
         """把声明翻成 supervisor 要的 :class:`ChildSpec`（一处翻译，别处别抄）。
@@ -85,20 +105,10 @@ class Service:
                 kind="bad_service_id",
                 hint="id 将来是工具前缀 ⇒ 必须 ^[A-Za-z][A-Za-z0-9_-]*$",
             )
-        if self.manual is not None:
-            want = f"{self.id}:manual"
-            if self.manual.id != want:
-                raise MechaError(
-                    f"human adapter 的 child id 必须是 {want!r}，收到 {self.manual.id!r}",
-                    kind="bad_manual_id",
-                    hint="约定 id 形如 <svc_id>:manual ⇒ 换腿时能机械认出这对腿",
-                )
-            if self.manual.data_root != self.data_root:
-                raise MechaError(
-                    f"{self.id} 与它的 human adapter 数据根不同",
-                    kind="manual_root_mismatch",
-                    hint="换腿的前提是**同一个**数据根（账不断）；不同根意味着它们本可同时跑",
-                )
+        # ⚠ 这里**曾经**校验 `manual` 的 id 形状与数据根（`bad_manual_id` /
+        #   `manual_root_mismatch`）。三层架构删掉了 `manual`（人那条腿不是 child）
+        #   ⇒ 那两条校验随之删除：它们校验的对象在新架构里**不存在**。
+        #   （R13：删机制时把承诺改写成行为级判据；这里的承诺由 `has_gui` 承担。）
 
 
 @dataclass(frozen=True)
@@ -208,11 +218,6 @@ class Site:
                     hint="工具名会小写化（<svc_id.lower()>_<tool>）⇒ 两者会撞名；改掉其中一个",
                 )
             seen_lower[low] = svc.id
-            if svc.manual is not None and svc.manual.id in seen:
-                raise MechaError(
-                    f"human adapter id 与服务 id 撞了：{svc.manual.id!r}",
-                    kind="duplicate_child_id",
-                    hint="约定 manual 叫 <svc_id>:manual ⇒ 不会撞",
-                )
-        seen.update(s.id for s in self.services if s.manual is not None)
+            # ⚠ 这里**曾经**还要查 `svc.manual.id` 有没有撞上服务 id（约定 `<id>:manual`）。
+            #   三层架构删了 `manual`（人那条腿不是 child）⇒ 那条查重随对象一起消失（R13）。
         self.dsh.validate()

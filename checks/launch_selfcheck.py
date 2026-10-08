@@ -456,42 +456,107 @@ def check_child_env_is_utf8_and_empty_means_unset() -> None:
         env.close()
 
 
-def check_lease_exclusive_and_switch() -> None:
+def check_lease_exclusive_and_restart() -> None:
+    """⑨ 写租约互斥 + **重启**（原"换腿"判据，按三层架构改名换用途）。
+
+    ## ⚠ 判据**没有**因为撤 `switch_leg` 而被删
+    被撤掉的是**定位**（"换操作者"），而"**停 → 等真退出 → 起**"这段**时序**对
+    **重启**仍然有用（重启也必须先停干净、等写租约释放）。⇒ 改名字与用途，机制与断言保留。
+
+    ## 红证怎么造（老规矩）
+    只断言"重启之后有新 pid"是不够的：把实现写成"**不停旧的、直接再起一个**"也能绿。
+    ⇒ 必须断言**旧进程真的没了**（``pid_alive(旧pid)`` 为假、且旧 pid ≠ 新 pid）。
+    """
     env = Env()
     try:
         root = env.dir / "data"
         root.mkdir()
-        a = S.ChildSpec(id="leg-a", argv=(sys.executable, str(env.mock), "logline"),
+        a = S.ChildSpec(id="app-a", argv=(sys.executable, str(env.mock), "logline"),
                         cwd=env.dir, data_root=root, stop_timeout=3.0)
-        b = S.ChildSpec(id="leg-b:manual", argv=(sys.executable, str(env.mock), "logline"),
+        b = S.ChildSpec(id="app-b", argv=(sys.executable, str(env.mock), "logline"),
                         cwd=env.dir, data_root=root, stop_timeout=3.0)
         env.sup.start(a)
-        row_a = next(r for r in env.sup.state()["children"] if r["id"] == "leg-a")
-        _check("⑨ 在跑的腿**声明持有写租约**（状态页看得见「现在谁在写」）",
+        row_a = next(r for r in env.sup.state()["children"] if r["id"] == "app-a")
+        _check("⑨ 在跑的软件**声明持有写租约**（面板「写权」那一栏据此渲染）",
                row_a["holds_write_lease"] is True, f"row={row_a}")
         raised = False
         try:
             env.sup.start(b)
         except Exception as exc:                            # noqa: BLE001 - 期望就是拒
             raised = "lease_not_exclusive" in str(getattr(exc, "kind", "")) or "租约" in str(exc)
-        _check("⑨ 同一数据根**第二个 child 起不来**（互斥，在 spawn 之前就拒）",
+        _check("⑨ 同一数据根**第二个软件实例起不来**（互斥，在 spawn 之前就拒）",
                raised, "第二个 child 竟然起来了")
         if not raised:
             return
-        rec = env.sup.switch_leg(stop_id="leg-a", start=b)
-        _check("⑨ 换腿：先停旧腿、确认真退出，再起新腿（顺序不能反）",
+
+        # ---- 重启：停 → 等真退出 → 起（新 pid、新就绪快照）----
+        old_pid = row_a["pid"]
+        rec: dict = {}
+        # ⚠ 退化版（"不停旧的、直接再起一个"）会在这里**抛** ⇒ 必须**接住并判红**：
+        #   否则"抛出去"会让整个用例中止，表现为"0 条红"——红证探针实测就是这个形状
+        #   （判据看似通过、其实根本没跑到断言）。⇒ **重启过程抛错本身就必须是红**。
+        try:
+            rec = env.sup.restart("app-a")
+        except Exception as exc:                            # noqa: BLE001 - 期望实现跑通
+            rec = {"raised": f"{type(exc).__name__}: {exc}"}
+        _check("⑨ 重启：先停旧实例、确认真退出，再起新的（时序不能反）",
                rec.get("stopped") and rec.get("exited") and rec.get("started"),
                f"record={rec}")
-        row_b = next(r for r in env.sup.state()["children"] if r["id"] == "leg-b:manual")
-        _check("⑨ 换腿后写权归**新腿**（旧腿不再持租约）",
-               row_b["holds_write_lease"] is True
-               and next(r for r in env.sup.state()["children"]
-                        if r["id"] == "leg-a")["holds_write_lease"] is False,
-               f"b={row_b}")
-        _check("⑨ 换腿记录进了 cleaned（状态页看得到交接）",
-               any("换腿" in x for x in env.sup.cleaned), f"cleaned={env.sup.cleaned}")
+        _check("⑨ ⭐ **旧进程真的没了**（`pid_alive(旧pid)` 为假）",
+               old_pid is not None and not S.pid_alive(old_pid), f"old_pid={old_pid}")
+        _check("⑨ ⭐ 新 pid 与旧 pid **不同**（不是「没停就再起一个」）",
+               rec.get("new_pid") is not None and rec["new_pid"] != old_pid,
+               f"old={old_pid} new={rec.get('new_pid')}")
+        row_a2 = next(r for r in env.sup.state()["children"] if r["id"] == "app-a")
+        _check("⑨ 重启后写权**仍归它**（新实例持租约，没有 lease_not_exclusive）",
+               row_a2["holds_write_lease"] is True, f"row={row_a2}")
+        _check("⑨ 重启记录进了 cleaned（状态页看得到）",
+               any("重启" in x for x in env.sup.cleaned), f"cleaned={env.sup.cleaned}")
     finally:
         env.close()
+
+
+def check_declaration_shape_three_layer() -> None:
+    """⑬ 声明形状（三层架构 §1.2）：``has_gui`` / ``initial_mode`` 在，``manual`` **不在**。
+
+    ## 红证怎么造
+    把 `has_gui` / `initial_mode` 两个字段删掉 ⇒ 前两条红；
+    把 `manual: ChildSpec | None` 加回来 ⇒ 第三条红（"它不该是 child"这条承诺被破坏）。
+
+    ## 为什么"没有 manual 字段"也要断言
+    三层架构的裁决是"**人那条腿不是 supervisor 的子进程**，而是软件进程内的窗口"。
+    只要 `Service` 上还留着 `manual: ChildSpec`，**"换个名字又能把它当 child 起"这条路就是通的**
+    —— 那正是被证伪的旧形态。⇒ 用"**字段不存在**"把那条路堵死（R13 的行为级写法）。
+    """
+    from mecha.authority import Mode
+    from mecha.site import Service
+    import dataclasses
+
+    names = {f.name for f in dataclasses.fields(Service)}
+    _check("⑬ 声明里有 `has_gui`（面板据此决定显不显示「切到手动」）", "has_gui" in names,
+           f"fields={sorted(names)}")
+    _check("⑬ 声明里有 `initial_mode`（开始时用什么写权，由启动者声明）",
+           "initial_mode" in names, f"fields={sorted(names)}")
+    _check("⑬ ⭐ 声明里**没有** `manual`（人那条腿不是 child ⇒ 那条旧路必须堵死）",
+           "manual" not in names, f"fields={sorted(names)}")
+
+    d = Path(tempfile.mkdtemp(prefix="decl-"))
+    try:
+        svc = Service(id="X", brief="b", argv=(sys.executable, "-c", "pass"), cwd=d,
+                      ready=S.ReadySpec(tcp=True, timeout_s=1.0), data_root=d / "data")
+        _check("⑬ `has_gui` 默认 False（没声明 GUI 的项目面板上不该出现那一档）",
+               svc.has_gui is False, f"has_gui={svc.has_gui}")
+        _check("⑬ `initial_mode` 默认 = LOCKED（与 authority.DEFAULT_MODE 同一处真值）",
+               svc.initial_mode is Mode.LOCKED, f"initial_mode={svc.initial_mode}")
+        loud = False
+        try:
+            Service(id="X", brief="b", argv=("x",), cwd=d, ready=S.ReadySpec(),
+                    data_root=d / "data", manual=None)      # type: ignore[call-arg]
+        except TypeError:
+            loud = True
+        _check("⑬ ⭐ 传 `manual=` **当场 TypeError**（迁移期要响，不许静默忽略）", loud)
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
 
 
 def check_startup_plan_order_and_stale() -> None:
@@ -505,7 +570,7 @@ def check_startup_plan_order_and_stale() -> None:
         svc = Service(
             id="Demo", brief="演示", argv=(sys.executable, str(env.mock), "logline"),
             cwd=env.dir, ready=SReady(port_file=".site-port", timeout_s=1.0),
-            data_root=env.dir / "data", manual=None)
+            data_root=env.dir / "data")
         dsh = DSHSpec(command=(sys.executable, "-c", "import time;time.sleep(30)"), cwd=env.dir)
         site = Site(name="demo-site", services=(svc,), dsh=dsh, strategy=Strategy())
         from mecha import launch
@@ -634,7 +699,8 @@ def main() -> int:
     check_kill_tree()
     check_real_port_readback()
     check_child_env_is_utf8_and_empty_means_unset()
-    check_lease_exclusive_and_switch()
+    check_lease_exclusive_and_restart()
+    check_declaration_shape_three_layer()
     check_startup_plan_order_and_stale()
     check_dry_run_has_no_side_effects()
     check_status_page_phases()

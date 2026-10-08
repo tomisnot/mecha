@@ -21,8 +21,9 @@
 ## Known Limitations and Deferred Work
 
 - **不做聚合端点**（步骤 2）：``StartupPlan`` 里没有 aggregator 条目，钩子也留空。
-- **不做换腿的实际接线**（步骤 3）：``Service.manual`` 只声明与校验。
-  机制本体已在 :meth:`Supervisor.switch_leg`，签名与顺序语义已冻结。
+- **不做 GUI 窗口**（三层架构 §3）：窗口开在**软件进程内**，归项目的步骤 2。
+  框架侧只声明 ``has_gui``（面板据此决定显不显示「切到手动」），**不 spawn 人的那条腿**
+  —— 人的那条腿不是 supervisor 的子进程（A1/A2）。
 - 站点发现只扫**约定文件名** ``mecha_site.py``：不做插件入口点/配置文件格式——
   那会引入第二套"声明住哪"的真值（n=1 不预建）。
 """
