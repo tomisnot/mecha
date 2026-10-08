@@ -894,20 +894,56 @@ class Supervisor:
 
     # ---- 生命周期 ----
     def start(self, child: ChildSpec) -> None:
+        """起一个 child。⚠ **对"已停/已退出"的同名 child 会重启它**（见下）。
+
+        ## 为什么允许重启（实测抓到的缺口，需求"面板滑块"逼出来的）
+
+        ``stop()`` 按 OTP 语义**保留 spec**（= ``terminate_child``），但原实现里
+        ``start()`` 对**已有 id 一律抛 ``duplicate_child``** ⇒ ⭐ **"关→开"必然失败**。
+        实测（面板滑块那个动作）：
+
+        ```
+        ① 开：OK  state=ready
+        ② 关：OK  state=stopped
+        ③ 再开：✖ duplicate_child:「child id 重复：'MOCK'」
+        ```
+
+        而 **OTP 本来就是"两个函数配对"的**：``terminate_child/2`` 与 ``restart_child/2``。
+        我们只有前一半 ⇒ 缺了"关掉之后再开"的正规路径。
+
+        ⇒ 现在的语义（三种情形分得很清，**不许偷偷兼差**）：
+
+        | 现状 | 行为 |
+        |---|---|
+        | id **不存在** | 起一个新的 |
+        | id 存在但**已停 / 已退出** | ⭐ **重启它**：换一个**全新实例**（新进程、新就绪快照）并 spawn |
+        | id 存在且**还在跑**（或起不来=unhealthy） | ✖ **仍然响亮拒绝** —— 想重启先 ``stop()`` |
+
+        ⚠ **为什么"已退出"也算可重启**：进程自己崩了、退出码非 0，那正是
+        "面板上把它关掉再打开"要用的路径 —— 报 ``duplicate_child`` 会让人以为
+        "这个 id 被占了"，而实际只是"上一个实例死了"。
+        """
         # ⭐ ``prepare`` 钩子在**登记之前**跑，且它**可以换掉本次实际使用的 spec**
         #   （步骤 2 的接法：dsh 的 overlay 要等聚合端点起来、拿到它的端口才能生成 ⇒
         #    只能在"spawn 之前那一刻"接上）。钩子抛错 ⇒ 这里就抛，不留半个 child。
         child = self._run_prepare(child)
         with self._lock:
-            if child.id in self._children:
-                raise MechaError(
-                    f"child id 重复：{child.id!r}",
-                    kind="duplicate_child",
-                    hint="child id 全局唯一（将来也是工具前缀）⇒ 先 stop 再 start，或改名",
-                )
+            old = self._children.get(child.id)
+            if old is not None:
+                #: ⭐ 只有"**不在跑的终止态**"才允许就地重启（见 docstring 的表）。
+                if old.state not in ("stopped", "exited"):
+                    raise MechaError(
+                        f"child id 重复且**还在跑**：{child.id!r}（state={old.state}）",
+                        kind="duplicate_child",
+                        hint="child id 全局唯一（将来也是工具前缀）⇒ **先 stop 再 start**；"
+                             "已停/已退出的同名 child 会被 start **重启**（面板滑块走这条路）",
+                    )
             # ⭐ 写租约互斥（修正 4）：**在 spawn 之前**判，别等子进程抢锁失败才发现。
+            #   ⚠ 已停/已退出的旧实例**不算持有者**（租约随进程释放）——
+            #   所以这一判要在"替换实例"之前做、且只看在跑的。
             if child.data_root is not None:
-                holders = self._lease_holders().get(str(child.data_root), [])
+                holders = [h for h in self._lease_holders().get(str(child.data_root), [])
+                           if h != child.id]
                 if holders:
                     raise MechaError(
                         f"数据根 {child.data_root} 已被 {holders} 持有 ⇒ 不能再起 {child.id!r}",
@@ -916,8 +952,9 @@ class Supervisor:
                              "（停旧腿 → 等真退出 → 再起新腿）",
                     )
             c = _Child(child, self)
-            self._children[child.id] = c
-            self._order.append(child.id)
+            self._children[child.id] = c          # 替换旧实例（新进程、新就绪快照）
+            if child.id not in self._order:
+                self._order.append(child.id)      # ⚠ 重启**不许**改变启动顺序（收尾是逆序的）
         try:
             c.spawn()
         except MechaError as exc:

@@ -30,6 +30,8 @@
 
 from __future__ import annotations
 
+import importlib
+import os
 import sys
 import time
 from pathlib import Path
@@ -45,8 +47,38 @@ from mecha.aggregate_runtime import (DEFAULT_TOOL_CALL_TIMEOUT_MS,  # noqa: E402
                                     overlay_text, stable_server_name, with_overlay_patch)
 from mecha.errors import MechaError  # noqa: E402
 from mecha.site import DSHSpec, ReadySpec, Service, Site  # noqa: E402
-from mecha.supervise import ChildSpec, Supervisor  # noqa: E402
 from mecha.tools import ToolRegistry, define_tool  # noqa: E402
+
+
+def _load_supervise():
+    """从 ``MECHA_SUPERVISE_PKG``（若有）或本仓加载 ``supervise``。
+
+    ## ⚠ 为什么这个口子必须有（实测踩到的假红证）
+
+    红证的做法是"把缺陷人为放回去，判据**必须**红"。而**放回去**只能放**别处** ——
+    仓内零改动 ⇒ 必须能把本判据指向一份**打了补丁的整包临时副本**。
+    本文件原先**没有**这个口子（直接 ``from mecha.supervise import …``）⇒
+    我按 `launch_selfcheck` 的成例做补丁时，**补丁根本没被加载**，
+    于是"红证"跑的是**真实现** ⇒ 两次退化**都显示绿**（假红证，比没有还坏）。
+
+    ⚠ 按**包**加载（``MECHA_SUPERVISE_PKG`` 指向含 ``mecha/`` 的目录），
+    不用按文件加载 —— ``supervise.py`` 里有相对 import（``from .errors import …``），
+    按文件加载会失败（同一坑 `launch_selfcheck` 已记）。
+    """
+    pkg = os.environ.get("MECHA_SUPERVISE_PKG", "").strip()
+    if pkg:
+        sys.path.insert(0, pkg)
+        for name in [m for m in list(sys.modules) if m == "mecha" or m.startswith("mecha.")]:
+            del sys.modules[name]
+        mod = importlib.import_module("mecha.supervise")
+        print(f"  [探针] 用的是包副本 {pkg}（MECHA_SUPERVISE_PKG）")
+        return mod
+    from mecha import supervise
+    return supervise
+
+
+_SV = _load_supervise()
+ChildSpec, Supervisor = _SV.ChildSpec, _SV.Supervisor
 
 FAILS: list[str] = []
 
@@ -179,6 +211,59 @@ def _call(agg: Aggregator, name: str, **kw) -> dict:
 
 
 # ---------------------------------------------------------------- 判据
+
+
+def check_toggle_on_off_three_times() -> None:
+    """⭐ 判据 7（**面板滑块**）：关→开→关→开→关→开，连做三次都必须成立。
+
+    ## 为什么必须有这条（实测抓到的真缺口）
+
+    用户要的"面板上每项一个开关滑块，**启动前启动后都能动**"，
+    落到框架就是 **`close_service` → `open_service`** 这一个动作。
+    而实测它**第三次就死**（原实现）：
+
+    ```
+    ① 开：OK  state=ready
+    ② 关：OK  state=stopped
+    ③ 再开：✖ duplicate_child:「child id 重复：'MOCK'」
+    ```
+
+    根因：``stop()`` 按 OTP 语义**保留 spec**（``terminate_child``），
+    但 ``start()`` 对**已有 id 一律拒绝** —— OTP 里本该配对的
+    ``restart_child/2`` **我们没有**。
+
+    ⚠ **怎么故意退化还能让它绿**（所以下面三段都要断言）：
+    只断言"没抛异常"是不够的 —— 把实现改成"关的时候顺手把 child 从表里删掉"
+    （**丢掉声明**）也能让"再开"成功，但那**违反 OTP 语义**：
+    ``state_ids()`` 会不再认得这个 id ⇒ 面板上那一项会**消失**。
+    ⇒ 所以每轮都要断言"**声明还在**"且"**真的在跑**"。
+    """
+    rig = Rig()
+    try:
+        for i in range(1, 4):
+            # ⚠ **异常必须转成判据失败，不许让它把整个判据崩掉**（实测教训）：
+            # 退化实现下 `open_service` 抛 `duplicate_child` ⇒ 原写法直接崩在异常上，
+            # 于是 `exit=1` 但**一条 ✖ 都没打印** —— 红证看起来"没红"，
+            # 而实际是"**崩溃冒充了失败**"。红证读不出差别，就等于没有红证。
+            try:
+                rig.rt.open_service("MOCK")
+            except MechaError as exc:
+                _check(f"⑦ 第 {i} 轮：开 ⇒ 真的在跑（pid 有、state=ready）",
+                       False, f"开失败了：kind={exc.kind}：{exc.message[:60]}")
+                break
+            row = _rows(rig.super)["MOCK"]
+            _check(f"⑦ 第 {i} 轮：开 ⇒ 真的在跑（pid 有、state=ready）",
+                   row["state"] == "ready" and bool(row["pid"]), f"row={row}")
+
+            rig.rt.close_service("MOCK")
+            row = _rows(rig.super)["MOCK"]
+            _check(f"⑦ 第 {i} 轮：关 ⇒ 真的停了",
+                   row["state"] == "stopped" and row["pid"] is None, f"row={row}")
+            # ⚠ 关键对偶：关**不许删声明**（否则面板上那一项会消失）
+            _check(f"⑦ 第 {i} 轮：关之后**声明仍在**（state_ids 还认得它，面板那项不消失）",
+                   "MOCK" in rig.super.state_ids(), f"ids={rig.super.state_ids()}")
+    finally:
+        rig.close()
 
 
 def check_close_reaches_supervisor() -> None:
@@ -449,21 +534,42 @@ def check_launch_wiring_at_the_launch_layer() -> None:
         shutil.rmtree(d, ignore_errors=True)
 
 
+def _run_guarded(label: str, fn) -> None:
+    """跑一个判据函数；**它抛的任何异常都转成一条判据失败**。
+
+    ## ⚠ 为什么必须有这道护栏（实测踩到，且它伪装有"红证没红"）
+
+    退化实现下 `open_service` 抛 `MechaError(duplicate_child)`。
+    原写法让那个异常**一路冒到 `main()` 之外** ⇒ 进程退出码 1，
+    但 **`✖` 一条都没打印、`FAILS` 是空的** ⇒ 从输出上看像"判据没测出问题"。
+
+    ⭐ 这是**最坏的一种假绿**：**崩溃冒充了失败**。
+    红证要读的是"`✖` 有没有出现"，而崩溃时它**一条都没有** ⇒ 红证失效。
+    ⇒ 判据运行器必须把"抛异常"也当成"这条判据红了"。
+    """
+    try:
+        fn()
+    except Exception as exc:                               # noqa: BLE001 - 判据护栏
+        _check(f"【护栏】{label} 抛异常（视为该判据失败，别让它冒充'没测出问题'）",
+               False, f"{type(exc).__name__}: {str(exc)[:120]}")
+
+
 def main() -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     print("[aggregate_runtime_selfcheck] 2b：接上 supervisor + dsh overlay + 端到端")
-    check_close_reaches_supervisor()
-    check_meta_tool_reports_supervisor_fact()
-    check_meta_tool_unknown_id_is_loud()
-    check_overlay_keeps_timeout()
-    check_prepare_hook_injects_overlay_into_dsh()
-    check_end_to_end_real_mcp_backend()
-    check_launch_wiring_at_the_launch_layer()
+    _run_guarded("1 close 到达 supervisor", check_close_reaches_supervisor)
+    _run_guarded("7 开关滑块连做三轮", check_toggle_on_off_three_times)
+    _run_guarded("2 元工具报 supervisor 事实", check_meta_tool_reports_supervisor_fact)
+    _run_guarded("6 未知 id 响亮失败", check_meta_tool_unknown_id_is_loud)
+    _run_guarded("3 overlay 保住超时", check_overlay_keeps_timeout)
+    _run_guarded("5 prepare 钩子把 overlay 塞进 dsh", check_prepare_hook_injects_overlay_into_dsh)
+    _run_guarded("端到端真 MCP 后端", check_end_to_end_real_mcp_backend)
+    _run_guarded("launch 层接线", check_launch_wiring_at_the_launch_layer)
     if FAILS:
         print(f"aggregate_runtime_selfcheck: FAIL（{len(FAILS)} 条）：{FAILS}")
         return 1
-    print("aggregate_runtime_selfcheck: PASS（1/2/3/4/5/6 都钉住）")
+    print("aggregate_runtime_selfcheck: PASS（1/2/3/4/5/6 + ⑦开关滑块 + 端到端都钉住）")
     return 0
 
 
