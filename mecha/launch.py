@@ -440,7 +440,9 @@ def build_aggregate_wiring(*, site: Site, supervisor: Supervisor,
              open_fn=runtime.open_service, close_fn=runtime.close_service,
              known=[s.id for s in (services or site.services)])
     # ⭐ spawn dsh **之前那一刻**把 overlay 塞进它的 ``--patch``（端口此时已确定）。
-    supervisor._prepare_hooks = (make_prepare_hook(runtime, site, lambda: mcp_port),)
+    # ⚠ 走**公开追加口**，不直接改 ``_prepare_hooks``：私有名不许外面碰
+    #   （钩子必须先拿到 supervisor 自己 ⇒ 构造参数那条路用不了 ⇒ 故给了这个方法）。
+    supervisor.add_prepare_hook(make_prepare_hook(runtime, site, lambda: mcp_port))
     return endpoint, runtime, registry
 
 

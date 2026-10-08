@@ -743,6 +743,20 @@ class Supervisor:
         self.cleaned: list[str] = []
         self.log_dir.mkdir(parents=True, exist_ok=True)
 
+    def add_prepare_hook(self, hook) -> None:
+        """**追加**一个 ``prepare`` 钩子（spawn 之前调，可返回一份新的 ``ChildSpec``）。
+
+        ⚠ **为什么要有这个公开口**（实测抓到的纪律问题）：
+        构造参数 ``prepare_hooks`` 在"**钩子必须先拿到 supervisor 自己**"时**用不了**
+        （例如：钩子要问聚合端点的端口，而那个端口是构造之后才起的）——
+        那种情形下调用方就会**直接改私有属性** ``sup._prepare_hooks = (...)``，
+        而那是"**绕过正规口子改内部状态**"：私有名的存在意义就是"不许外面碰"。
+
+        ⇒ 所以给一个**显式追加口**：做的是同一件事，但在**契约里**。
+        ⚠ 后加的钩子**跑在**构造时给的那些**之后**（顺序即调用顺序）。
+        """
+        self._prepare_hooks = (*self._prepare_hooks, hook)
+
     # ---- 清理陈旧残留（修正 2）----
     def clean_stale(self, stale: Sequence[StaleItem]) -> list[str]:
         """把 ``plan_startup`` 探到的残留**执行**掉；返回人话清单（并记进 ``state()``）。
