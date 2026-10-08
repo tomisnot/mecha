@@ -73,7 +73,7 @@ from .providers.mcp_client import Backend, BackendError, BackendTimeoutError
 META_LIST = "query_software"
 META_OPEN = "open_software"
 META_CLOSE = "close_software"
-META_TOOLS = (META_LIST, META_OPEN, META_CLOSE)
+META_TOOLS = (META_LIST, META_OPEN, META_CLOSE, "read_write_authority")
 
 
 class SvcState(str, Enum):
@@ -121,12 +121,20 @@ class Aggregator:
         #: "存在但没跑"与"压根没有这个软件"。构造时为空，由 :meth:`wire` 或
         #: ``attach`` 填。
         self._known: set[str] = set()
+        #: 站点声明（``Service`` 对象）：写权聚合要从中取 ``how_to_open``。
+        #: ⚠ 只读它，**不解释**它（框架不许把项目文案改写/写死）。
+        self._specs: dict[str, object] = {}
+        #: ⭐ 写权探针（由 ``AggregateRuntime`` 注入）：``spec -> dict | None``。
+        #: 返回 ``None`` ⇒ **这个软件不在这条路上**（没起来/没挂）⇒ 不报它（铁律 8）。
+        self._authority_probe: Callable[[object], dict | None] | None = None
         self._lock = None       # 惰性建（避免 import 期建锁）
 
     def wire(self, *, state_fn: Callable[[], Mapping[str, object]],
              open_fn: Callable[[str], object],
              close_fn: Callable[[str], object],
-             known: Sequence[str] = ()) -> None:
+             known: Sequence[str] = (),
+             specs: Sequence[object] = (),
+             authority_probe: Callable[[object], dict | None] | None = None) -> None:
         """把回调与"已知软件清单"**接上**（可在构造后接）。
 
         ⚠ **为什么需要这个方法**（实测抓到的两个缺口）：
@@ -148,6 +156,9 @@ class Aggregator:
         self._open_fn = open_fn
         self._close_fn = close_fn
         self._known = set(known)
+        # ⭐ 站点声明与写权探针（契约 §7.1.1：聚合那个 `read_write_authority` 要用）
+        self._specs = {str(getattr(s, "id", "")): s for s in specs}
+        self._authority_probe = authority_probe
 
     # ---- 挂 / 摘 ----
     def attach(self, svc_id: str, backend: Backend) -> None:
@@ -220,6 +231,14 @@ class Aggregator:
                     reg.register(self._tombstone(svc_id, raw, t))
         for meta in self._meta_tools():
             reg.register(meta)
+        # ⭐ 写权自省（**只读**）挂**聚合面**：契约定案"**一个聚合工具**，不是每个软件一个"
+        #   （AI 经过聚合端点 ⇒ 聚合这个才是它实际会用的那一个）。
+        # ⚠ 为什么不用 ``authority.register_authority_read``：那个函数把
+        #   ``authority_view(Authority)``（**单份**写权）包成一个工具；聚合这里是
+        #   "**多个软件各一份**、一次全报"，形状不同（``{ok, services[], how_to_open}``）。
+        #   ⇒ 两者共用的是**同一份探侧实现**（``authority_view``，在探针里调），
+        #   而不是同一个注册函数。
+        reg.register(self._authority_tool())
         return reg
 
     def _tombstone(self, svc_id: str, raw: str, t: Mapping[str, object]):
@@ -284,6 +303,56 @@ class Aggregator:
             ) from exc
 
     # ---- 元工具 ----
+    def authority_view_of_all(self) -> dict:
+        """⭐ **一次报全部在跑的软件**的写权（AI 面那个聚合工具的实现）。
+
+        ## 四条要点（契约 §7.1.1「AI 面怎么拿到它」定案）
+
+        1. ⭐ **不缓存**：每次调用**真的**去问每个在跑的软件。缓存会引入"失效策略"
+           这个**新的复杂度面**，换来的只是省一次本机往返（loopback 很便宜）
+           ⇒ 判据 ④ 断言"连调两次 ⇒ 底层真的被调了两次"。
+        2. ``how_to_open`` 由**项目声明**给（``Service.how_to_open``）——
+           框架**不写死**任何项目名/路径。
+        3. ⚠ **只报在跑的软件**：没起来的**不编造**（"读不到" ≠ "确实没有"，铁律 8）。
+        4. ⚠ **某一个读不到不许让整个调用失败**：那一个报 ``unreadable`` + 具体原因，
+           其余照常（判据 ②③）。
+        """
+        services: list[dict] = []
+        how_to_open = ""
+        for sid in sorted(self._backends):
+            spec = self._specs.get(sid)
+            if spec is None:
+                continue
+            if spec.how_to_open and not how_to_open:      # type: ignore[attr-defined]
+                how_to_open = spec.how_to_open            # 声明里的原话，框架不改写
+            probe = self._authority_probe
+            if probe is None:
+                services.append({"id": sid, "unreadable": "本进程没有接控制客户端"})
+                continue
+            one = probe(spec)
+            if one is None:
+                continue        # ⚠ 不在这条路上（没起来/没挂）⇒ **不报它**
+            row = {"id": sid}
+            row.update(one)
+            services.append(row)
+        return {"ok": True, "services": services, "how_to_open": how_to_open}
+
+    def _authority_tool(self):
+        """聚合面的 ``read_write_authority()``（**只读**，一次报全部在跑的软件）。"""
+        return define_tool(
+            name="read_write_authority",
+            description=("读**当前写权**：现在哪些软件在跑、各自归谁写、以及怎么切到人工。"
+                         "⚠ 只读自省（不改任何东西）——写被拒之后先调它，别盲撞。"),
+            parameters={},
+            output_schema={"type": "object",
+                           "properties": {"ok": {"type": "boolean"},
+                                          "services": {"type": "array"},
+                                          "how_to_open": {"type": "string"}},
+                           "required": ["ok", "services"],
+                           "additionalProperties": False},
+            execute=lambda **_kw: self.authority_view_of_all(),
+        )
+
     def _meta_tools(self) -> Sequence[object]:
         def software_facts() -> dict:
             """**事实**：谁挂着（聚合端点视角） + 谁在跑（进程视角，若注入了 state_fn）。"""

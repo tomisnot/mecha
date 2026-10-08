@@ -129,6 +129,16 @@ class SoftwareControl:
         """在**软件进程内**开手动面（复用已装配的那份桥）。"""
         return self._call("open_manual_surface", {})
 
+    def read_write_authority(self) -> dict:
+        """读**当前写权**（只读自省，契约里的第三个控制操作）。
+
+        ⚠ **尚未落地这个读操作的软件**（本轮只有部分项目实现了它）会回一个
+        "未知工具"的**域失败**（``control_rejected``）。那**不是**"确实没有写权这回事"，
+        而是"**这个软件还没实现它**" ⇒ 调用方必须与"读不到"分开报（铁律 8）。
+        本方法**不吞**它，如实上抛。
+        """
+        return self._call("read_write_authority", {})
+
     def _call(self, op: str, args: dict) -> dict:
         """调一次控制端点。⚠ 把三种**传输**失败翻译成三种不同措辞（铁律 8）。
 
@@ -166,18 +176,27 @@ class SoftwareControl:
                 hint="看软件日志；失败原因分类见上层 kind",
             ) from exc
         result = dict(out) if isinstance(out, dict) else {"value": out}
-        if result.get("is_error"):
-            # ⚠ **域失败不是传输失败**：软件明确说了"不行"（bad_mode / no_manual_surface）
-            raise MechaError(
-                f"软件 {self.svc_id} 拒绝了 {op}：{result.get('text') or result}",
-                kind="control_rejected",
-                hint="这是**软件侧**的判断（不是连不上）；按它给的 hint 处理",
-            )
-        return result
+        return _check_domain_result(self.svc_id, op, result)
 
     def close(self) -> None:
         """短连实现 ⇒ 无常驻资源（留着是为了接口稳定）。"""
         return None
+
+
+def _check_domain_result(svc_id: str, op: str, result: dict) -> dict:
+    """软件**域回执**的公共翻译：``is_error`` ⇒ 抛（否则调用方以为成功了）。
+
+    ⚠ 抽成模块级函数是**为了判据能复用同一份**：判据短路网络往返时若自己重写一遍
+    "什么算失败"，测的就是判据的规则、而不是实现里的规则（本档第一版就漏了这一步，
+    结果"域失败"被当成成功、字段全是 ``None``）。
+    """
+    if result.get("is_error"):
+        raise MechaError(
+            f"软件 {svc_id} 拒绝了 {op}：{result.get('text') or result}",
+            kind="control_rejected",
+            hint="这是**软件侧**的判断（不是连不上）；按它给的 hint 处理",
+        )
+    return result
 
 
 def _run(coro: object) -> object:

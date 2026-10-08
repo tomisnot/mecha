@@ -100,6 +100,9 @@ def authority_view(authority: "Authority", *, how_to_open: str = "") -> dict:
 
     ai_ok, human_ok = can("ai"), can("human")
     return {
+        # ⚠ 与项目侧既有的那份对齐：**带 `ok`**
+        #   （消费方普遍先判 `ok`；少一个键会逼它们各自补默认值 = 第二个真值）
+        "ok": True,
         # ⚠ 一律 `.value`：`Mode` 是 **str-Enum**，`str(Mode.AI)` 给的是 `'Mode.AI'`
         "mode": authority.mode.value,
         "ai_can_write": ai_ok,

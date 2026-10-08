@@ -235,6 +235,10 @@ def check_first_step_fails_stops_there() -> None:
     orig = sc.SoftwareControl._call
 
     def boom(self, op, args):
+        if op == "read_write_authority":
+            # ⚠ 面板现在**先读真值**（4d）⇒ 这条 stub 要认得它，否则会把"读"误当成第二步
+            return {"is_error": False, "ok": True, "mode": "ai",
+                    "ai_can_write": True, "human_holds": False}
         if op == "set_write_authority":
             raise sc.MechaError("bad_mode", kind="control_rejected")
         raise AssertionError("第一步失败时**不该**再调第二步")

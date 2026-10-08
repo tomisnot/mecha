@@ -59,6 +59,7 @@ from .aggregate import META_CLOSE, META_OPEN, Aggregator
 from .errors import MechaError
 from .providers.mcp_client import Backend
 from .site import Service, Site
+from .software_control import SoftwareControl
 from .supervise import ChildSpec, Supervisor
 
 #: 旧实现用 10 分钟（默认 60s 会让长训练"假失败"）。⚠ **这条不许在重构里丢**。
@@ -245,6 +246,36 @@ class AggregateRuntime:
             base = probe.split("{port}")[0].rstrip("/")
             return f"{base}:{port}/mcp"
         return f"http://127.0.0.1:{port}/mcp"
+
+    def probe_authority(self, spec: object) -> dict | None:
+        """读**一个软件**的当前写权（给聚合面的 `read_write_authority` 用）。
+
+        ⭐ **不缓存**（契约 §7.1.1 要点 1）：每次都真的走一次控制端点。
+        loopback 很便宜，而缓存会引入"失效策略"这个**新的复杂度面**。
+
+        @returns 三种形态：**成功**（带 mode 等）／那一个 **`unreadable`**／
+            ``None``（**它不在这条路上** ⇒ 调用方**不报它**——铁律 8：不编造）。
+        """
+        svc_id = str(getattr(spec, "id", ""))
+        if svc_id not in self.agg.attached():
+            return None                      # 没挂上 = 没在跑 ⇒ **不报它**
+        control = SoftwareControl.connect(svc_id, getattr(spec, "data_root"))
+        avail, _why = control.available()
+        if not avail:
+            return None                      # 没起来 ⇒ 同样不报（那不是"读不到"）
+        try:
+            out = control.read_write_authority()
+        except MechaError as exc:
+            # ⚠ **只这一个报读不到**，不拖垮整个调用；⚠ 措辞与"确实没有"分开。
+            #   `control_rejected` 的典型来源：**该软件还没实现这个读操作**
+            #   （契约已定案、项目侧尚未落地）—— 那**不是**"没有写权这回事"。
+            return {"unreadable": f"{exc.kind}：{exc.message}"}
+        if not isinstance(out, dict) or not out.get("mode"):
+            # 有回执但**没有 mode** ⇒ 不是真值（防"看着像事实、其实全是空"）
+            return {"unreadable": "回执里没有 mode（对端可能还没实现这个读操作）"}
+        # 软件侧回执形状就是 `authority_view` 那几个字段（+ `ok`）⇒ 原样透出
+        row = {k: out.get(k) for k in ("ok", "mode", "ai_can_write", "human_holds")}
+        return row
 
     # ---- dsh overlay ----
     def prepare_dsh(self, site: Site, mcp_port: int) -> Path:

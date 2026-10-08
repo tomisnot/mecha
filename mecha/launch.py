@@ -396,23 +396,49 @@ class LaunchController:
 
     # ---- 写权（③）：走"控制端点"那条腿（§7.1.1）----
     def write_authority_state(self, svc_id: str) -> dict:
-        """面板要的三个事实：能不能点 / 为什么不能 / 该显示哪个按钮。
+        """面板要的事实：能不能点 / 为什么不能 / ⭐ **当前写权真值**。
 
-        ⚠ **不显示"当前写权是什么"**：契约只有两个**操作**、没有查询操作
-        （见 ``software_control`` 的 Known Limitations）⇒ 显示一个**猜的**值比不显示更坏。
-        这里报的是**面板自己的意图**（``intent_mode``）并如实标注。
+        ⭐ **真值从控制端点读回来**（契约 §7.1.1 的 ``read_write_authority``），
+        **不是**面板记着自己点过什么——面板记账 = **第二份真值**。
+
+        ⚠ 读不到时**如实说"读不到"**：不显示旧值、也不显示 0
+        （铁律 8：读不到 ≠ 确实没有）。
         """
         svc = next((s for s in self.services() if s.id == svc_id), None)
         if svc is None:
             return {"ok": False, "why": f"没有这个软件：{svc_id!r}"}
         if not svc.has_gui:
-            # ⭐ 没有 GUI 的项目**没有"手动"这一档** ⇒ 面板显示"—"
-            #   （不许出现"能点但没用"的按钮，R1/R4）
-            return {"ok": False, "why": "无手动面（has_gui=false）", "has_gui": False}
+            # NOTE: has_gui=False 的项目**仍然能切写权**（§7.1.1 定案：控制端点不按
+            # `has_gui` 门控）⇒ 这里**只是不显示"切到手动"那个按钮**（它没有手动面），
+            # 但**仍然去读真值**并显示出来，好让人看到"写权现在在哪一侧"。
+            ctl0 = SoftwareControl.connect(svc_id, svc.data_root)
+            avail0, why0 = ctl0.available()
+            read0 = self._read_true_authority(ctl0, avail0)
+            return {"ok": False, "why": "无手动面（has_gui=false）", "has_gui": False,
+                    "read": read0, "read_error": "" if avail0 else why0}
         ctl = SoftwareControl.connect(svc_id, svc.data_root)
         avail, why = ctl.available()
+        read = self._read_true_authority(ctl, avail)
         return {"ok": avail, "why": why, "has_gui": True,
-                "intent_mode": self._mode_intent.get(svc_id, "ai")}
+                "read": read, "read_error": "" if read else ("读不到" if avail else why)}
+
+    @staticmethod
+    def _read_true_authority(ctl: object, available: bool) -> dict | None:
+        """读真值（读不到 ⇒ ``None``，**不编造**）。
+
+        ⚠ **必须有 `mode` 才算读到**：一个"有回执但没字段"的字典（例如对端回了
+        `{"is_error": true}` 而翻译层没拦住的形状）**不是**真值 ⇒ 也报读不到。
+        否则页面会画出"写权 ? · 无人可写"这种**看着像事实、其实全是空**的栏。
+        """
+        if not available:
+            return None
+        try:
+            out = ctl.read_write_authority()          # type: ignore[attr-defined]
+        except MechaError:
+            return None
+        if not isinstance(out, dict) or not out.get("mode"):
+            return None
+        return {k: out.get(k) for k in ("ok", "mode", "ai_can_write", "human_holds")}
 
     def control_write_authority(self, svc_id: str, action: str) -> dict:
         """面板的写权按钮：``action="human"``（切到手动）/ ``"ai"``（交还给 AI）。
@@ -595,7 +621,10 @@ def build_aggregate_wiring(*, site: Site, supervisor: Supervisor,
     #   （否则"存在但没跑"会被误报成"压根没有这个软件"）。
     agg.wire(state_fn=supervisor.state,
              open_fn=runtime.open_service, close_fn=runtime.close_service,
-             known=[s.id for s in (services or site.services)])
+             known=[s.id for s in (services or site.services)],
+             # ⭐ 站点声明（供聚合面取 `how_to_open` 原话）+ 写权探针（**不缓存**、每次真问）
+             specs=tuple(services or site.services),
+             authority_probe=runtime.probe_authority)
     # ⭐ spawn dsh **之前那一刻**把 overlay 塞进它的 ``--patch``（端口此时已确定）。
     # ⚠ 走**公开追加口**，不直接改 ``_prepare_hooks``：私有名不许外面碰
     #   （钩子必须先拿到 supervisor 自己 ⇒ 构造参数那条路用不了 ⇒ 故给了这个方法）。

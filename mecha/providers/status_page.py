@@ -144,30 +144,49 @@ def _badge(state: str) -> str:
 
 
 def _mode_cell(svc: object, ctl_state: dict | None) -> str:
-    """写权那栏（③）——**三种形态，不许出现第四种**（R1/R4）：
+    """写权那栏（③）——⭐ 显示**从控制端点读回来的真值**，不是面板记的意图。
 
+    形态（**不许出现第五种**）：
     | 形态 | 何时 | 渲染 |
     |---|---|---|
-    | **能点** | ``has_gui=true`` 且控制端点可用（软件在跑） | 「切到手动」 |
-    | **待命** | 已切到人工（面板意图） | 「已切人工 · 待命」+「交还给 AI」 |
-    | **—** | ``has_gui=false``（没有"手动"这一档） | 一个破折号 |
-    | **不可用** | ``has_gui=true`` 但**软件没起来** | 灰按钮 + 为什么（不是点了才报错） |
+    | 能点 | ``has_gui=true``、控制端点可用、真值说**人工持有** | 「交还给 AI」 |
+    | 能点 | 同上，但真值说**AI 持有** | 「切到手动」 |
+    | 读不到 | 控制端点可用但**读操作失败**（如项目还没实现它） | 「读不到」+ 原因（**不显示旧值/不显示 0**） |
+    | 不可用 | ``has_gui=true`` 但**软件没起来** | 灰按钮 + 为什么（不是点了才报错） |
+    | — | ``has_gui=false`` | 破折号（没有手动面）**但仍显示真值** |
 
     ⚠ 端口号**绝不出现**在这里（契约：不许把 ``:control-port`` 写进给 AI 的文本/输出）。
     """
-    if not getattr(svc, "has_gui", False):
-        return '<span class="muted" title="它只有 AI 一条腿，没有手动这一档">—</span>'
     sid = html.escape(str(getattr(svc, "id", "")))
     st = ctl_state or {}
+    read = st.get("read") or None
+    # ⭐ 真值那一栏：**读得到就报真值；读不到就如实说读不到**（铁律 8）
+    if read:
+        mode = html.escape(str(read.get("mode", "?")))
+        who = "人工持有" if read.get("human_holds") else ("AI 持有" if read.get("ai_can_write")
+                                                        else "无人可写（locked）")
+        truth = f'<span class="badge">写权 {mode} · {who}</span>'
+    elif st.get("ok") or st.get("read_error"):
+        truth = '<span class="pending">写权：读不到（不是"没有"）</span>'
+    else:
+        truth = '<span class="pending">写权：—</span>'
+
+    if not getattr(svc, "has_gui", False):
+        return truth        # 没有手动面 ⇒ 只报真值，**不给按钮**
     if not st.get("ok"):
         why = html.escape(str(st.get("why") or "控制端点不可用"))
-        return (f'<button class="ghost" disabled title="{why}">切到手动</button>'
+        return (truth + f' <button class="ghost" disabled title="{why}">切到手动</button>'
                 f'<span class="pending"> {why}</span>')
-    if st.get("intent_mode") == "human":
+    human_holds = bool((read or {}).get("human_holds"))
+    if not read:
+        # 读不到 ⇒ **不给可点的按钮**（按下去也是猜），但如实说明
+        return (truth + '<button class="ghost" disabled title="写权读不到，先查明原因">'
+                        '切到手动</button>')
+    if human_holds:
         # ⭐ **待命语义**：写被拒、读照常，面板与 dsh **不关闭**（这是语义，不是状态）
-        return ('<span class="badge b-ready">已切人工 · 待命</span> '
-                f'<button class="ghost" onclick="mode(\'{sid}\',\'ai\')">交还给 AI</button>')
-    return f'<button onclick="mode(\'{sid}\',\'human\')">切到手动</button>'
+        return (truth + ' <button class="ghost" '
+                f"onclick=\"mode('{sid}','ai')\">交还给 AI</button>")
+    return truth + f' <button onclick="mode(\'{sid}\',\'human\')">切到手动</button>'
 
 
 def _service_row(svc: object, row: dict | None, intent: bool, started: bool,

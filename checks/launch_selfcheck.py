@@ -731,10 +731,14 @@ def check_status_page_console() -> None:
 
         def write_authority_state(self, sid: str) -> dict:
             if sid == "GP":
-                return {"ok": False, "why": "无手动面（has_gui=false）", "has_gui": False}
+                return {"ok": False, "why": "无手动面（has_gui=false）", "has_gui": False,
+                        "read": None, "read_error": ""}
             ok = self.ctl_ok.get(sid, False)
+            # ⭐ 面板现在显示**从控制端点读回来的真值**（不再是面板记的意图）
+            read = ({"ok": True, "mode": "ai", "ai_can_write": True, "human_holds": False}
+                    if ok else None)
             return {"ok": ok, "why": "" if ok else f"软件 {sid} 还没起来（没有控制端点）",
-                    "has_gui": True, "intent_mode": self.mode_intent.get(sid, "ai")}
+                    "has_gui": True, "read": read, "read_error": "" if read else "读不到"}
 
         def control_write_authority(self, sid: str, action: str) -> dict:
             return {"ok": True, "id": sid, "steps": []}

@@ -82,6 +82,11 @@ class Service:
     #: ⭐ 这个项目**有没有 GUI 窗口** ⇒ 面板据此决定显不显示"切到手动"。
     #: ``False`` ⇒ 它只有 AI 一条腿，面板上**不该**出现那一档。
     has_gui: bool = False
+    #: ⭐ "怎么把写权切到人工"的**自由文案**，由**项目**给（框架**不解释、不写死**）。
+    #: 为什么归项目：那是我项目自己的入口（哪个页面、哪个开关、还是命令行）
+    #: ⇒ 框架里写死任何一句都等于把**领域知识**塞进框架（且必然对某一家是错的）。
+    #: ⚠ 它会进 ``read_write_authority`` 的返回给 AI 看 ⇒ 别塞端口/路径/凭据。
+    how_to_open: str = ""
     default_on: bool = True
     env: Mapping[str, str] = field(default_factory=dict)
 
