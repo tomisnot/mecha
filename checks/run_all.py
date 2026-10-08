@@ -53,6 +53,8 @@ CHECKS = [
     "checks/aggregate_selfcheck.py",
     # 4c：控制客户端（框架侧）+ 面板写权栏。⚠ 仿真软件端，不起真进程。
     "checks/control_client_selfcheck.py",
+    # 写权自省（read_write_authority，上升进框架）。⚠ 纯内存，零外部依赖。
+    "checks/authority_read_selfcheck.py",
     # 聚合端点的**运行期接线**（2b：open/close 真接 supervisor、元工具报进程事实、
     # dsh overlay 生成、真 MCP 协议端到端）。⚠ 会起真子进程（mock svc + 真聚合端点 server）。
     "checks/aggregate_runtime_selfcheck.py",

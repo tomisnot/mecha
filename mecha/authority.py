@@ -56,6 +56,87 @@ class Mode(str, Enum):
 #: 写权默认收紧，不默认放开）。
 DEFAULT_MODE = Mode.LOCKED
 
+#: 写被拒时 hint 里追加的那句（**闭环**：告诉被拒的一方"先去查一下现在谁能写"）。
+#: ⚠ 中性文案：**不提任何项目名/领域路径**（框架里不许出现领域值）。
+READ_HINT_ADDENDUM = "；先调 read_write_authority() 看当前写权（别盲撞）"
+
+#: 那个只读自省工具的名字（**命名法**：禁 `get_`；官方惯例 `get_* ⇒ read_*`）。
+READ_AUTHORITY_TOOL = "read_write_authority"
+
+
+def _with_read_hint(hint: str) -> str:
+    """把"去读一下写权"那句接到 hint 上。⚠ **幂等**（照 GP 的做法）。
+
+    为什么幂等：hint 可能被上层再拼一次（例如包装层又加了同一句），
+    叠成两句同样的建议会让模型读到冗余文本、也让人以为有两件事。
+    """
+    if READ_AUTHORITY_TOOL in hint:
+        return hint
+    return hint + READ_HINT_ADDENDUM
+
+
+def authority_view(authority: "Authority", *, how_to_open: str = "") -> dict:
+    """写权**自省**：现在谁能写。⭐ **用 ``gate(side)`` 纯查询探侧**，不读内部字段。
+
+    ## 为什么不读 ``authority.mode`` 再自己解释规则
+    ``gate(side)`` 探到的**就是闸门真正会怎么判**（它就是那段判定本身）。
+    读字段再复述一遍规则 ⇒ **两处规则会分叉**：闸门改了（例如 ``OPEN`` 的语义变了），
+    自省会**静默地**继续报旧规则。⇒ 这是"单一真值"纪律在**只读侧**的写法。
+
+    ## 纯查询：**不改任何东西、不落账**
+    ``gate()`` 本身只判 mode 与 side 是否匹配（``authority.py:114`` 的注释就是这么写的）；
+    这里连 ``switch_mode`` 都不碰。⚠ 判据② 会钉"调前调后 mode 不变、账不增长"。
+
+    @param how_to_open 由**注册方**提供的"怎么切到人工"说明（面板/各项目自己的入口文案）。
+        ⚠ 框架**不写死**它：本项目该怎么开手动面是**项目知识**，框架里放任何项目名/路径
+        都是领域值泄漏。缺省值刻意中性。
+    """
+    def can(side: str) -> bool:
+        try:
+            authority.gate(side)      # 只探侧，不改任何东西
+            return True
+        except Exception:             # noqa: BLE001 - 被拒就是 False（拒绝的具体原因不在这里解释）
+            return False
+
+    ai_ok, human_ok = can("ai"), can("human")
+    return {
+        # ⚠ 一律 `.value`：`Mode` 是 **str-Enum**，`str(Mode.AI)` 给的是 `'Mode.AI'`
+        "mode": authority.mode.value,
+        "ai_can_write": ai_ok,
+        "human_holds": human_ok,
+        "how_to_open": how_to_open or "在启动面板上把写权切到人工",
+    }
+
+
+def register_authority_read(registry: object, authority: "Authority", *,
+                            how_to_open: str = "") -> None:
+    """把**只读自省** ``read_write_authority()`` 注册进给定面（唯一实现，两处都注册）。
+
+    ⚠ **两处都注册**（这是个**只读自省**，与"切写权"不同）：
+    - **AI 那条能力面** ⇒ 让 AI **被拒后能自查**（"先查后写，不盲撞"）；
+    - **控制端点** ⇒ 让**面板**读到**真值**（替代"面板记着自己点过什么"）。
+
+    ⛔ **绝不许**把 ``set_write_authority`` / ``open_manual_surface`` 给 AI ——
+    那是**改**写权（§7.1.1：不许 AI 给自己解锁）。本函数**只注册这一个**，
+    判据④ 会钉"AI 面上有 read、没有 set/open"。
+    """
+    from .tools import define_tool          # 局部 import：避免 authority ↔ tools 成环
+
+    registry.register(define_tool(          # type: ignore[attr-defined]
+        name=READ_AUTHORITY_TOOL,
+        description=("读**当前写权**：现在谁能写、需不需要人先开手动面。"
+                     "⚠ 这是只读自省（不改任何东西）——写被拒之后先调它，别盲撞。"),
+        parameters={},
+        output_schema={"type": "object",
+                       "properties": {"mode": {"type": "string"},
+                                      "ai_can_write": {"type": "boolean"},
+                                      "human_holds": {"type": "boolean"},
+                                      "how_to_open": {"type": "string"}},
+                       "required": ["mode", "ai_can_write", "human_holds"],
+                       "additionalProperties": False},
+        execute=lambda **_kw: authority_view(authority, how_to_open=how_to_open),
+    ))
+
 
 class Authority:
     """mode 状态机 + 通道归因。one-shot 授权经 approval 回调委托出去。"""
@@ -124,7 +205,7 @@ class Authority:
             raise GateDenied(
                 "写权处于 LOCKED，任何通道都不能改域状态",
                 kind="authority_locked",
-                hint="先由人类侧切到目标模式",
+                hint=_with_read_hint("先由人类侧切到目标模式"),
                 suggest="authority.switch_mode(Mode.AI, 'human')",
             )
         if self._mode is Mode.OPEN:
@@ -134,6 +215,6 @@ class Authority:
             raise GateDenied(
                 f"当前模式 {self._mode.value!r} 不接受 side={side!r}",
                 kind="authority_mode_mismatch",
-                hint=f"只有 {self._mode.value!r} 侧此刻可写",
+                hint=_with_read_hint(f"只有 {self._mode.value!r} 侧此刻可写"),
                 suggest="切换模式或改用正确侧的通道",
             )
