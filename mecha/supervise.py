@@ -864,6 +864,10 @@ class Supervisor:
 
     # ---- 生命周期 ----
     def start(self, child: ChildSpec) -> None:
+        # ⭐ ``prepare`` 钩子在**登记之前**跑，且它**可以换掉本次实际使用的 spec**
+        #   （步骤 2 的接法：dsh 的 overlay 要等聚合端点起来、拿到它的端口才能生成 ⇒
+        #    只能在"spawn 之前那一刻"接上）。钩子抛错 ⇒ 这里就抛，不留半个 child。
+        child = self._run_prepare(child)
         with self._lock:
             if child.id in self._children:
                 raise MechaError(
@@ -959,6 +963,28 @@ class Supervisor:
 
     def child(self, child_id: str) -> _Child:
         return self._children[child_id]
+
+    def state_ids(self) -> tuple[str, ...]:
+        """已知 child 的 id（**声明过的都算**，不管现在跑没跑）。
+
+        ⚠ 与 ``state()`` 的分工：``state()`` 报**运行事实**，这个只报"我管着谁"——
+        调用方常要判"这个 id 我认不认识"，不该为此把整份状态翻一遍。
+        """
+        with self._lock:
+            return tuple(self._order)
+
+    def _run_prepare(self, child: ChildSpec) -> ChildSpec:
+        """跑 ``prepare_hooks``；**后一个钩子拿前一个的产物**，返回最终 spec。
+
+        ⚠ 钩子返回 ``None`` ⇒ 表示"我不改"，沿用当前那份（不是"改成 None"）。
+        钩子抛错 ⇒ **原样上抛**：宁可不 spawn，也不要"以为接上了其实没接"。
+        """
+        current = child
+        for fn in self._prepare_hooks:
+            out = fn(current, None)
+            if isinstance(out, ChildSpec):
+                current = out
+        return current
 
     def _write_state(self) -> None:
         if self.state_path is None:

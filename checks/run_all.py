@@ -51,6 +51,9 @@ CHECKS = [
     # 聚合端点（2a：工具表 / 转发 / 失败语义）。⚠ 也是**零外部依赖**：全用假后端，
     # 不起真进程（真跨进程端到端留给 2b）。
     "checks/aggregate_selfcheck.py",
+    # 聚合端点的**运行期接线**（2b：open/close 真接 supervisor、元工具报进程事实、
+    # dsh overlay 生成、真 MCP 协议端到端）。⚠ 会起真子进程（mock svc + 真聚合端点 server）。
+    "checks/aggregate_runtime_selfcheck.py",
     # dsh 集成资产（共享资产）的共享自测。⚠ **硬依赖 node**：缺 node 即红（不软跳过）。
     # ⚠ 2026-10-01 起**这里成了资产回归的唯一发现点**：资产改为包依赖（junction）后，
     #   接入项目不再持有副本、也不再跑这份共享单测 ⇒ 本判据不跑或跑假，三家都发现不了。

@@ -116,7 +116,38 @@ class Aggregator:
         self._open_fn = open_fn
         self._close_fn = close_fn
         self._backends: dict[str, _Attached] = {}
+        #: "**已知软件**"（站点声明里全部 svc id，含**还没挂上**的）。
+        #: ⚠ 与 ``_backends``（挂过的）**不是一回事**：元工具要能区分
+        #: "存在但没跑"与"压根没有这个软件"。构造时为空，由 :meth:`wire` 或
+        #: ``attach`` 填。
+        self._known: set[str] = set()
         self._lock = None       # 惰性建（避免 import 期建锁）
+
+    def wire(self, *, state_fn: Callable[[], Mapping[str, object]],
+             open_fn: Callable[[str], object],
+             close_fn: Callable[[str], object],
+             known: Sequence[str] = ()) -> None:
+        """把回调与"已知软件清单"**接上**（可在构造后接）。
+
+        ⚠ **为什么需要这个方法**（实测抓到的两个缺口）：
+
+        1. ``AggregateRuntime`` 拿到的是**已经造好的** ``Aggregator`` 实例，
+           而这三个回调原先**只有构造参数**一条路 ⇒ runtime 没法接，
+           元工具里 ``query_software`` 的 ``process`` 栏就永远是 ``None``
+           —— 现象是"**跑着的软件被报成没有进程事实**"，**违反铁律 7**
+           （元工具必须从 ``supervisor.state()`` 取唯一真值，不能自己记账）。
+        2. ``known``（**站点声明里全部** svc id，含**还没挂上**的）也必须接：
+           元工具要能回答"**这个软件存在但没跑**"与"**压根没有这个软件**"的**区别**，
+           只看 ``_backends`` 会把前者误报成后者。
+           ⚠ 少了它，``open_software`` 会抛 ``AttributeError``（被包成 internal_error）
+           —— 这**恰好就是"不响亮"的反例**：用户看到的是内部错误，不是"没有这个软件"。
+
+        ⚠ 接线**不许改变已挂后端的语义**：这里只换回调/清单，不碰 ``_backends``。
+        """
+        self._state_fn = state_fn
+        self._open_fn = open_fn
+        self._close_fn = close_fn
+        self._known = set(known)
 
     # ---- 挂 / 摘 ----
     def attach(self, svc_id: str, backend: Backend) -> None:
@@ -149,7 +180,22 @@ class Aggregator:
         entry.why = entry.why or "已被关闭"
 
     def attached(self) -> tuple[str, ...]:
+        """挂过的后端 id（⚠ **含已关闭的**：墓碑要留在工具表里，见 :meth:`registry`）。
+
+        ⇒ 想判"它还活着吗"**不要**用这个方法，用 :meth:`states`。
+        """
         return tuple(sorted(self._backends))
+
+    def states(self) -> dict[str, str]:
+        """``svc_id → 状态``（``up`` / ``down`` / ``unreachable``）。
+
+        ⚠ **为什么单独给一个读口**（实测抓到的判据矛盾）：
+        ``detach`` 按墓碑设计**故意保留**后端 ⇒ 判"关掉了没有"时若去看
+        ``attached()`` 会**永远为假**（判据与墓碑设计打架）。
+        要判"聚合端点这边的视角"就得读**状态**，不是读"在不在表里"。
+        """
+        return {k: str(getattr(v.state, "value", v.state))
+                for k, v in sorted(self._backends.items())}
 
     # ---- 工具面 ----
     def registry(self) -> ToolRegistry:
@@ -262,6 +308,17 @@ class Aggregator:
 
         def cmd(which: str, label: str, fn: Callable[[str], object] | None):
             def run(svc_id: str) -> dict:
+                # ⚠ **先判"有没有这个软件"、再判"有没有接线"**：反过来的话，
+                #   对一个**压根不存在**的 id 会回"没接线"——那是**答非所问**
+                #   （判据 ⑥ 逼出来的：不存在就必须说"不存在"）。
+                known = set(self._backends) | set(self._known)
+                if svc_id not in known:
+                    raise MechaError(
+                        f"没有这个软件：{svc_id!r}",
+                        kind="unknown_service",
+                        hint=f"已知软件：{sorted(known)}"
+                             f"（聚合端点只认挂过的；没挂过的要看站点声明）",
+                    )
                 if fn is None:
                     raise MechaError(
                         f"{label} 没有接线（本进程没给它 open/close 回调）",
