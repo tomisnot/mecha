@@ -400,8 +400,24 @@ class _Child:
         self._pre = self._snapshot()                  # ⭐ 铁律 2 的前半：先记快照
         env = dict(os.environ)
         env.update({str(k): str(v) for k, v in spec.env.items()})
+        #: ⚠ **空串 = "显式把它取消掉"**（不要让它在子进程里存在）：
+        #: 这让声明方能用 ``{"EL_NO_AI_SERVER": ""}`` 表达"**别让这个变量被继承进来**"，
+        #: 而不必依赖父进程恰好没设它 —— 这是在另一个项目上**实测到的真事故面**
+        #: （那个变量一旦被继承，服务端**根本不会起**）。
+        for k in [k for k, v in env.items() if v == ""]:
+            del env[k]
         # 关掉 Python 的 -P（安全路径）语义干扰：这里**不做**，只如实合并环境。
         env.setdefault("PYTHONUNBUFFERED", "1")       # 否则子进程输出会卡在缓冲里
+        #: ⭐ **统一注入 UTF-8**（设计文档 §5.5(2) 判归 supervisor —— 这是**所有子进程**的
+        #: 共同需求，放进各项目的声明只会把同一纪律复制一遍）。
+        #:
+        #: ⚠ **不注入会怎样**（另一个项目实测、本机可复现）：子进程的 stdout 一旦**不是真控制台**
+        #: （被重定向到文件/被上层按管道捕获 —— **本模块恰好就是这么做的**），
+        #: Python 的 stdio 编码退回 **cp936**；此时网络代码里一句 ``print("⚠ …")``
+        #: 会抛 ``UnicodeEncodeError``，**让整个后台任务崩掉**。
+        #: ⇒ 所以这不是"锦上添花"，是**本模块自己制造了那个前提**（我们把 stdout 收进管道）。
+        #: ⚠ 用 ``setdefault`` 语义：**声明方显式给的编码优先**（判据要能构造"不注入"的对照组）。
+        env.setdefault("PYTHONIOENCODING", "utf-8")
         flags = _spawn_flags()
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         try:

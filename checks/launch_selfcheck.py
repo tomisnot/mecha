@@ -62,7 +62,11 @@ def _load_supervise():
     pkg = os.environ.get("MECHA_SUPERVISE_PKG", "").strip()
     if pkg:
         sys.path.insert(0, pkg)
-        import importlib
+        # ⚠ **不要在这里写 `import importlib`**：函数内任何 `import X` 都会让 `X`
+        # 变成**整个函数的局部名** ⇒ 走下面 `MECHA_SUPERVISE_PATH` 分支时
+        # 那句赋值还没执行，于是 `importlib` 未绑定 ⇒ `UnboundLocalError`
+        # （**实测踩到**：这条判据宣称支持两种覆盖机制，而按文件的那个**从来没工作过**，
+        #  我是第一个真去用它做红证的人）。顶层已有 `import importlib.util`。
         for name in [m for m in list(sys.modules) if m == "mecha" or m.startswith("mecha.")]:
             del sys.modules[name]
         mod = importlib.import_module("mecha.supervise")
@@ -163,6 +167,14 @@ elif mode == "bind_port":
     while True:
         try: srv.accept()
         except OSError: break
+elif mode == "env_probe":
+    #: 把自己**实际拿到**的环境导出成 JSON，供判据核对（只读、不改）。
+    import json
+    keys = sys.argv[2].split(",")
+    out = {k: os.environ[k] for k in keys if k in os.environ}
+    open(sys.argv[3], "w", encoding="utf-8").write(json.dumps(out))
+    while True:
+        time.sleep(60)
 '''
 
 
@@ -187,10 +199,10 @@ class Env:
                                 max_restarts=2, max_restart_period_s=30.0)
 
     def spec(self, cid: str, *args: str, ready=None, restart="permanent",
-             stop_timeout: float = 3.0) -> "S.ChildSpec":
+             stop_timeout: float = 3.0, env=None) -> "S.ChildSpec":
         return S.ChildSpec(id=cid, argv=(sys.executable, str(self.mock), *args),
                            cwd=self.dir, ready=ready, restart=restart,
-                           stop_timeout=stop_timeout)
+                           stop_timeout=stop_timeout, env=dict(env or {}))
 
     def close(self) -> None:
         try:
@@ -377,8 +389,74 @@ def check_real_port_readback() -> None:
         env.close()
 
 
+def check_child_env_is_utf8_and_empty_means_unset() -> None:
+    """⭐ 判据 ⑨：**统一注入 UTF-8** + **空串 = 显式取消该变量**。
+
+    ## 为什么必须有这条（两个接入仓各自实测到的真事故面）
+
+    1. ⚠ **本模块自己制造了那个前提**：我们把子进程 stdout **收进管道**
+       （铁律 1：不开窗但日志必留）⇒ 子进程的 stdio 编码在 Windows 上退回 **cp936**
+       ⇒ 网络代码里一句 ``print("⚠ …")`` 抛 ``UnicodeEncodeError``，
+       **让整个后台任务崩掉**（接入仓实测、本机可复现）。
+       ⇒ 所以 supervisor 必须**统一注入** `PYTHONIOENCODING=utf-8`
+       （这是所有子进程的共同需求；放进各项目声明只会把纪律复制一遍）。
+    2. ⚠ **空串 = "显式取消"**：声明方要能表达"**别让这个变量被继承进来**"
+       （某接入仓的 `EL_NO_AI_SERVER` 一旦被继承，**服务端根本不会起**），
+       而不必依赖父进程恰好没设它。
+
+    ⚠ **怎么故意退化还能让它绿**（所以三段都要断言）：
+    只断言"`PYTHONIOENCODING` 是 utf-8"是不够的 —— 把"空串删除"那段去掉**照样绿**。
+    所以必须**同时**断言"清空了的变量在子进程里**真的不存在**"。
+    """
+    import json
+
+    env = Env()
+    try:
+        # ⚠ **本判据必须自己造出前提**，不能依赖"父进程恰好没设 PYTHONIOENCODING"：
+        # supervisor 是 ``env = dict(os.environ)`` + ``setdefault`` ⇒ **父进程若已设了它，
+        # "框架没注入"也会绿**（实测：我自己的 shell 设了它 ⇒ "故意去掉注入"的退化
+        # **照样 PASS**）。而门禁 `run_all` 自己的环境里**就有**这个变量 ⇒
+        # 写成"要求父进程没有"会把门禁弄红（**我踩过**）。
+        #
+        # ⇒ 正解：**在子进程侧**显式给空串 —— 空串 = "显式取消这个变量"，
+        #   于是 `env` 里键**不存在** ⇒ `setdefault("PYTHONIOENCODING", "utf-8")` 必然生效。
+        #   这条断言**与父环境无关**，因此无论怎么跑都测的是"框架注入"本身。
+        probe = env.dir / "child_env.json"
+        keys = "PYTHONIOENCODING,PYTHONUNBUFFERED,EL_NO_AI_SERVER,ME_TOO"
+        env.sup.start(env.spec("probe", "env_probe", keys, str(probe),
+                               env={"EL_NO_AI_SERVER": "", "ME_TOO": "",
+                                    "PYTHONIOENCODING": ""}))
+        for _ in range(60):
+            if probe.is_file():
+                break
+            time.sleep(0.1)
+        assert probe.is_file(), "mock 没写出环境快照（判据无法核对）"
+        got = json.loads(probe.read_text(encoding="utf-8"))
+
+        _check("⑨ ⭐ 统一注入了 PYTHONIOENCODING=utf-8（否则 stdout 被重定向 ⇒ cp936 崩）",
+               got.get("PYTHONIOENCODING") == "utf-8", f"got={got!r}")
+        _check("⑨ PYTHONUNBUFFERED 也在（输出不卡缓冲）",
+               got.get("PYTHONUNBUFFERED") == "1", f"got={got!r}")
+        _check("⑨ ⭐ 声明里给空串的变量**在子进程里真的不存在**（空串 = 显式取消）",
+               "EL_NO_AI_SERVER" not in got and "ME_TOO" not in got, f"got={got!r}")
+
+        # ⚠ 对偶：**显式给的值优先**（判据要能构造"不注入"的对照组，
+        #   也防止实现被写成"无条件覆盖调用方给的编码"）。
+        probe2 = env.dir / "child_env2.json"
+        env.sup.start(env.spec("probe2", "env_probe", "PYTHONIOENCODING", str(probe2),
+                               env={"PYTHONIOENCODING": "gbk"}))
+        for _ in range(60):
+            if probe2.is_file():
+                break
+            time.sleep(0.1)
+        got2 = json.loads(probe2.read_text(encoding="utf-8")) if probe2.is_file() else {}
+        _check("⑨ 对偶：**显式给的编码优先**（不许无条件覆盖调用方的声明）",
+               got2.get("PYTHONIOENCODING") == "gbk", f"got={got2!r}")
+    finally:
+        env.close()
+
+
 def check_lease_exclusive_and_switch() -> None:
-    """修正 4：同一数据根不许两个 child 在跑；换腿必须"停→等真退出→起"。"""
     env = Env()
     try:
         root = env.dir / "data"
@@ -500,6 +578,7 @@ def main() -> int:
     check_restart_budget()
     check_kill_tree()
     check_real_port_readback()
+    check_child_env_is_utf8_and_empty_means_unset()
     check_lease_exclusive_and_switch()
     check_startup_plan_order_and_stale()
     check_status_page_phases()
