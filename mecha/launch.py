@@ -40,7 +40,9 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from .authority import Mode
 from .errors import MechaError
+from .software_control import SoftwareControl
 from .site import AutoShutdown, Service, Site, Strategy
 from .supervise import ChildSpec, StaleItem, Supervisor, pid_alive, which_or_raise
 
@@ -295,6 +297,8 @@ class LaunchController:
         self.agg_runtime: object | None = None
         #: 面板在**启动之前**也要能表达"我打算开哪几个" ⇒ 意图单独存一份。
         self._intent: dict[str, bool] = {}
+        #: 面板**意图**上的写权归属（仅在按钮成功之后更新；见 control_write_authority）
+        self._mode_intent: dict[str, str] = {}
 
     # ---- 读 ----
     def last_status(self) -> dict:
@@ -389,6 +393,78 @@ class LaunchController:
             self._last_error = f"{exc.kind}：{exc.message}"
             self._save_status()
             return {"ok": False, "id": svc_id, "error": self._last_error}
+
+    # ---- 写权（③）：走"控制端点"那条腿（§7.1.1）----
+    def write_authority_state(self, svc_id: str) -> dict:
+        """面板要的三个事实：能不能点 / 为什么不能 / 该显示哪个按钮。
+
+        ⚠ **不显示"当前写权是什么"**：契约只有两个**操作**、没有查询操作
+        （见 ``software_control`` 的 Known Limitations）⇒ 显示一个**猜的**值比不显示更坏。
+        这里报的是**面板自己的意图**（``intent_mode``）并如实标注。
+        """
+        svc = next((s for s in self.services() if s.id == svc_id), None)
+        if svc is None:
+            return {"ok": False, "why": f"没有这个软件：{svc_id!r}"}
+        if not svc.has_gui:
+            # ⭐ 没有 GUI 的项目**没有"手动"这一档** ⇒ 面板显示"—"
+            #   （不许出现"能点但没用"的按钮，R1/R4）
+            return {"ok": False, "why": "无手动面（has_gui=false）", "has_gui": False}
+        ctl = SoftwareControl.connect(svc_id, svc.data_root)
+        avail, why = ctl.available()
+        return {"ok": avail, "why": why, "has_gui": True,
+                "intent_mode": self._mode_intent.get(svc_id, "ai")}
+
+    def control_write_authority(self, svc_id: str, action: str) -> dict:
+        """面板的写权按钮：``action="human"``（切到手动）/ ``"ai"``（交还给 AI）。
+
+        ⭐ **切到手动 = 两次调用、按顺序、分开报告**（契约 §7.1.1）：
+        ① ``set_write_authority("human")`` ② ``open_manual_surface()``。
+        ⚠ **不许合并成一次"看起来成功了"**：写权切成功、窗口开失败时，人必须看到
+        **哪一步成了、哪一步没成**——否则他会对着一台"以为开着窗口"的机器发呆。
+
+        ⚠ 交还给 AI **只切写权、不关窗**（§1：切写权不动进程/连接；关窗是另一件事）。
+        """
+        st = self.write_authority_state(svc_id)
+        if not st.get("ok"):
+            return {"ok": False, "id": svc_id, "error": st.get("why", "不可用"), "steps": []}
+        svc = next(s for s in self.services() if s.id == svc_id)
+        ctl = SoftwareControl.connect(svc_id, svc.data_root)
+        steps: list[dict] = []
+
+        def step(name: str, fn: Callable[[], object]) -> bool:
+            try:
+                steps.append({"step": name, "ok": True, "result": fn()})
+                return True
+            except MechaError as exc:
+                steps.append({"step": name, "ok": False,
+                              "error": f"{exc.kind}：{exc.message}"})
+                return False
+
+        if action == "human":
+            if not step("set_write_authority(human)",
+                        lambda: ctl.set_write_authority(Mode.HUMAN.value)):
+                # 第一步就没成 ⇒ **不接着开窗**（开了窗而写权没给它，那是更坏的状态）
+                return {"ok": False, "id": svc_id, "steps": steps,
+                        "error": "写权没切成，**没有**开窗口"}
+            if not step("open_manual_surface", ctl.open_manual_surface):
+                # ⭐ 这一步失败必须**如实说**：写权已成、窗口没开
+                return {"ok": False, "id": svc_id, "steps": steps,
+                        "error": "写权已交给人工，但**窗口没开成**"
+                                 "（⚠ 写权那一步是成功的，别当成整件事没做）"}
+            self._mode_intent[svc_id] = "human"
+            self._save_status()
+            return {"ok": True, "id": svc_id, "steps": steps,
+                    "note": "已切到人工并开了窗口；面板与 dsh **不关闭**，只是待命"}
+        if action == "ai":
+            ok = step("set_write_authority(ai)",
+                      lambda: ctl.set_write_authority(Mode.AI.value))
+            if ok:
+                self._mode_intent[svc_id] = "ai"
+                self._save_status()
+            return {"ok": ok, "id": svc_id, "steps": steps,
+                    "note": "⚠ 窗口**不关**（切写权不动进程/连接；关窗是另一件事）"}
+        raise MechaError(f"未知的写权动作：{action!r}", kind="bad_write_action",
+                         hint="只认 human（切到手动）/ ai（交还给 AI）")
 
     def plan(self, enabled: Sequence[str]) -> StartupPlan:
         site = self.sites[0]

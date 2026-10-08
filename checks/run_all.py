@@ -51,6 +51,8 @@ CHECKS = [
     # 聚合端点（2a：工具表 / 转发 / 失败语义）。⚠ 也是**零外部依赖**：全用假后端，
     # 不起真进程（真跨进程端到端留给 2b）。
     "checks/aggregate_selfcheck.py",
+    # 4c：控制客户端（框架侧）+ 面板写权栏。⚠ 仿真软件端，不起真进程。
+    "checks/control_client_selfcheck.py",
     # 聚合端点的**运行期接线**（2b：open/close 真接 supervisor、元工具报进程事实、
     # dsh overlay 生成、真 MCP 协议端到端）。⚠ 会起真子进程（mock svc + 真聚合端点 server）。
     "checks/aggregate_runtime_selfcheck.py",

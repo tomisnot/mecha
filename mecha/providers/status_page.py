@@ -16,11 +16,21 @@
 ```
 
 ⭐ **三个控件分工**（§7 的表）：
-- **存活滑块** ⇒ 动 ①（起/停软件）——**本轮唯一真正能用的控件**；
-- **写权那栏** ⇒ 动 ③（切 AI/手动）——⚠ **本轮显示"待接"**：它需要 §7.1.1 那条
-  **控制通道**（两条端点），**那是下一轮**。
-  ⛔ **不许把它渲染成能点的按钮**：半成的通道比没有更坏（用户裁决口径）。
+- **存活滑块** ⇒ 动 ①（起/停软件）；
+- **写权按钮** ⇒ 动 ③（切 AI/手动）——⭐ **走控制端点那条腿**（§7.1.1），
+  **切到手动 = 两次调用、按顺序、分开报告**（`set_write_authority("human")` →
+  `open_manual_surface()`）：⚠ 合并成一次会让"写权切了但窗口没开"看起来像成功；
 - `has_gui=False` 的项目 ⇒ 写权那栏显示 **"—"**（它只有 AI 一条腿，没有"手动"这一档）。
+
+## ⚠ 「待命」是**语义**，不是状态（§1）
+
+切完写权之后 **面板与 dsh 都不关闭**：它们的**写**被闸门拒、**读**照常 ⇒
+它们**本来就是"待命"这个语义**。⇒ 界面显示"已切人工 · 待命"，而不是"已断开/已关闭"。
+
+## ⚠ 端口号不许进页面（契约 §7.1.1）
+
+`.control-port` **只给框架**；⚠ **不许把 `:control-port` 写进任何给 AI 的文本/工具输出**。
+⇒ 本页面**不渲染任何端口号**（连能力面端口也不渲染：端口对人不是信息，对"泄漏"却是风险面）。
 
 ## ⚠ 用户给的四条布局要求（**必须遵守**，别退回旧形态）
 
@@ -73,6 +83,8 @@ class Controller(Protocol):
     def start(self, enabled: list) -> dict: ...
     def set_service_enabled(self, svc_id: str, enabled: bool) -> dict: ...
     def set_intent(self, svc_id: str, enabled: bool) -> None: ...
+    def write_authority_state(self, svc_id: str) -> dict: ...
+    def control_write_authority(self, svc_id: str, action: str) -> dict: ...
     def shutdown(self) -> dict: ...
 
 
@@ -131,26 +143,42 @@ def _badge(state: str) -> str:
     return f'<span class="badge b-{html.escape(state)}">{html.escape(state)}</span>'
 
 
-def _mode_cell(svc: object) -> str:
-    """写权那栏（③）：⚠ 本轮**一律不可点**。
+def _mode_cell(svc: object, ctl_state: dict | None) -> str:
+    """写权那栏（③）——**三种形态，不许出现第四种**（R1/R4）：
 
-    - ``has_gui=False`` ⇒ ``—``（没有"手动"这一档）；
-    - ``has_gui=True`` ⇒ 显示**待接** + 依赖说明（**不谎称可点**）。
+    | 形态 | 何时 | 渲染 |
+    |---|---|---|
+    | **能点** | ``has_gui=true`` 且控制端点可用（软件在跑） | 「切到手动」 |
+    | **待命** | 已切到人工（面板意图） | 「已切人工 · 待命」+「交还给 AI」 |
+    | **—** | ``has_gui=false``（没有"手动"这一档） | 一个破折号 |
+    | **不可用** | ``has_gui=true`` 但**软件没起来** | 灰按钮 + 为什么（不是点了才报错） |
+
+    ⚠ 端口号**绝不出现**在这里（契约：不许把 ``:control-port`` 写进给 AI 的文本/输出）。
     """
     if not getattr(svc, "has_gui", False):
         return '<span class="muted" title="它只有 AI 一条腿，没有手动这一档">—</span>'
-    return f'<span class="pending">写权：{html.escape(MODE_PENDING_TEXT)}</span>'
+    sid = html.escape(str(getattr(svc, "id", "")))
+    st = ctl_state or {}
+    if not st.get("ok"):
+        why = html.escape(str(st.get("why") or "控制端点不可用"))
+        return (f'<button class="ghost" disabled title="{why}">切到手动</button>'
+                f'<span class="pending"> {why}</span>')
+    if st.get("intent_mode") == "human":
+        # ⭐ **待命语义**：写被拒、读照常，面板与 dsh **不关闭**（这是语义，不是状态）
+        return ('<span class="badge b-ready">已切人工 · 待命</span> '
+                f'<button class="ghost" onclick="mode(\'{sid}\',\'ai\')">交还给 AI</button>')
+    return f'<button onclick="mode(\'{sid}\',\'human\')">切到手动</button>'
 
 
-def _service_row(svc: object, row: dict | None, intent: bool, started: bool) -> str:
+def _service_row(svc: object, row: dict | None, intent: bool, started: bool,
+                 ctl_state: dict | None) -> str:
     sid = html.escape(str(getattr(svc, "id", "")))
     running = bool((row or {}).get("pid"))
     state = str((row or {}).get("state") or ("stopped" if started else "stopped"))
     checked = " checked" if (running or (not started and intent)) else ""
-    port = (row or {}).get("port")
+    # ⚠ tail 里**不报控制端口**（契约：不许把 `:control-port` 写进任何给 AI 的文本/输出）；
+    #   这里索性连能力面端口也不报 —— 端口对人不是信息，对"泄漏"却是风险面。
     tail = f'pid {(row or {}).get("pid")}' if running else "未运行"
-    if port:
-        tail += f" · 端口 {port}"
     return (
         f'<div class="row">'
         # 左侧勾选**只表达"打算开"**（意图）⇒ 不可点：真正的控件是右边那个滑块
@@ -159,7 +187,7 @@ def _service_row(svc: object, row: dict | None, intent: bool, started: bool) -> 
         f'<span class="sw"><input type="checkbox" id="sw-{sid}"{checked}'
         f' onchange="toggle(\'{sid}\', this.checked)"><label for="sw-{sid}"></label></span>'
         f'{_badge(state)}'
-        f'{_mode_cell(svc)}'
+        f'{_mode_cell(svc, ctl_state)}'
         f'<span class="brief">{html.escape(str(getattr(svc, "brief", "")))}'
         f' · <span class="muted">{html.escape(tail)}</span></span>'
         f'</div>')
@@ -194,7 +222,12 @@ def render_page(controller: Controller) -> str:
     for svc in services:
         sid = str(getattr(svc, "id", ""))
         row = rows.get(sid)
-        items.append(_service_row(svc, row, bool(intent.get(sid)), started))
+        # ⚠ 写权栏的可用性由控制器如实给出（**软件没起来 ⇒ 灰按钮**，不是点了才报错）
+        try:
+            ctl_state = controller.write_authority_state(sid)
+        except Exception as exc:                       # noqa: BLE001 - 页面如实降级
+            ctl_state = {"ok": False, "why": f"控制端点状态读不到：{exc}"}
+        items.append(_service_row(svc, row, bool(intent.get(sid)), started, ctl_state))
         on = bool((row or {}).get("pid")) or (not started and bool(intent.get(sid)))
         side.append(f'<div class="sideitem{" on" if on else ""}">{html.escape(sid)}</div>')
 
@@ -227,12 +260,14 @@ def render_page(controller: Controller) -> str:
         '<button onclick="startNow()">启动 ▸</button>'
         '<button class="ghost" onclick="shutdownNow()">收尾退出</button>'
         '<span class="muted">存活滑块随时可动</span>'
-        f'<span class="pending">写权 {html.escape(MODE_PENDING_TEXT)}</span></footer>'
+        '<span class="pending">切写权**不动进程、不动连接**：面板与 dsh 待命，写被拒、读照常</span>'
+        '</footer>'
         '<script>'
         'function fold(){document.getElementById("shell").classList.toggle("collapsed")}'
         'async function post(p,b){const r=await fetch(p,{method:"POST",body:b||""});'
         'document.documentElement.innerHTML=await r.text()}'
         'function toggle(id,on){post("/service", new URLSearchParams({svc:id,on:on?"1":"0"}))}'
+        'function mode(id,act){post("/mode", new URLSearchParams({svc:id,action:act}))}'
         'function allOn(v){post("/all", new URLSearchParams({on:v?"1":"0"}))}'
         'function startNow(){post("/start")}'
         'function shutdownNow(){if(confirm("收尾退出：逆序停掉全部 child？"))post("/shutdown")}'
@@ -285,6 +320,21 @@ class _Handler(BaseHTTPRequestHandler):
                 svc = (form.get("svc") or [""])[0]
                 on = (form.get("on") or ["0"])[0] == "1"
                 self.controller.set_service_enabled(svc, on)
+            elif path == "/mode":                          # ⭐ 写权按钮（切到手动 / 交还给 AI）
+                svc = (form.get("svc") or [""])[0]
+                action = (form.get("action") or [""])[0]
+                out = self.controller.control_write_authority(svc, action)
+                if not out.get("ok"):
+                    # ⚠ **如实报告哪一步成/哪一步败**（不合并成一次"看起来成功了"）
+                    detail = "；".join(
+                        f'{s["step"]}：{"✅" if s["ok"] else "❌ " + str(s.get("error", ""))}'
+                        for s in out.get("steps", [])) or str(out.get("error", ""))
+                    page = render_page(self.controller)
+                    return self._html(200, page.replace(
+                        "<div id=\"main\">",
+                        f'<div id="main"><div class="row err">'
+                        f'{html.escape(str(out.get("error", "写权操作失败")))}<br>'
+                        f'<span class="muted">{html.escape(detail)}</span></div>'))
             elif path == "/all":                           # 批量：只改**意图**（不 spawn）
                 on = (form.get("on") or ["1"])[0] == "1"
                 for svc in self.controller.services():     # type: ignore[union-attr]

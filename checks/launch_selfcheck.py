@@ -706,7 +706,7 @@ def check_status_page_console() -> None:
     - **把写权栏渲染成能点的按钮** ⇒ "不许谎称可点"那条红（造法：给它加 onclick）；
     - **把折叠改成"缩小内边距"** ⇒ "折叠真的让出宽度"那条红（造法：只改 padding）。
     """
-    from mecha.providers.status_page import MODE_PENDING_TEXT, render_page
+    from mecha.providers.status_page import render_page
 
     class Svc:
         def __init__(self, sid, brief, has_gui):
@@ -725,6 +725,19 @@ def check_status_page_console() -> None:
                           Svc("GP", "论文管理与推荐", False))
             self._intent = {"ML": True, "EL": True, "GP": False}
             self._rows: list[dict] = []
+            #: 控制端点可用性（判据 ⑤ 要造"软件没起来"那一档）
+            self.ctl_ok: dict[str, bool] = {"ML": True, "EL": False, "GP": False}
+            self.mode_intent: dict[str, str] = {}
+
+        def write_authority_state(self, sid: str) -> dict:
+            if sid == "GP":
+                return {"ok": False, "why": "无手动面（has_gui=false）", "has_gui": False}
+            ok = self.ctl_ok.get(sid, False)
+            return {"ok": ok, "why": "" if ok else f"软件 {sid} 还没起来（没有控制端点）",
+                    "has_gui": True, "intent_mode": self.mode_intent.get(sid, "ai")}
+
+        def control_write_authority(self, sid: str, action: str) -> dict:
+            return {"ok": True, "id": sid, "steps": []}
 
         def sites(self):
             class St:
@@ -760,12 +773,18 @@ def check_status_page_console() -> None:
            all(s in p1 for s in ("ML", "EL", "GP")), "少了某个项目")
     _check("⑪ `has_gui=False` 的 GP 也在列表里（只是写权栏不同）",
            "GP" in p1 and "论文管理与推荐" in p1)
-    # ⭐ 判据 4：写权栏本轮"待接"，且**不可点**
-    _check("⑪ ⭐ 写权栏显示「待接」并注明依赖控制通道",
-           MODE_PENDING_TEXT in p1, f"p1 里没有 {MODE_PENDING_TEXT!r}")
-    _check("⑪ ⭐ 写权栏**不是**能点的按钮（不许谎称可点）",
-           "onclick=\"mode" not in p1 and "写权：" in p1)
+    # ⭐ 判据 4/5：写权栏的**三种形态**（能点 / 不可用 / —），不许出现第四种
+    _check("⑪ ⭐ 控制端点可用的 ML ⇒ **真按钮**「切到手动」",
+           "切到手动" in p1 and "mode('ML','human')" in p1, "没有渲染出可点的按钮")
+    _check("⑪ ⭐ 软件没起来的 EL ⇒ 按钮**不可点**（`disabled`）+ 说明为什么",
+           'disabled title="软件 EL 还没起来' in p1, f"p1 里没找到 EL 的禁用按钮")
+    _check("⑪ ⭐ 不可点的那一档**不是点了才报错**（渲染期就带上了原因）",
+           "还没起来" in p1)
     _check("⑪ `has_gui=False` ⇒ 写权栏「—」（它没有手动这一档）", "—" in p1)
+    _check("⑪ ⭐ `has_gui=False` 的 GP **不出现可点的写权按钮**",
+           "mode('GP'" not in p1, "给没有手动面的项目也渲染了按钮")
+    _check("⑪ ⭐ 页面里**没有端口号**（契约：不许把 :control-port 写进给 AI 的输出）",
+           "端口" not in p1 and ":65" not in p1, "页面里出现了端口字样/数字")
     # ⭐ 同页：不是两步向导
     _check("⑪ 是**常驻控制台**（一页）：标题就是控制台，没有「选择页」这一步",
            "控制台" in p1 and "选择要启用的项目" not in p1)
