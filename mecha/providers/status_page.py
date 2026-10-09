@@ -106,12 +106,15 @@ class PageOptions:
 
 _CSS = """
 *{box-sizing:border-box}
-body{font:14px/1.6 system-ui,"Segoe UI",sans-serif;margin:0;background:#0f1115;color:#e6e6e6}
+body{font:14px/1.6 system-ui,"Segoe UI",sans-serif;margin:0;background:#0f1115;color:#e6e6e6;
+     /* ⭐ 结构式满高：shell 吃剩余 ⇒ **页头/页脚改高度都不会再把底部挤出去** */
+     display:flex;flex-direction:column;height:100vh;overflow:hidden}
 header{display:flex;align-items:center;gap:12px;padding:13px 18px;border-bottom:1px solid #242a35}
 h1{font-size:18px;margin:0;flex:1}
 h3{font-size:13px;margin:8px 0 4px;color:#8b93a1;font-weight:600}
 /* ⚠ 折叠：整列宽度在 260px 与 0 之间切换 ⇒ **真的让出宽度**（不是缩小内边距） */
-#shell{display:grid;grid-template-columns:260px 1fr;height:calc(100vh - 104px)}
+#shell{display:grid;grid-template-columns:260px 1fr;flex:1;min-height:0}
+header,footer{flex:0 0 auto}
 #shell.collapsed{grid-template-columns:0 1fr}
 #side{border-right:1px solid #242a35;overflow-y:auto;min-height:0}
 #shell.collapsed #side{display:none}
@@ -120,6 +123,11 @@ h3{font-size:13px;margin:8px 0 4px;color:#8b93a1;font-weight:600}
      padding:8px 2px;border-bottom:1px solid #1b2029}   /* ⚠ 只有分隔线，**不套卡片框** */
 .brief{grid-column:2 / span 4;color:#8b93a1;font-size:12px;margin:-4px 0 2px}
 .name{font-weight:600}
+/* ⭐ 提示/错误是**整块文字**：⚠ 不许用 `.row`（那是 5 列网格 ⇒ 文字会被塞进 24px 的第 1 格，
+   实测现象是**一字一行**竖排）。 */
+.notice{padding:9px 2px;border-bottom:1px solid #1b2029}
+/* ⭐ 写权那一格的**收容器**：里面可能有多个元素（真值 + 按钮），必须只占**一格**。 */
+.mode{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .badge{font-size:12px;padding:1px 8px;border-radius:999px;border:1px solid #2d3442;color:#9aa3b2;
        justify-self:start}
 .b-ready{color:#7ee787;border-color:#2ea043}
@@ -130,7 +138,9 @@ h3{font-size:13px;margin:8px 0 4px;color:#8b93a1;font-weight:600}
 .err{color:#ff7b72}
 button{background:#2f81f7;color:#fff;border:0;border-radius:8px;padding:8px 14px;font:inherit;cursor:pointer}
 button.ghost{background:transparent;border:1px solid #2d3442;color:#e6e6e6}
-footer{display:flex;gap:10px;align-items:center;padding:11px 18px;border-top:1px solid #242a35}
+footer{display:flex;gap:10px;align-items:center;padding:11px 18px;border-top:1px solid #242a35;
+       flex-wrap:wrap}                 /* ⚠ 窄窗口/文字多时**换行**，别把右边裁掉 */
+.foot-note{flex:1;min-width:0}        /* 说明吃剩余宽度，且**允许收缩**（否则溢出被裁） */
 /* 存活滑块：checkbox + 纯 CSS 开关（零依赖） */
 .sw{position:relative;display:inline-block;width:50px;height:23px}
 .sw input{display:none}
@@ -238,7 +248,9 @@ def _service_row(svc: object, row: dict | None, intent: bool, started: bool,
         f'<span class="sw"><input type="checkbox" id="sw-{sid}"{checked}'
         f' onchange="toggle(\'{sid}\', this.checked)"><label for="sw-{sid}"></label></span>'
         f'{_badge(state)}'
-        f'{_mode_cell(svc, ctl_state)}'
+        #: ⚠⭐ **必须包一层**：`_mode_cell` 返回的是**多个并列元素**（真值 + 按钮）
+        #: ⇒ 直接放进 5 列网格会**各占一格、撑出隐式列**（实测：按钮被挤成竖排、错位）。
+        f'<span class="mode">{_mode_cell(svc, ctl_state)}</span>'
         f'<span class="brief">{html.escape(str(getattr(svc, "brief", "")))}'
         f' · <span class="muted">{html.escape(tail)}</span></span>'
         f'</div>')
@@ -284,10 +296,10 @@ def render_page(controller: Controller) -> str:
 
     err = str(st.get("last_error") or "")
     if err:
-        head = f'<div class="row err">启动失败：{html.escape(err)}</div>'
+        head = f'<div class="notice err">启动失败：{html.escape(err)}</div>'
     elif not started:
         # ⚠ 与"启动失败"**不同措辞**（"还没起"≠"读不到"）
-        head = '<div class="row muted">还没启动（不是读不到状态）：用滑块选好，再点「启动 ▸」。</div>'
+        head = '<div class="notice muted">还没启动（不是读不到状态）：用滑块选好，再点「启动 ▸」。</div>'
     else:
         head = ""
     cleaned = st.get("cleaned") or []
@@ -309,7 +321,7 @@ def render_page(controller: Controller) -> str:
         '<!doctype html><html lang="zh"><head><meta charset="utf-8">'
         f'<title>{html.escape(_TITLE)}</title><style>{_CSS}</style></head><body>'
         f'<header><h1>{html.escape(_TITLE)} · 控制台</h1>'
-        f'<span class="muted">{html.escape(str((st.get("sites") or ["?"])[0]))}</span>'
+        f'<span class="muted">{html.escape(" · ".join(st.get("sites") or ["?"]))}</span>'
         '<button class="ghost" onclick="fold()">◀ 收起</button>'
         '<button class="ghost" onclick="location.reload()">刷新</button></header>'
         f'<div id="shell"><div id="side">{"".join(side)}</div>'
@@ -319,7 +331,8 @@ def render_page(controller: Controller) -> str:
         '<button onclick="startNow()">启动 ▸</button>'
         '<button class="ghost" onclick="shutdownNow()">收尾退出</button>'
         '<span class="muted">存活滑块随时可动</span>'
-        '<span class="pending">切写权**不动进程、不动连接**：面板与 dsh 待命，写被拒、读照常</span>'
+        '<span class="pending foot-note">切写权<strong>不动进程、不动连接</strong>：'
+        '面板与 dsh 待命 —— 写被拒、读照常</span>'
         '</footer>'
         '<script>'
         'function fold(){document.getElementById("shell").classList.toggle("collapsed")}'
@@ -391,7 +404,7 @@ class _Handler(BaseHTTPRequestHandler):
                     page = render_page(self.controller)
                     return self._html(200, page.replace(
                         "<div id=\"main\">",
-                        f'<div id="main"><div class="row err">'
+                        f'<div id="main"><div class="notice err">'
                         f'{html.escape(str(out.get("error", "写权操作失败")))}<br>'
                         f'<span class="muted">{html.escape(detail)}</span></div>'))
             elif path == "/all":                           # 批量：只改**意图**（不 spawn）
@@ -403,7 +416,7 @@ class _Handler(BaseHTTPRequestHandler):
             else:
                 return self._html(404, "<h1>404</h1><p>只有 /start 与 /service。</p>")
         except Exception as exc:                           # noqa: BLE001 - 页面如实报故障
-            return self._html(200, f'<div class="row err">{html.escape(str(exc))}</div>')
+            return self._html(200, f'<div class="notice err">{html.escape(str(exc))}</div>')
         return self._html(200, render_page(self.controller))
 
 
