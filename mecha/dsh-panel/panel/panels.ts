@@ -95,11 +95,22 @@ export interface AutoContext {
 
 /** `fetch` / 正文组件的注入点（判据喂替身；生产走同源 `fetch` + 资产自己的壳）。 */
 export interface ApplyOptions {
-  /** ⭐ 正文组件（**必填**：`panels.ts` 不认识 react 壳 —— 那条绑定在 `auto.ts`）。 */
-  body: unknown
+  /** 正文组件。⚠ 不传 ⇒ 用 :func:`setDefaultPanelBody` 装的那一份（入口 `auto.ts` 装的是
+   *  资产自己的壳）；两处都没有 ⇒ **响亮失败**（不静默挂一个没有正文的 tab）。 */
+  body?: unknown
   fetchImpl?: typeof fetch
   /** 取参数的路由（缺省 = :data:`PANEL_SERVICES_ROUTE`）。 */
   route?: string
+}
+
+/** 默认正文组件的家（**只有一处**：入口 `auto.ts` 装资产自己的壳）。
+ *  ⚠ 为什么是"装"而不是在 `panels.ts` 里静态 import 壳：`.tsx` 不能进 `node --test`
+ *  （见模块 docstring）⇒ 本模块必须与壳**解耦**，否则三条硬判据一条都跑不了。 */
+let defaultBody: unknown
+
+/** 装默认正文组件（入口调；**再调一次覆盖**，便于 HMR/判据）。 */
+export function setDefaultPanelBody(body: unknown): void {
+  defaultBody = body
 }
 
 /**
@@ -139,7 +150,15 @@ Promise<PanelServicesPayload> {
  * ⚠ 已挂过的 `tabId` **跳过**（跨 bundle 幂等）；收尾时把登记删掉，
  * 于是"重新 apply"（HMR 重载那个项目插件）能自愈地把它挂回来。
  */
-export async function applyMechaPanels(ctx: AutoContext, opts: ApplyOptions): Promise<() => void> {
+export async function applyMechaPanels(ctx: AutoContext, opts: ApplyOptions = {}): Promise<() => void> {
+  const body = opts.body ?? defaultBody
+  if (body === undefined) {
+    // ⚠ 响亮失败：没有正文组件的 tab 是一片空白（"看着像坏了"），不许静默挂上去。
+    throw new Error(
+      'applyMechaPanels 需要正文组件：既没传 opts.body，也没有 setDefaultPanelBody(...)。'
+      + '⚠ 生产路径用入口 `@mecha/dsh-panel/panel/auto.ts`（它装的是资产自己的壳）。',
+    )
+  }
   let payload: PanelServicesPayload
   try {
     payload = await loadPanelServices(opts)
@@ -161,7 +180,7 @@ export async function applyMechaPanels(ctx: AutoContext, opts: ApplyOptions): Pr
       panelConfig: { routePath: svc.routePath, portFile: svc.portFile, title: svc.title },
       kind: svc.kind,
       id: svc.tabId,
-      body: opts.body,
+      body,
       bodyProps: { extraPages: extraPageSpecsFrom(svc.id, svc.extraPages ?? []) },
       titlePrefix: TITLE_PREFIX,
     })

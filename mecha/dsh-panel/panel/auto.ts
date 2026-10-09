@@ -22,7 +22,19 @@
  * 这是资产既有口径，见 `MonitorTabBody.tsx` 的 docstring）。
  */
 import { MonitorTabBody } from './MonitorTabBody.tsx'
-import { PLUGIN_INJECT, PLUGIN_NAME, applyMechaPanels, type AutoContext } from './panels.ts'
+import {
+  PLUGIN_INJECT,
+  PLUGIN_NAME,
+  applyMechaPanels,
+  setDefaultPanelBody,
+  type AutoContext,
+} from './panels.ts'
+
+/** ⭐ 把**资产自己的壳**装成默认正文组件（`panels.ts` 与 `.tsx` 解耦的那条线的另一端）。
+ *  ⚠ 在**模块加载期**装：项目那一行 bootstrap 一执行就生效，早于 dsh 调 `apply`
+ *  ⇒ 自定义入口（如 GP 那样自带按钮的项目）**不必再 import 壳**，直接调
+ *  `applyMechaPanels(ctx)` 即可。 */
+setDefaultPanelBody(MonitorTabBody)
 
 /** cordis 插件名（诊断用）。 */
 export const name = PLUGIN_NAME
@@ -32,7 +44,7 @@ export const inject = PLUGIN_INJECT
 
 /** cordis 入口：按声明挂 N 个 tab（正文 = 资产自己的壳）。 */
 export async function apply(ctx: AutoContext): Promise<void> {
-  const dispose = await applyMechaPanels(ctx, { body: MonitorTabBody })
+  const dispose = await applyMechaPanels(ctx)
   // ⚠ 有 `ctx.effect` 就交给它管寿命（与三家原写法一致）；没有就直接挂着
   //   （最小装配/判据里没有 effect 也能跑）。
   if (typeof ctx.effect === 'function') {
@@ -40,7 +52,18 @@ export async function apply(ctx: AutoContext): Promise<void> {
   }
 }
 
-// ⚠ 也把面板侧的两个"给项目用"的口子从入口转出去：项目若要**细化呈现**
-//   （自定义 UI，如 ML 的主指标取值函数），从**同一个入口**拿，不必再记第二条件。
+// ⚠ 也把"给项目用"的那几个口子从入口转出去（项目只需记**一个** import 路径）：
+//   · `applyMechaPanels`：**自带自定义 UI 的项目**（如 GP 有自己的按钮）用它 ——
+//     它们的 `apply` 必须是自己的，所以不能只写那一行 `export { apply } from …`；
+//   · `contributeExtraPageRender` / `extraPageRenderKey`：项目要**细化呈现**时用（如 ML
+//     的主指标取值函数）——声明管页集与路由，这些只管"怎么渲染一行"。
+export {
+  PLUGIN_INJECT,
+  PLUGIN_NAME,
+  TITLE_PREFIX,
+  applyMechaPanels,
+  setDefaultPanelBody,
+} from './panels.ts'
+export type { ApplyOptions, AutoContext } from './panels.ts'
 export { contributeExtraPageRender, extraPageRenderKey, extraPageSpecsFrom } from './services.ts'
 export type { ExtraPageRender } from './services.ts'

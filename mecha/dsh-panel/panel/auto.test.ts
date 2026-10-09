@@ -318,3 +318,13 @@ test('取参数失败**不缓存**：下一拍能自己恢复（不是"这个页
     .catch(() => loadPanelServices({ fetchImpl: flaky }))
     .then((payload) => { assert.equal(payload.services.length, 3) })
 })
+
+test('没给正文组件 ⇒ **响亮失败**（不静默挂一个空白的 tab）', () => {
+  // ⚠ `panels.ts` 与 `.tsx` 壳解耦（壳进不了 node 门禁）⇒ 默认正文由入口 `auto.ts` 装。
+  //   这条钉住"两边都没有"那种接线错误：空白的 tab 看着像坏了，必须当场炸。
+  //   ⚠ 本判据**不 import** 入口（那会把 `.tsx` 拖进来）⇒ 这里天然就是"没装默认"那一档。
+  resetGlobalAuto()
+  const { ctx } = fakeCtx()
+  const { impl } = fetchOf(REAL)
+  return assert.rejects(() => applyMechaPanels(ctx, { fetchImpl: impl }), /需要正文组件/)
+})
