@@ -920,6 +920,35 @@ def _request_stop(runtime: Path) -> int:
     return 0
 
 
+def _open_dsh_soon(port: int, *, delay: float = 4.0) -> None:
+    """⭐ **稍等一下再替用户打开 dsh** —— 为什么不能立刻开：
+
+    它**刚 spawn**，UI 还没开始听 ⇒ 立刻开会得到一个"连接被拒"的页面，
+    而用户会以为"dsh 坏了"（⚠ 比不打开更坏）。
+
+    ⚠ 用**后台线程**：不许让"替你开个浏览器"把 launcher 卡住 ——
+    它唯一的职责是持有 supervisor 与面板。
+    ⚠ 开不了也不算失败（无头机器、没有默认浏览器都可能）⇒ **静默放弃**，
+    但**地址一定打印出来**（人能自己点）。
+    """
+    import threading
+    import webbrowser
+
+    url = f"http://127.0.0.1:{int(port)}/"
+
+    def _go() -> None:
+        import time
+
+        time.sleep(delay)
+        print(f"mecha：dsh（AI 界面）⇒ {url}", flush=True)
+        try:
+            webbrowser.open(url)
+        except Exception:                                  # noqa: BLE001 - 开不了不影响 launcher
+            pass
+
+    threading.Thread(target=_go, daemon=True).start()
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     #: ⭐ **输出必须"立刻可见"**：`print` 到**被重定向的文件**时是**块缓冲**
     #: ⇒ 那行 `mecha：已启动 ⇒ http://…` **会卡到进程退出才出现**
@@ -997,6 +1026,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps(result, ensure_ascii=False, indent=2))
         if not result.get("ok"):
             return 1
+        #: ⭐⭐ **替用户打开 dsh**（设计 §1.2：全部就绪后**自动打开** AI 界面）。
+        #: ⚠ 原来**没人做这件事**：`port_preference` 从没进 argv ⇒ 框架不知道 dsh 在哪儿
+        #: （用户实测："dsh 面板还没唤起"）⇒ 现在地址是确定的（`--port <pref>`）。
+        if not args.no_browser:
+            _, dsh_spec = merge_dsh(sites)
+            _open_dsh_soon(int(dsh_spec.port_preference))
         # 起了之后不退出：状态页仍要能看（--all 只是跳过勾选那一步）
     from .providers.status_page import PageOptions, StatusPage
     page = StatusPage(controller, PageOptions(port=args.port, open_browser=not args.no_browser))

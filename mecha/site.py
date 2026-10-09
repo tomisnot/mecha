@@ -407,10 +407,18 @@ class DSHSpec:
     data_root: None = None
 
     def argv(self) -> tuple[str, ...]:
-        """把声明拼成命令行（``--patch`` 与端口偏好在这里落成 argv）。"""
+        """把声明拼成命令行（``--patch`` 与**端口偏好**在这里落成 argv）。
+
+        ⚠⭐ **`port_preference` 必须真的进 argv**（实测抓到的"死缝"，R17）：
+        它原来只被**比对**（合并时的身份字段）与**搬运**，**从没被使用** ⇒
+        ⚠ **框架不知道 dsh 会绑哪个端口** ⇒ 它**没法替用户打开 dsh**
+        （用户实测："dsh 面板还没唤起"）。
+        ⇒ 现在显式 `--port <pref>`（⚠ dsh 的 `--port` 是 **web-app** 的参数，经 `webStartup` 传）。
+        """
         out = list(self.command)
         for p in self.patches:
             out += ["--patch", str(p)]
+        out += ["--port", str(int(self.port_preference))]
         return tuple(out)
 
     def validate(self) -> None:
