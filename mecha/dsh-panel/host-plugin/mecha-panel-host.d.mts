@@ -32,6 +32,8 @@ export interface PanelPayload {
 /** env 变量名（与 `mecha/dsh_panel.py` 同一处口径）。 */
 export const ROUTE_ENV: string
 export const SERVICES_ENV: string
+/** ⭐ 第三个变量：`{svc_id: 端口文件绝对路径}`，**只给本插件**（不进给浏览器的那份参数）。 */
+export const PORT_FILES_ENV: string
 
 /** 只显式声明的服务（本插件**不需要**任何服务依赖）。 */
 export const inject: string[]
@@ -42,11 +44,27 @@ export const name: string
 /** 读并校验那份参数（**缺失/坏 ⇒ 抛**）。 */
 export function readPanelPayload(env?: Record<string, string | undefined>): PanelPayload
 
+/** 读 `{svc_id: 绝对端口文件路径}`（缺/空 ⇒ **空表**，不是抛）。 */
+export function readPortFiles(env?: Record<string, string | undefined>): Record<string, string>
+
 /** 那份参数的 JSON 回执函数。 */
 export function makePanelHandler(env?: Record<string, string | undefined>): (
   req: unknown,
   res: { writeHead(status: number, headers: Record<string, string>): void; end(body: string): void },
 ) => void
 
-/** 挂载：注册那**一个**同源只读路由。 */
+/** 解析监控端点基址（⚠ **绝不回落默认端口**；错误文本只说文件名，不带绝对路径）。 */
+export function resolveMonitorBase(portFile: string): string
+
+/** 写一份 JSON 响应（`Content-Length` 用**字节数**）。 */
+export function sendJson(
+  res: { writeHead(status: number, headers: Record<string, string>): void; end(body: string): void },
+  status: number,
+  payload: unknown,
+): void
+
+/** 一条服务的监控地址路由（`200 {base}` / `503 {error}`）。 */
+export function makeMonitorUrlHandler(portFile: string): (req: unknown, res: unknown) => void
+
+/** 挂载：注册那份参数的路由 + ⭐ **每个服务一条监控地址路由**。 */
 export function apply(ctx: PanelHostContext): Promise<unknown>

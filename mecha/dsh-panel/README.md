@@ -66,11 +66,11 @@ import {
   mountHostPlugin,
   type HostContext,                                        // 骨架的**结构化最小接口**
 } from '@mecha/dsh-panel/mount-host-plugin.ts'
-import { MY_BRIDGE, MY_FEATURES, MY_PANEL } from './my-params.ts'
+import { MY_BRIDGE, MY_FEATURES } from './my-params.ts'    // ⚠ 不再需要 MY_PANEL
 import { myResolveUrl } from './host/my-hub.ts'
 
 export const name = MY_BRIDGE.serverName
-export const inject = hostPluginInject()   // → ['tools']（地址路由由骨架内部条件处理）
+export const inject = hostPluginInject()   // → ['tools']
 
 export async function apply(ctx: Context, config: MyConfig = {}): Promise<void> {
   // ⚠ 这个 cast 是**"资产不认识 cordis"**的代价，刻意写在项目侧：
@@ -82,7 +82,9 @@ export async function apply(ctx: Context, config: MyConfig = {}): Promise<void> 
     resolveUrl: () => myResolveUrl(config),
     clientInfo: MY_BRIDGE.clientInfo,
     offlineHint: MY_BRIDGE.offlineHint,
-    panelConfig: MY_PANEL,
+    // ⭐ **不传 `panelConfig`**：监控地址路由已**上提进框架**
+    //    （`mecha_site.py` 的 `Service.monitor` 声明 ⇒ 框架的 host 插件按
+    //     `MECHA_PANEL_PORT_FILES` 现取端口）——项目侧**一行都不用写**。
     // 可选：项目自己的 command。⚠ 能力关着时**不要传** ⇒ 骨架什么都不注册（不留死缝）
     // ⚠ 回执形状由**宿主**定（骨架只创建、不解释命令）⇒ 这里怎么写都行，资产不设约束。
     ...(MY_FEATURES.switchToGui ? {
@@ -101,7 +103,7 @@ export async function apply(ctx: Context, config: MyConfig = {}): Promise<void> 
 | `projectRoot` | ✅ | **抛**（面板端口文件所在目录） |
 | `resolveUrl` | ✅ | **抛**。端点怎么算（显式 URL > 端口文件 > 项目默认）是**项目知识** |
 | `clientInfo` | ✅ | **抛**（`initialize` 上报的 `name`/`version`，两者都非空） |
-| `panelConfig` | ✅ | **抛**（面板参数必须由项目注入；资产不存项目值） |
+| `panelConfig` | ❌ | ⭐ **不注册监控地址路由**（那条由**框架的 host 插件**按 `mecha_site.py` 的声明接管，2026-10-09 上提）。⚠ 只在"项目要走**自己**那条路由"时才给；⚠ **两者只能有一个**（同一条 `routePath` 注册两次是接线错误） |
 | `offlineHint` / `reconnect` / `requestInit` / `onStatus` | ❌ | 用桥自己的默认；`onStatus` 不给 ⇒ 骨架打默认三态日志 |
 | `sessionFactory` | ❌ | **只给单测**：注入假会话 ⇒ 完全不碰 MCP SDK |
 | `registerCommand` | ❌ | 不注册任何 command（**能力关着时就不该传**） |

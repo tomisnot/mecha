@@ -12,6 +12,7 @@
 | 2 | 声明写歪 ⇒ **声明期响亮失败** | 写歪的症状是"面板空的"（最坏那类假绿）⇒ 不许飘到运行期 |
 | 3 | 那份参数**只含声明了 monitor 的服务**，命名 = `mecha:<id>` / `mecha-panel:<id>` | §7.3.3 定案（dsh 契约拒绝重复 id / 同 tier 同 kind） |
 | 4 | ⚠ 那份参数里**没有端口号、没有本机绝对路径** | 它会给**浏览器**；端口一律由路由**现取** |
+| 4b | ⭐ **第三个变量**（`MECHA_PANEL_PORT_FILES`）形状对：`{svc_id: **绝对**路径}`、服务集合与那份参数一致、且**不出现在给浏览器的那份参数里** | ⭐ 它让**框架的 host 插件替项目取端口**（"新项目连 host 半都不用写"那条承诺的**另一半**）；⚠ 相对路径会按 dsh 的 cwd 解析（那是**别人**的项目根） |
 | 5 | ⭐ 框架的 patch + 插件产物 + 两个变量**恒进那一个 dsh**（含"项目不声明 dsh"那一支） | 否则"新项目还得自己挂框架插件" = **没预付** |
 | 6 | 路由常量**两处相等**（Python 权威 ↔ 资产 TS 镜像） | 不一致 = 浏览器 fetch 404 = 一个 tab 都没有 |
 | 7 | ⭐ 夹具 `panel/real-panel-services.json` **与三家的真声明对拍** | ⚠ 这正是"夹具失真"那条红线的机器守卫（本仓刚栽过一次：夹具与真形状不一致 ⇒ 判据全绿而真项目一炸） |
@@ -24,9 +25,11 @@
 
 - **不验真 dsh**：那份 patch 是否真被 dsh 认、插件是否真加载，要真机（`--dump-config` + 真页面）。
   ⚠ §7.3.5 已如实登记同一条限制。本判据只验**框架生成的那份东西**对不对。
-- **不验**项目的 host 半那条监控地址路由（它今天仍归各项目）——§7.3.8 末段已登记为下一步。
-- **红证只有两条**（端口守卫 / 夹具对拍）：形状与 patch 那几条靠**直接断言**，不再各造一份变体
-  （本判据的重点是"夹具与真形状一致"，那条最贵）。
+- ⭐ **项目的 host 半那条监控地址路由已上提**（2026-10-09）：本判据验的是**框架注入的那份参数**
+  （含 `MECHA_PANEL_PORT_FILES` 的绝对/不泄漏）；"框架的 host 插件真按它注册了 N 条路由、
+  且现取端口"由资产的 `mecha-panel-host.test.ts`（含**与资产实现的等价判据**）钉住。
+- **红证三条**（端口守卫 / 夹具对拍 / **端口文件路径**）：形状与 patch 那几条靠**直接断言**，
+  不再各造一份变体（本判据的重点是"夹具与真形状一致"，那条最贵）。
 """
 
 from __future__ import annotations
@@ -41,6 +44,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from mecha.dsh_panel import (  # noqa: E402
+    PANEL_PORT_FILES_ENV,
     PANEL_ROUTE_ENV,
     PANEL_SERVICES_ENV,
     PANEL_SERVICES_ROUTE,
@@ -48,6 +52,7 @@ from mecha.dsh_panel import (  # noqa: E402
     framework_plugin_artifact,
     panel_kind,
     panel_payload,
+    panel_port_files,
     panel_services,
     panel_tab_id,
     services_with_monitor,
@@ -195,6 +200,90 @@ def fixture_defects(real: dict, fixture: dict) -> list[str]:
         bad.append("夹具的 routePath 与框架的不一致")
     if real.get("services") is not None and not real["services"] and fixture.get("services"):
         bad.append("真声明里一个监控面都没有，而夹具里有 ⇒ 夹具是编的")
+    return bad
+
+
+def port_files_defects(env_value: str | None, payload: dict) -> list[str]:
+    """`MECHA_PANEL_PORT_FILES` 的**形状与禁项**（⚠ 独立成函数 ⇒ 红证要真跑它）。
+
+    三条（各对着一条纪律）：
+
+    1. 形状必须是 `{svc_id: **绝对**路径}` —— ⚠ 相对路径会在 dsh 进程里按**别人的** cwd
+       解析（dsh 的 cwd 只有一个，§1.1.1 的已知限制）⇒ 症状是"那个 tab 永远 503"；
+    2. 服务集合 = **那份浏览器参数里的服务集合**（两者由同一个注入点生成，缺一个就是接线错）；
+    3. ⭐ 这些**绝对路径不许出现在给浏览器的那份参数里**
+       （那份参数给浏览器；绝对路径只给框架的 host 插件 —— 两个变量、两种读者）。
+    """
+    bad: list[str] = []
+    if not env_value:
+        return [f"{PANEL_PORT_FILES_ENV} 没注入（框架的 host 插件就没法替项目取端口）"]
+    try:
+        parsed = json.loads(env_value)
+    except json.JSONDecodeError as exc:
+        return [f"{PANEL_PORT_FILES_ENV} 不是 JSON：{exc}"]
+    if not isinstance(parsed, dict):
+        return [f"{PANEL_PORT_FILES_ENV} 的形状该是 {{svc_id: 绝对路径}}，实得 {type(parsed).__name__}"]
+    want_ids = {s["id"] for s in payload.get("services", [])}
+    if set(parsed) != want_ids:
+        bad.append(f"{PANEL_PORT_FILES_ENV} 的服务集合与那份参数不一致："
+                   f"{sorted(parsed)} vs {sorted(want_ids)}")
+    for sid, path in parsed.items():
+        if not isinstance(path, str) or not path.strip():
+            bad.append(f"{sid} 的端口文件路径为空")
+            continue
+        if not Path(path).is_absolute():
+            bad.append(f"{sid} 的端口文件路径**不是绝对路径**：{path!r}"
+                       "（dsh 只有一个 cwd ⇒ 相对路径会按别人的 cwd 解析）")
+    browser_text = json.dumps(payload, ensure_ascii=False)
+    for sid, path in parsed.items():
+        if not isinstance(path, str) or not path:
+            continue
+        #: ⚠ **两种形态都要比**：Windows 路径里的 `\` 在 JSON 里是转义的
+        #: ⇒ 只比原串的话，这条守卫在 Windows 上**恒绿**（假守卫）。
+        for form in {path, json.dumps(path, ensure_ascii=False)[1:-1]}:
+            if form in browser_text:
+                bad.append(f"绝对路径漏进了**给浏览器**的那份参数（{sid}）：它只该走 "
+                           f"{PANEL_PORT_FILES_ENV}")
+                break
+    return bad
+
+
+def _check_port_files_env() -> list[str]:
+    """⭐ 第三个变量的**存在性 + 形状 + 不泄漏**（两个 dsh 分支都要有）。"""
+    bad: list[str] = []
+    svc = _svc("AAA", monitor=MonitorSpec(route_path="/a/monitor-url", port_file=".a-port"),
+               cwd=Path("/probe-root"))
+    payload = panel_payload((svc,))
+    # 解析规则住在 `Service.monitor_port_file()`（一处翻译）：相对 `cwd` ⇒ 拼成**绝对**
+    expect = svc.monitor_port_file()
+    files = panel_port_files((svc,))
+    if expect is None or not expect.is_absolute():
+        bad.append(f"Service.monitor_port_file() 出口该是绝对路径，实得 {expect!r}")
+    elif files != {"AAA": str(expect)}:
+        bad.append(f"panel_port_files 的解析不对：{files}（应当 = monitor_port_file()）")
+    bad += port_files_defects(json.dumps(files, ensure_ascii=False), payload)
+
+    # 两个 dsh 分支（声明了 / 完全不管）都必须带上它
+    for label, site in (
+        ("项目声明了 dsh", Site(name="S", services=(svc,),
+                              dsh=DSHSpec(command=("dsh",), cwd=Path(".")))),
+        ("项目不声明 dsh", Site(name="T", services=(svc,))),
+    ):
+        _, merged = merge_dsh((site,))
+        got = merged.env.get(PANEL_PORT_FILES_ENV)
+        if not got:
+            bad.append(f"{label} 时没注入 {PANEL_PORT_FILES_ENV}")
+            continue
+        bad += [f"{label}：{d}" for d in port_files_defects(got, json.loads(
+            merged.env.get(PANEL_SERVICES_ENV, "{}") or "{}"))]
+
+    # 站点抢注这个变量（不同值）⇒ **响亮失败**（与另两个变量同口径）
+    msg = _expect_error("站点抢注框架的端口文件变量", lambda: merge_dsh((Site(
+        name="U", services=(svc,),
+        dsh=DSHSpec(command=("dsh",), cwd=Path("."), env={PANEL_PORT_FILES_ENV: "{}"}),
+    ),)))
+    if msg:
+        bad.append(msg)
     return bad
 
 
@@ -357,6 +446,27 @@ def _red_proofs() -> list[str]:
                                "（⇒ 夹具失真抓不住）")
                 elif not any(sid in d for d in diffs):
                     bad.append(f"红证②红了但没点名是哪个服务（{sid}）：{diffs}")
+    # 红证 ③：把 `MECHA_PANEL_PORT_FILES` **下毒**两种形态 ⇒ `port_files_defects` 各自必须报。
+    #   ① 相对路径（dsh 只有一个 cwd ⇒ 会按别人的 cwd 解析）
+    #   ② 把那条绝对路径**塞进给浏览器的那份参数**（两个变量串了）
+    payload3 = panel_payload((_svc("AAA", monitor=MonitorSpec(
+        route_path="/a/monitor-url", port_file=".a-port"), cwd=Path("/probe-root")),))
+    abs_path = str(panel_port_files((_svc("AAA", monitor=MonitorSpec(
+        route_path="/a/monitor-url", port_file=".a-port"),
+        cwd=Path("/probe-root")),))["AAA"])
+    clean3 = port_files_defects(json.dumps({"AAA": abs_path}), payload3)
+    if clean3:
+        bad.append(f"红证③的前提不成立：干净的那份本该 0 缺陷，实际 {clean3}")
+    rel = port_files_defects('{"AAA": ".a-port"}', payload3)
+    if not any("绝对路径" in d for d in rel):
+        bad.append("红证③没红：喂了**相对路径**，而 port_files_defects 没报出来"
+                   "（⇒ 那条守卫是哑的）")
+    poisoned_payload = json.loads(json.dumps(payload3))
+    poisoned_payload["services"][0]["portFile"] = abs_path
+    leaked = port_files_defects(json.dumps({"AAA": abs_path}), poisoned_payload)
+    if not any("漏进" in d for d in leaked):
+        bad.append("红证③没红：把绝对路径塞进了给浏览器的那份参数，而它没报出来"
+                   "（⇒ 泄漏守卫是哑的）")
     return bad
 
 
@@ -366,6 +476,7 @@ def check() -> tuple[int, list[str]]:
     problems += _check_shapes()
     problems += _check_payload()
     problems += _check_dsh_contributions()
+    problems += _check_port_files_env()
     problems += _check_route_mirror()
     problems += _red_proofs()
     fixture_bad, skip_why = _check_fixture_against_real()
@@ -373,7 +484,7 @@ def check() -> tuple[int, list[str]]:
     lines.append(f"[phase13] 框架 patch：{framework_patch_path()}")
     lines.append(f"[phase13] 框架插件产物：{framework_plugin_artifact()}")
     lines.append(f"[phase13] 那份参数的路由：{PANEL_SERVICES_ROUTE}"
-                 f"（env {PANEL_ROUTE_ENV} / {PANEL_SERVICES_ENV}）")
+                 f"（env {PANEL_ROUTE_ENV} / {PANEL_SERVICES_ENV} / {PANEL_PORT_FILES_ENV}）")
     if problems:
         lines.append("[phase13] ✖ 不过的条目：")
         lines.extend(f"    - {p}" for p in problems)
@@ -385,7 +496,8 @@ def check() -> tuple[int, list[str]]:
         lines.append(f"SKIP: {skip_why}")
         return 0, lines
     lines.append("phase13_panel_decl_selfcheck: PASS（声明形状 + 那份参数 + 框架自己的 patch "
-                 "+ 路由常量两处相等 + **夹具与三家真声明对拍**；两条红证已落）")
+                 "+ 路由常量两处相等 + ⭐ 端口文件路径（绝对/不泄漏）"
+                 "+ **夹具与三家真声明对拍**；三条红证已落）")
     return 0, lines
 
 

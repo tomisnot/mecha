@@ -19,10 +19,11 @@
 
 ## Known Limitations and Deferred Work
 
-- 框架的 host 插件只做**两件**事：读 env、把那份参数**同源**递给浏览器。
-  ⚠ 项目的**监控地址路由**（``routePath`` → 读 ``portFile`` 现取端口）**仍由各项目自己的
-  host 半注册** ⇒ "零 dsh 领域代码"目前覆盖**右栏 tab 那一半**（§7.3.8 末段已如实登记；
-  要连 host 半也不用写，得把那条路由也上提进框架插件）。
+- ⭐ **项目的监控地址路由已上提进框架**（2026-10-09）：框架的 host 插件按
+  `MECHA_PANEL_PORT_FILES`（**绝对**端口文件路径）**替项目注册那条路由并现取端口**
+  ⇒ 新项目**连 host 半都不用写**（§7.3.8 末段当初登记的下一步，已落地）。
+  ⚠ 因此项目侧**不该**再自己注册同一条 `routePath`（重复注册同一路径是错的）；
+  资产的 `mountHostPlugin(panelConfig=…)` 相应地变成**可选参数**（不传 = 框架接管）。
 - **不校验** 声明里的 ``route_path`` 是否真的有人注册（那是**运行期事实**，只有真 dsh 知道）
   ⇒ 面板上那种"tab 在但取数 404"由 tab 自己如实报（资产既有语义）。
 """
@@ -44,6 +45,13 @@ PANEL_SERVICES_ROUTE = "/mecha/panels"
 #: 递给框架自己那份 dsh 插件的两个变量（§7.3.8 第 2 条）。
 PANEL_ROUTE_ENV = "MECHA_PANEL_ROUTE"
 PANEL_SERVICES_ENV = "MECHA_PANEL_SERVICES"
+#: ⭐ **第三个变量：只给框架的 host 插件**（node 侧），`{svc_id: 端口文件**绝对**路径}`。
+#: ⚠ **它绝不进给浏览器的那份参数**（那份里只有 `portFile` 文件名）：
+#: 绝对路径是本机信息，浏览器不需要 —— 而 host 插件**需要**它才能**替项目取端口**
+#: （§7.3.8 末段的上提：新项目连 host 半那条地址路由都不用写）。
+#: ⚠ 为什么必须是**绝对**路径：dsh 的 `cwd` 只有一个（§1.1.1 的已知限制）
+#: ⇒ 相对路径在 dsh 进程里会按**它的** cwd 解析，那是另一个项目的地盘。
+PANEL_PORT_FILES_ENV = "MECHA_PANEL_PORT_FILES"
 
 #: 框架自己的 patch 与它带上的插件（都在资产目录里，**磁盘上只有一份**）。
 ASSET_DIR_NAME = "dsh-panel"
@@ -110,7 +118,9 @@ def panel_services(services: Sequence[Service]) -> list[dict]:
     ⚠ 两条不许破：
     1. **不含端口号**（端口由路由现取）——这里连一个数字端口都没有；
     2. **不含任何本机绝对路径**（它会给浏览器）——所以只有 ``portFile``（文件名），
-       **没有** ``root``/``cwd``（那些留在框架进程里，将来上提路由时也不外发）。
+       **没有** ``root``/``cwd``。⭐ 那条**绝对路径**走**另一个变量**
+       （:data:`PANEL_PORT_FILES_ENV`，**只给框架的 host 插件**）——
+       两者**必须分开**，否则绝对路径会顺着这条路由漏进浏览器。
     """
     out: list[dict] = []
     for svc in services_with_monitor(services):
@@ -133,8 +143,30 @@ def panel_payload(services: Sequence[Service]) -> dict:
     return {"routePath": PANEL_SERVICES_ROUTE, "services": panel_services(services)}
 
 
+def panel_port_files(services: Sequence[Service]) -> dict[str, str]:
+    """⭐ `{svc_id: 端口文件**绝对**路径}` —— 给框架的 host 插件用它**替项目取端口**。
+
+    ⚠ **只含声明了 `monitor` 的服务**（与那份浏览器参数同一批、同一个顺序）。
+    ⚠ 路径一律**绝对**：dsh 只有一个 cwd（§1.1.1）⇒ 相对路径会在 dsh 进程里按
+    **别人的** cwd 解析（症状是"读不到端口 ⇒ 那个 tab 永远 503"）。
+    ⚠ 它与 :func:`panel_services` 那份**必须分开**：那份给浏览器，**不许**带绝对路径。
+    """
+    out: dict[str, str] = {}
+    for svc in services_with_monitor(services):
+        p = svc.monitor_port_file()
+        if p is not None:
+            out[svc.id] = str(Path(p))
+    return out
+
+
 def panel_env(services: Sequence[Service]) -> dict[str, str]:
-    """框架要注入 dsh 的两个变量（⚠ **JSON 单行**、``ensure_ascii=False``）。
+    """框架要注入 dsh 的**三个**变量（⚠ **JSON 单行**、``ensure_ascii=False``）。
+
+    | 变量 | 谁读 | 带什么 |
+    |---|---|---|
+    | `MECHA_PANEL_ROUTE` | host 插件（并交给浏览器） | 那**一个**只读路由的路径 |
+    | `MECHA_PANEL_SERVICES` | host 插件（并交给浏览器） | 那份按服务的参数（⚠ **不含端口号 / 绝对路径**） |
+    | ⭐ `MECHA_PANEL_PORT_FILES` | ⚠ **只有 host 插件**（**绝不交给浏览器**） | `{svc_id: 端口文件绝对路径}` |
 
     ⚠ 用 ``ensure_ascii=False``：标题/文案是中文，转义成 ``\\uXXXX`` 会让日志/``--dump-config``
     里那行**人读不了**（它本来是用来排错的）。
@@ -143,6 +175,8 @@ def panel_env(services: Sequence[Service]) -> dict[str, str]:
         PANEL_ROUTE_ENV: PANEL_SERVICES_ROUTE,
         PANEL_SERVICES_ENV: json.dumps(panel_payload(services),
                                        ensure_ascii=False, separators=(",", ":")),
+        PANEL_PORT_FILES_ENV: json.dumps(panel_port_files(services),
+                                         ensure_ascii=False, separators=(",", ":")),
     }
 
 
@@ -153,9 +187,9 @@ def with_panel_contributions(site_dsh, sites: Sequence[Site]):
     |---|---|---|
     | ``patches`` | ``+ mecha-panel.patch.yml`` | ⭐ 框架的插件由**框架的 patch** 带上（§7.3.3）——新项目**不挂**框架插件 |
     | ``plugin_artifacts`` | ``+ host-plugin/…mjs`` | 不存在就**响亮失败**（而不是起一个没有面板插件的 dsh） |
-    | ``env`` | ``+ MECHA_PANEL_ROUTE / MECHA_PANEL_SERVICES`` | 参数从**声明**来（§7.3.6） |
+    | ``env`` | ``+ MECHA_PANEL_ROUTE / MECHA_PANEL_SERVICES / MECHA_PANEL_PORT_FILES`` | 参数从**声明**来（§7.3.6）；⚠ 第三个**只给 host 插件** |
 
-    ⚠ **这两个变量归框架**：项目若在 ``DSHSpec.env`` 里给了**不同**的值 ⇒ **响亮失败**
+    ⚠ **这三个变量归框架**：项目若在 ``DSHSpec.env`` 里给了**不同**的值 ⇒ **响亮失败**
     （静默取一家 = "我以为面板读的是我的那份"）。⚠ 与 ``merge_dsh`` 对站点间同名的口径一致。
 
     ⚠ **恒加上**（哪怕没有任何服务声明 ``monitor``）：那样 host 插件的路由恒在，

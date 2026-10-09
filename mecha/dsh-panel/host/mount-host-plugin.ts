@@ -17,7 +17,7 @@
  * | `ctx.effect` 包裹、桥的参数装配、`onTools → syncTools` 两阶段 swap | `resolveUrl`（端点怎么算） |
  * | logger 转发、`onStatus` 三态日志、**端点每次现解的包装** | `logLabel` / `serverName` / `clientInfo` / `offlineHint` |
  * | 会话工厂（`httpSessionFactory` + clientInfo/requestInit） | 显式 URL / 端口文件 / 默认端点（**经它自己的 resolve**） |
- * | 监控地址路由的注册**与注销**（无 webServer 时跳过） | 面板参数（经 `configurePanel` 注入）、项目根 |
+ * | 监控地址路由的注册**与注销**（无 webServer 时跳过）——⭐⭐ **只在项目显式给了 `panelConfig` 时**（不给 ⇒ **框架的 host 插件**接管那条路由） | （可选）面板参数：**按需** |
  * | 依次收尾：路由 → command → 工具 → 关桥 → 面板注入态 | （可选）一个自己的 command |
  *
  * ## ⚠ 硬约束（都不是风格问题）
@@ -122,8 +122,20 @@ export interface MountHostPluginOptions {
   }
   /** 覆盖默认状态日志。 */
   onStatus?: HostStatusHandler
-  /** 面板参数（**必须由项目注入**，骨架不存项目值）。 */
-  panelConfig: PanelOptions
+  /**
+   * 面板参数（`routePath` / `portFile` / `title`）。
+   *
+   * ## ⭐ 2026-10-09 起**可选** —— 因为框架接管了那条"监控地址路由"
+   *
+   * | 给不给 | 行为 |
+   * |---|---|
+   * | **不给**（推荐，也是三家的现状） | ⭐ **不注册地址路由**：那条由**框架自己的 host 插件**按 `mecha_site.py` 的声明注册（`mecha-panel-host.mjs`，读 `MECHA_PANEL_PORT_FILES` 现取端口） |
+   * | 给了 | 注册地址路由到 `panel.routePath`（⚠ 项目**自己的**形态：自定义面板 / 不走框架声明时用） |
+   *
+   * ⚠ **两者只能有一个**：`routePath` 同一条路径注册两次是接线错误（谁生效取决于顺序）
+   * ⇒ 走框架那条路时**别再传 `panelConfig`**。
+   */
+  panelConfig?: PanelOptions
   /**
    * 可选：注册**项目自己的**一个 command（骨架负责它的收尾）。
    * ⚠ 能力关着时**不要传**——骨架不会注册任何东西（不留死缝）。
@@ -166,11 +178,9 @@ export async function mountHostPlugin(
       + '（单测若要绕过真实连接，得同时给一个假的 sessionFactory。）',
     )
   }
-  if (opts.panelConfig === undefined) {
-    throw new Error(
-      'mountHostPlugin 需要 panelConfig（面板参数：routePath / portFile / title）。'
-      + '⚠ 面板参数是**项目专有**的值，必须由项目注入（资产不存项目值）。',
-    )
+  if (opts.panelConfig !== undefined) {
+    // ⚠ 只有**显式给了**才注入（给了就当场校验：字段留空 ⇒ `openPanelConfig` 抛，响亮失败）。
+    //   ⭐ 不给 = **框架的 host 插件接管那条地址路由**（见 `panelConfig` 的字段说明）。
   }
   const tag = `[${logLabel}]`
 
@@ -179,9 +189,10 @@ export async function mountHostPlugin(
   //   **别人**那份（实测抓到的真缺陷：N 个 tab 全都读同一个项目的 routePath/portFile）。
   //   ⇒ 这里拿**本次注册自己那一份** `panel`，路由注册与页面都只用它。
   // 骨架**不解释**这些值，只透传 ⇒ 面板参数的字段名只有一处真值（panel-config.ts）。
-  const opened = openPanelConfig(opts.panelConfig)
-  const disposePanel = opened.dispose
-  const panel = opened.config
+  // ⭐ **不给 ⇒ 什么都不注入、也不注册地址路由**（框架的 host 插件在做那件事）。
+  const opened = opts.panelConfig !== undefined ? openPanelConfig(opts.panelConfig) : undefined
+  const disposePanel = opened?.dispose ?? (() => { /* 没注入 ⇒ 没有要撤的 */ })
+  const panel = opened?.config
 
   const mount = async (): Promise<() => Promise<void>> => {
     let disposers: ToolDisposers = new Map()
@@ -243,21 +254,25 @@ export async function mountHostPlugin(
     // ---- 监控地址的同源只读路由 ----------------------------------------------
     // 每次被 fetch 都**现读**端口文件 ⇒ 权威重启换端口后下一拍落在新端口。
     // ⚠ 用 `ctx.inject(['webServer'])`：无 webServer 时**跳过而不是不激活**（见 HostContext）。
+    // ⭐ **没给 `panelConfig` ⇒ 这条路由不在这里注册**：它由**框架自己的 host 插件**
+    //    按声明注册（`mecha-panel-host.mjs`）—— 同一路径注册两次是接线错误。
     let disposeRoute: (() => void) | undefined
-    ctx.inject?.(['webServer'], (scoped: unknown) => {
-      const webServer = (scoped as { webServer?: WebServerLike }).webServer
-      if (webServer === undefined) return undefined      // 没有 web 服务：面板没地址路由，桥照活
-      const dispose = webServer.register({
-        kind: 'exact',
-        path: panel.routePath,
-        handler: makeMonitorUrlHandler({ root: projectRoot, portFile: panel.portFile }),
+    if (panel !== undefined) {
+      ctx.inject?.(['webServer'], (scoped: unknown) => {
+        const webServer = (scoped as { webServer?: WebServerLike }).webServer
+        if (webServer === undefined) return undefined    // 没有 web 服务：面板没地址路由，桥照活
+        const dispose = webServer.register({
+          kind: 'exact',
+          path: panel.routePath,
+          handler: makeMonitorUrlHandler({ root: projectRoot, portFile: panel.portFile }),
+        })
+        disposeRoute = dispose
+        ctx.logger?.info?.(
+          `${tag} 注册监控地址路由 ${panel.routePath}`
+          + `（读 ${projectRoot} 的 ${panel.portFile}，不回落默认端口）`)
+        return dispose
       })
-      disposeRoute = dispose
-      ctx.logger?.info?.(
-        `${tag} 注册监控地址路由 ${panel.routePath}`
-        + `（读 ${projectRoot} 的 ${panel.portFile}，不回落默认端口）`)
-      return dispose
-    })
+    }
 
     // ---- 项目自己的 command（可选；关着时什么都不注册）------------------------
     const disposeCommand = opts.registerCommand?.(ctx) ?? null

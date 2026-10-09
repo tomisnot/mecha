@@ -132,7 +132,6 @@ test('⭐ 必需参数缺失 / 留空 ⇒ **构造期抛**（运行期校验：�
     ['clientInfo.name 留空', { clientInfo: { name: '', version: '1' } }],
     ['clientInfo.version 留空', { clientInfo: { name: 'x', version: '  ' } }],
     ['缺 resolveUrl', { resolveUrl: undefined }],
-    ['panelConfig 缺失', { panelConfig: undefined }],
   ]
   for (const [label, over] of cases) {
     const { ctx } = makeCtx({ tools: new FakeTools() })
@@ -146,6 +145,22 @@ test('⭐ 必需参数缺失 / 留空 ⇒ **构造期抛**（运行期校验：�
       label,
     )
   }
+})
+
+test('⭐ 不给 panelConfig ⇒ **不注册地址路由**（那条由框架的 host 插件接管），其余照常', async () => {
+  // ⚠ 本判据**改过**（2026-10-09）：原先"缺 panelConfig ⇒ 抛"是必填契约；
+  //    而监控地址路由**上提进框架**之后，走框架那条路的项目**本来就不该**再传它
+  //    （同一路径注册两次 = 接线错误）⇒ 参数变成**可选**，这条判据改成钉"不注册 + 不炸"。
+  const tools = new FakeTools()
+  const web = new FakeWebServer()
+  const { ctx, logs } = makeCtx({ tools, webServer: web })
+  await mountHostPlugin(ctx, baseOptions({ panelConfig: undefined }))
+
+  assert.deepEqual([...tools.registered.keys()], ['mcp__probe__read_thing'],
+    '不给 panelConfig **不该**影响桥与工具注册')
+  assert.equal(web.routes.size, 0, '不给 panelConfig ⇒ 一条路由都不该注册（框架那份会注册）')
+  assert.ok(!logs.some(l => l.includes('注册监控地址路由')),
+    `不该出现"注册地址路由"的日志：${JSON.stringify(logs)}`)
 })
 
 test('参数错时**不留半挂载状态**（也没把面板参数注进去）', async () => {
