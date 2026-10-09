@@ -787,6 +787,43 @@ def check_startup_env_roundtrip() -> None:
     _check("⑮ 数据根往返：注入的根 = 读回来的根",
            back == svc2.data_root, f"注入={svc2.data_root} 读回={back}")
 
+    #: ⑤ ⭐ **编码安全**：cp936 控制台下，那句"回落 + 出声"的警告**不许把软件崩掉**。
+    #: ⚠ 实测（GP 报的真 bug）：框架那句警告里有 `⚠`，cp936 下 `print` 抛
+    #:   `UnicodeEncodeError` ⇒ 本该"回落并出声"实际**崩**（比不出声更坏：软件起不来）。
+    #: ⚠ 所以修在**框架**（那是框架自己输出的话）—— 修一处，三家都不踩。
+    class _Cp936Out:
+        """假装成 cp936 的 stdout：**非 ASCII 一律抛**（真机上的行为）。"""
+
+        def __init__(self) -> None:
+            self.chunks: list[str] = []
+
+        def write(self, s: str) -> int:
+            s.encode("cp936")            # 非 ASCII 会在这里抛 UnicodeEncodeError
+            self.chunks.append(s)
+            return len(s)
+
+        def flush(self) -> None:
+            pass
+
+    old = os.environ.get(MECHA_MODE_ENV)
+    os.environ[MECHA_MODE_ENV] = "Mode.AI"          # 非法 ⇒ 走"回落 + 出声"那条路
+    fake = _Cp936Out()
+    got: object = None
+    try:
+        with contextlib.redirect_stdout(fake):      # type: ignore[arg-type]
+            got = initial_mode_from_env(Mode.LOCKED)
+    except UnicodeEncodeError as exc:               # pragma: no cover - 这就是要防的
+        _check("⑮ ⭐ 编码不安全的控制台下，警告**不许把软件崩掉**", False, f"抛了 {exc!r}")
+    finally:
+        if old is None:
+            os.environ.pop(MECHA_MODE_ENV, None)
+        else:
+            os.environ[MECHA_MODE_ENV] = old
+    _check("⑮ ⭐ cp936 控制台（非 ASCII 会抛）下**不崩**，仍回落",
+           got is Mode.LOCKED, f"got={got!r}")
+    _check("⑮ ⭐ 且退成 **ASCII 安全版**照样出声（不是静默放弃）",
+           any("mecha" in c for c in fake.chunks), f"输出={fake.chunks!r}")
+
 
 def check_status_page_console() -> None:
     """⑪ **常驻控制台**（一页）+ 三个控件分工 + 四条布局要求。

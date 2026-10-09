@@ -69,11 +69,36 @@ MECHA_ROOT_ENV = "MECHA_SOFTWARE_ROOT"
 # ⚠ **空串 = 显式取消该变量**（与框架统一注入 `PYTHONIOENCODING` 同一纪律）⇒ 视同没给。
 
 
+def _warn(msg: str) -> None:
+    """打一行警告 —— ⚠ **不许因为控制台编码而崩**。
+
+    ⚠ **实测（GP 报的，真 bug）**：Windows **cp936** 控制台下，这行里的 ``⚠``
+    会让 ``print`` 抛 ``UnicodeEncodeError`` ⇒ 本该"**回落 + 出声**"实际变成
+    **崩掉** —— ⚠ 那比"不出声"更坏：**软件根本起不来**。
+
+    ⚠ 为什么修在**框架**而不是各家各自防：这是**框架自己输出**的一句话
+    （ML/EL/GP 都会踩）⇒ 修一处，三家都不踩。
+
+    策略：原样打 ⇒ 编码不接受就退成 **ASCII 安全版** ⇒ 再不行**静默放弃**
+    （一行警告打不出来，**不能拖垮软件本身**）。
+    """
+    try:
+        print(msg, flush=True)
+    except UnicodeEncodeError:
+        try:
+            print(msg.encode("ascii", "replace").decode("ascii"), flush=True)
+        except Exception:                                  # noqa: BLE001 - 警告不能致命
+            pass
+    except Exception:                                      # noqa: BLE001 - 同上
+        pass
+
+
 def initial_mode_from_env(default: Mode = Mode.LOCKED) -> Mode:
     """读启动者声明的初始写权（``MECHA_INITIAL_MODE``）。
 
     ⚠ **缺省 / 空串 ⇒ 回落 ``default``**；⚠ **非法值 ⇒ 回落并出声**（不静默：
     一个拼错的模式名会让人以为"声明生效了"，而实际按默认走）。
+    ⚠ "出声"走 :func:`_warn`（**编码安全**：cp936 控制台下不会崩）。
 
     ⚠ 软件侧**必须用它装配闸门**（不能只声明不读 —— 那正是本函数存在的理由）。
     """
@@ -83,8 +108,7 @@ def initial_mode_from_env(default: Mode = Mode.LOCKED) -> Mode:
     try:
         return Mode(raw)
     except ValueError:
-        print(f"[mecha] ⚠ {MECHA_MODE_ENV}={raw!r} 不是合法写权 ⇒ 回落 {Mode(default).value}",
-              flush=True)
+        _warn(f"[mecha] ⚠ {MECHA_MODE_ENV}={raw!r} 不是合法写权 ⇒ 回落 {Mode(default).value}")
         return Mode(default)
 
 
