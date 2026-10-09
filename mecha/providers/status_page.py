@@ -316,6 +316,11 @@ def render_page(controller: Controller) -> str:
         dsh_declared = False
     if rows.get("dsh") is not None or dsh_declared:
         items.append(_dsh_row(rows.get("dsh")))
+        #: ⚠ 左栏也要有它 —— 否则两处清单不一致
+        #: （右栏 4 行、左栏 3 行），而左栏本该是运行时一览。
+        side.append('<div class="sideitem"'
+                    + (' on' if (rows.get("dsh") or {}).get("pid") else '')
+                    + '>dsh</div>')
 
     return (
         '<!doctype html><html lang="zh"><head><meta charset="utf-8">'
@@ -331,6 +336,10 @@ def render_page(controller: Controller) -> str:
         '<button onclick="startNow()">启动 ▸</button>'
         '<button class="ghost" onclick="shutdownNow()">收尾退出</button>'
         '<span class="muted">存活滑块随时可动</span>'
+        #: ⭐ 必须明说：用户实测问过关掉 web 窗口会不会关掉它 ——
+        #: ⚠ 答案是不会（浏览器只是客户端）⇒ 不说清，人就只能去任务管理器强杀（跳过收尾）。
+        '<span class="pending">⚠ 关掉浏览器<strong>不会</strong>停服务；要停请点「收尾退出」'
+        '（或双击 <code>stop_mecha.pyw</code> / <code>python -m mecha --stop</code>）</span>'
         '<span class="pending foot-note">切写权<strong>不动进程、不动连接</strong>：'
         '面板与 dsh 待命 —— 写被拒、读照常</span>'
         '</footer>'
