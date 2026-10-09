@@ -436,6 +436,22 @@ class LaunchController:
         st["intent"] = self.intent()
         return st
 
+    def dsh_spec(self) -> "DSHSpec | None":
+        """⭐ 那**一个**共用 dsh 的声明（合并后）—— 供面板**始终**列出它一行（§7）。
+
+        ⚠ 为什么要有这个口子：面板原先只在"child 表里有 dsh"时才渲染它
+        ⇒ **启动前那一行是缺的**，而 §7 的定稿形态是
+        ``dsh [●───] 存活（它只是 AI 那条腿的载体）`` —— **控制台的一项**，不是"起了才有"。
+
+        ⚠ 合并失败（例如两个站点的 dsh 身份不一致）⇒ 返回 ``None``：
+        那种情况 ``main()`` 会**响亮失败**，面板没必要在这里再抛一次。
+        """
+        try:
+            _, dsh = merge_dsh(self.sites)
+        except MechaError:
+            return None
+        return dsh
+
     def services(self) -> tuple[Service, ...]:
         """⭐ **全部站点的全部已声明服务**（§1.1 规则 6：面板**始终**列全部）。
 

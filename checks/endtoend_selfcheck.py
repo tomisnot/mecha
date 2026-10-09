@@ -187,6 +187,11 @@ def check_end_to_end_two_sites() -> None:
                    "AAA" in html, f"页面里没有 AAA；长度={len(html)}")
             _check("② ⭐ 页面列出**站点乙的服务 BBB**（跨站点都被列到）",
                    "BBB" in html, f"页面里没有 BBB")
+            #: ⭐ §7 定稿形态：**控制台始终列出 dsh 一行**（它不是"起了才有"的一项）。
+            #: ⚠ 原先 `render_page` 只在 child 表里有 dsh 时才渲染 ⇒ 启动前那一行是缺的。
+            _check("③ ⭐ 页面在**启动前**就列出 dsh 一行（它是控制台的一项，不是'起了才有'）",
+                   re.search(r'class="name">dsh<', html) is not None,
+                   "启动前的页面里没有 dsh 行")
 
             # ---- ④ 真启动：所有站点的服务都进 child 表，dsh 只有一个且最后
             _http(port, "POST", "/start")

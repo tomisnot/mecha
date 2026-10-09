@@ -834,6 +834,11 @@ def check_status_page_console() -> None:
         def control_write_authority(self, sid: str, action: str) -> dict:
             return {"ok": True, "id": sid, "steps": []}
 
+        def dsh_spec(self):
+            #: ⚠ **替身必须与真实现同形**：真 `LaunchController.dsh_spec()` 存在
+            #: （面板据此**始终**列 dsh 一行）。少了它 ⇒ 页面降级、断言失准。
+            return None
+
         def sites(self):
             class St:
                 name = "demo"

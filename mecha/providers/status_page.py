@@ -82,6 +82,7 @@ class Controller(Protocol):
 
     #: 站点元组（`launch.LaunchController.sites` 是属性）。
     sites: object
+    def dsh_spec(self) -> object: ...
     def services(self) -> object: ...
     def started(self) -> bool: ...
     def intent(self) -> dict: ...
@@ -269,7 +270,15 @@ def render_page(controller: Controller) -> str:
     if cleaned:
         lis = "".join(f"<li>{html.escape(str(x))}</li>" for x in cleaned)
         items.append(f'<h3>启动前清掉的陈旧残留</h3><ul class="muted">{lis}</ul>')
-    if rows.get("dsh") is not None:
+    #: ⭐ **dsh 那一行始终在**（§7 定稿形态）：它**不是**"起了才有"的一项，
+    #: 而是控制台的一项（"它只是 AI 那条腿的载体"）。
+    #: ⚠ 原先只在 `rows` 里有 dsh 时才渲染 ⇒ **启动前那一行是缺的**（实测抓到）。
+    dsh_declared = False
+    try:
+        dsh_declared = controller.dsh_spec() is not None   # type: ignore[attr-defined]
+    except Exception:                                      # noqa: BLE001 - 页面如实降级
+        dsh_declared = False
+    if rows.get("dsh") is not None or dsh_declared:
         items.append(_dsh_row(rows.get("dsh")))
 
     return (

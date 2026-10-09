@@ -300,6 +300,11 @@ def check_panel_says_unreadable_when_read_fails() -> None:
         from mecha.providers.status_page import render_page
 
         class Ctl:
+            def dsh_spec(self):
+                #: ⚠ **替身必须与真实现同形**：真 `LaunchController.dsh_spec()` 存在
+                #: （面板据此**始终**列 dsh 一行）。少了它 ⇒ 页面降级、断言失准。
+                return None
+
             def sites(self):
                 class St:
                     name = "d4"
