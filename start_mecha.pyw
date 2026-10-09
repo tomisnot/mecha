@@ -113,6 +113,18 @@ def main(argv: list[str] | None = None) -> int:
             roots = _roots_file_text()
             if roots:
                 os.environ["MECHA_SITE_ROOTS"] = roots
+            else:
+                #: ⭐ **没根清单就要当场说清"怎么办"**。实测：用户双击后拿到的是
+                #: `没找到任何站点声明（找过 [...\mecha] 下的 mecha_site.py）`
+                #: ⇒ ⚠ **那句话没错，但没告诉他缺的是哪个文件、去哪儿补**（等于没说）。
+                #: ⚠ 这里**主动失败、不回落 CWD**：双击时 cwd 就是入口所在目录，
+                #: 而**框架仓自己没有 `mecha_site.py`** ⇒ 回落必然以一句更难懂的话失败。
+                example = ENTRY_DIR / (ROOTS_FILE + ".example")
+                raise RuntimeError(
+                    f"没找到站点根清单：{Path.cwd() / ROOTS_FILE}\n"
+                    f"　· 把 {example} 复制成 {ROOTS_FILE}，**一行写一个项目仓的完整路径**；\n"
+                    f"　· 或用环境变量 MECHA_SITE_ROOTS（分号分隔多个仓）；\n"
+                    f"　· 或命令行：python -m mecha --all --root <仓>（可重复给）。")
         else:
             print("[start] 用环境变量 MECHA_SITE_ROOTS（优先于根清单文件）", flush=True)
 
