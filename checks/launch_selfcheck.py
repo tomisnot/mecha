@@ -1047,10 +1047,14 @@ def check_status_page_console() -> None:
             #: （面板据此**始终**列 dsh 一行）。少了它 ⇒ 页面降级、断言失准。
             return None
 
-        def sites(self):
-            class St:
-                name = "demo"
-            return (St(),)
+        #: ⚠⚠ **必须与真实现同形**：`LaunchController.sites` 是**属性**（tuple）。
+        #: ⚠ 替身原先写成**方法** —— 而面板当初正是按方法去调它而**起不来**；
+        #: 如今又因为"方法不可迭代"把判据弄红。⇒ 改成属性，并给站点一个 `services`
+        #: （否则"行里冠站点名"那条判据永远测不到）。
+        sites = (
+            type("St", (), {"name": "demo",
+                           "services": (type("Sv", (), {"id": "ML"})(),)})(),
+        )
 
         def services(self):
             return self._svcs
@@ -1148,6 +1152,11 @@ def check_status_page_console() -> None:
     c._started = True
     c._rows = [{"id": "ML", "pid": 4321, "state": "ready", "port": 5111}]
     p2 = render_page(c)
+    #: ⭐ 设计 §1.1 规则 6：面板要列【**站点名** + 该站点的全部服务】。
+    #: ⚠ 服务 id（ML）与站点名（demo）**不是一回事**；只显示 id 会丢掉
+    #: "这个服务属于哪个项目"。
+    _check("⑪ ⭐ 行里冠上了**站点名**（设计 §1.1 规则 6）",
+           "demo · " in p1, "没有把站点名冠到行里")
     _check("⑪ 启动后**仍是同一页**（还是控制台，不是另一张状态页）",
            "控制台" in p2 and "运行状态" not in p2)
     _check("⑪ 启动后**仍然列出全部项目**（含没起的 GP）",

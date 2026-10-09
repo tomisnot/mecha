@@ -232,13 +232,18 @@ def _mode_cell(svc: object, ctl_state: dict | None) -> str:
 
 
 def _service_row(svc: object, row: dict | None, intent: bool, started: bool,
-                 ctl_state: dict | None) -> str:
+                 ctl_state: dict | None,
+                site_name: str = "") -> str:
     sid = html.escape(str(getattr(svc, "id", "")))
     running = bool((row or {}).get("pid"))
     state = str((row or {}).get("state") or ("stopped" if started else "stopped"))
     checked = " checked" if (running or (not started and intent)) else ""
     # ⚠ tail 里**不报控制端口**（契约：不许把 `:control-port` 写进任何给 AI 的文本/输出）；
     #   这里索性连能力面端口也不报 —— 端口对人不是信息，对"泄漏"却是风险面。
+    #: ⭐ 设计 §1.1 规则 6：面板要列【站点名 + 该站点的全部服务】。
+    #: ⚠ 服务 id（ML）与站点名（ML Toolbox）**不是一回事** —— 只显示 id 会丢掉
+    #: "这个服务属于哪个项目"。
+    prefix = f"{site_name} · " if site_name else ""
     tail = f'pid {(row or {}).get("pid")}' if running else "未运行"
     return (
         f'<div class="row">'
@@ -251,7 +256,7 @@ def _service_row(svc: object, row: dict | None, intent: bool, started: bool,
         #: ⚠⭐ **必须包一层**：`_mode_cell` 返回的是**多个并列元素**（真值 + 按钮）
         #: ⇒ 直接放进 5 列网格会**各占一格、撑出隐式列**（实测：按钮被挤成竖排、错位）。
         f'<span class="mode">{_mode_cell(svc, ctl_state)}</span>'
-        f'<span class="brief">{html.escape(str(getattr(svc, "brief", "")))}'
+        f'<span class="brief">{html.escape(prefix)}{html.escape(str(getattr(svc, "brief", "")))}'
         f' · <span class="muted">{html.escape(tail)}</span></span>'
         f'</div>')
 
@@ -280,6 +285,19 @@ def render_page(controller: Controller) -> str:
     intent = controller.intent()
     services = list(controller.services())          # type: ignore[arg-type]
 
+    #: ⭐ 服务 -> 站点名（供行里冠上项目名）。
+    #: ⚠ **防御式**：判据里的替身可能没有 `.services` ——
+    #: 不能因为"显示一个项目名"把 30 项判据弄红（今天已经在替身上栽过一次）。
+    site_of: dict[str, str] = {}
+    _sites = getattr(controller, "sites", ()) or ()
+    #: ⚠⚠ 判据里的**替身把 `sites` 写成了方法**（真实现是属性）——
+    #: 这正是当初面板起不来的同一个坑。⇒ 可调用就当"没有"，
+    #: 但**绝不允许因为"显示一个项目名"把整页弄崩**。
+    if callable(_sites):
+        _sites = ()
+    for _site in _sites:
+        for _svc in (getattr(_site, "services", ()) or ()):
+            site_of[str(getattr(_svc, "id", ""))] = str(getattr(_site, "name", ""))
     items: list[str] = []
     side: list[str] = []
     for svc in services:
@@ -290,7 +308,8 @@ def render_page(controller: Controller) -> str:
             ctl_state = controller.write_authority_state(sid)
         except Exception as exc:                       # noqa: BLE001 - 页面如实降级
             ctl_state = {"ok": False, "why": f"控制端点状态读不到：{exc}"}
-        items.append(_service_row(svc, row, bool(intent.get(sid)), started, ctl_state))
+        items.append(_service_row(svc, row, bool(intent.get(sid)), started, ctl_state,
+                                 site_name=site_of.get(sid, "")))
         on = bool((row or {}).get("pid")) or (not started and bool(intent.get(sid)))
         side.append(f'<div class="sideitem{" on" if on else ""}">{html.escape(sid)}</div>')
 
