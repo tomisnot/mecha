@@ -562,7 +562,7 @@ def check_launch_wiring_at_the_launch_layer() -> None:
                                   data_root=d / "data"),),
                 dsh=DSHSpec(command=(sys.executable, "-c", "pass"), cwd=d))
     sup = Supervisor(log_dir=d / "logs")
-    ep, _rt, reg = build_aggregate_wiring(site=site, supervisor=sup)
+    ep, _rt, reg = build_aggregate_wiring(sites=[site], supervisor=sup)
     try:
         port = ep.port
         _check("⑦ 聚合端点起来了并**回读**到端口", isinstance(port, int) and port > 0,

@@ -60,6 +60,13 @@ CHECKS = [
     # 聚合端点的**运行期接线**（2b：open/close 真接 supervisor、元工具报进程事实、
     # dsh overlay 生成、真 MCP 协议端到端）。⚠ 会起真子进程（mock svc + 真聚合端点 server）。
     "checks/aggregate_runtime_selfcheck.py",
+    # ⭐⭐ **端到端目标场景**（这一条是"整台机器能不能开"的验收，不是零件验收）：
+    # 真起 launcher 进程 + 真 HTTP 取页面 + **多站点** + POST /start + 热更新（关→开=新 pid）
+    # + 切写权如实报失败。⚠ 它慢（十几秒、要起进程）⇒ 只在全档跑。
+    # ⚠ 它的由来（本工程最贵的一课）：在它之前 29 项零件判据全绿，而那个 web 面板
+    #   **从来起不来**（`self.controller.sites()` 把属性当方法调），因为判据只调
+    #   `render_page(stub)`、且替身与真实现不一致。见 checks/endtoend_selfcheck.py 的 docstring。
+    "checks/endtoend_selfcheck.py",
     # dsh 集成资产（共享资产）的共享自测。⚠ **硬依赖 node**：缺 node 即红（不软跳过）。
     # ⚠ 2026-10-01 起**这里成了资产回归的唯一发现点**：资产改为包依赖（junction）后，
     #   接入项目不再持有副本、也不再跑这份共享单测 ⇒ 本判据不跑或跑假，三家都发现不了。

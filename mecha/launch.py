@@ -43,7 +43,7 @@ from pathlib import Path
 from .authority import Mode
 from .errors import MechaError
 from .software_control import SoftwareControl
-from .site import AutoShutdown, Service, Site, Strategy
+from .site import AutoShutdown, DSHSpec, Service, Site, Strategy
 from .supervise import ChildSpec, StaleItem, Supervisor, pid_alive, which_or_raise
 
 #: 站点声明的**约定文件名**（暴露模块级 ``SITE: Site``）。
@@ -145,15 +145,24 @@ def load_sites(roots: Sequence[Path] | None = None) -> tuple[Site, ...]:
 
 @dataclass(frozen=True)
 class StartupPlan:
-    """一份**可执行的启动计划**（顺序是显式的，见修正 1）。"""
+    """一份**可执行的启动计划**（顺序是显式的，见修正 1）。
 
-    site: Site
-    #: ⭐ **启动顺序**（拓扑序）：``svc* → aggregator → dsh``。
-    #: 本步没有 aggregator，所以就是 ``svc* → dsh``；步骤 2 往中间插，**不改签名**。
+    ⚠ **多站点（§1.1）**：``sites`` 是**全部**站点（原来的 ``site: Site`` 在多站点下
+    **没有意义**——没有"那个站点"）。需要"第一个"的地方走 :attr:`first`，
+    且**只许用于展示/命名**；⚠ §1.1 规则 3：**runtime 不取决于谁排第一**。
+    """
+
+    sites: tuple[Site, ...]
+    #: ⭐ **启动顺序**（拓扑序）：``svc* → aggregator → dsh``，**dsh 永远最后**。
     ordered: tuple[ChildSpec, ...]
     #: 待清理的陈旧残留（交给 :meth:`Supervisor.clean_stale`）。
     stale: tuple[StaleItem, ...]
     enabled: tuple[str, ...]
+
+    @property
+    def first(self) -> Site:
+        """第一个站点（**只给展示/命名用**，不代表"这次启动的站点"）。"""
+        return self.sites[0]
 
 
 def _port_file_of(svc: Service) -> Path | None:
@@ -163,22 +172,118 @@ def _port_file_of(svc: Service) -> Path | None:
     return (svc.cwd / name) if not Path(name).is_absolute() else Path(name)
 
 
-def build_children(site: Site, enabled: Sequence[str]) -> tuple[ChildSpec, ...]:
-    """把勾中的服务 + dsh 翻成 child 列表（**顺序 = 拓扑序**）。"""
-    kids: list[ChildSpec] = []
-    for svc in site.services:
-        if svc.id in enabled:
-            kids.append(svc.child())
-    # dsh 最后：它要用聚合端点的 URL（步骤 2）；本步它只用偏好端口。
-    dsh = site.dsh
-    kids.append(ChildSpec(
+def flat_services(sites: Sequence[Site]) -> tuple[Service, ...]:
+    """⭐ **服务平铺**（§1.1 规则 1）：全部站点的服务按**稳定顺序**排成一个序列。
+
+    稳定顺序 = **站点出现顺序**、站点内**声明顺序**（§1.1 规则 4）。
+    ⚠ 站点之间互不知道对方存在 ⇒ 这里**不做**任何"跨站点依赖/组"的编排。
+    """
+    return tuple(svc for site in sites for svc in site.services)
+
+
+def assert_service_ids_global_unique(sites: Sequence[Site]) -> None:
+    """⭐ **服务 id 跨站点全局唯一**（§1.1 规则 2/7）——它是**工具前缀**。
+
+    ⚠ 站内查重已经在 ``Site.validate`` 里（含**大小写不敏感**）；这里补的是
+    **跨站点**那一层：同一个 launcher 会把多个仓的服务平铺进**同一张** child 表，
+    撞名 ⇒ ``supervisor`` 的 child id 冲突、AI 面前工具名冲突。
+    """
+    seen: dict[str, str] = {}
+    for site in sites:
+        for svc in site.services:
+            key = svc.id.lower()          # ⚠ 工具名会小写化 ⇒ 查重也按小写
+            if key in seen:
+                raise MechaError(
+                    f"服务 id 跨站点重复：{svc.id!r}（{site.name}）与 {seen[key]!r}",
+                    kind="duplicate_service_id",
+                    hint="服务 id 是**工具前缀**（<svc_id>_<tool>）⇒ 全生态唯一；"
+                         "改掉其中一个项目的声明",
+                )
+            seen[key] = f"{svc.id}（{site.name}）"
+
+
+def merge_dsh(sites: Sequence[Site]) -> "tuple[ChildSpec, DSHSpec]":
+    """把各站点的 dsh 声明合并成**那一个** dsh（三层架构 §1.1.1）。⭐ 站点们**共同贡献**。
+
+    ## 为什么不是"只准一家声明"（实测踩到的）
+
+    初次实现按"只准一个站点声明 dsh"写 ⇒ 而 `site.py` 里 `dsh` **必填**、
+    三家真项目**各声明一个** ⇒ **多站点必然报错**（`有 N 个站点声明了 dsh`）。
+    ⚠ 而"只准一家"本身也是错的：**每个项目都要把自己的监控面板挂上**
+    ⇒ 一个 dsh 要能看到**所有**项目 ⇒ 插件清单必须是**并集**。
+
+    ## 规则
+
+    | 项 | 规则 |
+    |---|---|
+    | 身份（`command`/`port_preference`/`port_tries`/`stop_timeout`/`ready`） | 都给了就**必须一致**；不一致 ⇒ **响亮失败** |
+    | `cwd` | 取**第一个**声明者（站点顺序稳定） |
+    | `patches`/`plugin_artifacts`/`env` | ⭐ **取并集**（顺序 = 站点出现顺序）；⚠ `env` 同名不同值 ⇒ **响亮失败** |
+    | 一个都没声明 | 框架默认（`command=("dsh",)`、`cwd=`第一个站点的 cwd、3081/10/8.0） |
+    """
+    decls = [(s, s.dsh) for s in sites if getattr(s, "dsh", None) is not None]
+    if not decls:
+        #: ⭐ "架构直接安排好了"：项目**可以完全不管 dsh**。
+        first_svc = flat_services(sites)
+        cwd = first_svc[0].cwd if first_svc else Path.cwd()
+        dsh = DSHSpec(command=("dsh",), cwd=cwd)
+        return _dsh_child(dsh), dsh
+
+    head_site, head = decls[0]
+    #: 身份必须一致（"一个 dsh" = **只有一个身份**；静默取一家 = 我以为起的是我那种）
+    for site, d in decls[1:]:
+        for field in ("command", "port_preference", "port_tries", "stop_timeout", "ready"):
+            if getattr(d, field) != getattr(head, field):
+                raise MechaError(
+                    f"两个站点的 dsh 声明不一致：{head_site.name} 与 {site.name} "
+                    f"的 `{field}` 不同（{getattr(head, field)!r} vs {getattr(d, field)!r}）",
+                    kind="dsh_decl_conflict",
+                    hint="dsh 是**全生态一个**（§1.1.1）⇒ 各站点给的**身份字段必须一致**；"
+                         "**插件清单（patches/plugin_artifacts/env）**才是各站点各自贡献的部分",
+                )
+    patches: list[Path] = []
+    artifacts: list[Path] = []
+    env: dict[str, str] = {}
+    for site, d in decls:
+        patches += [p for p in d.patches if p not in patches]
+        artifacts += [p for p in d.plugin_artifacts if p not in artifacts]
+        for k, v in d.env.items():
+            if k in env and env[k] != v:
+                raise MechaError(
+                    f"两个站点给 dsh 的同名环境变量值不同：`{k}` "
+                    f"（{env[k]!r} vs {v!r}，来自 {site.name}）",
+                    kind="dsh_env_conflict",
+                    hint="dsh 只有一个进程 ⇒ 同名变量只能有一个值；请改成不同名，或统一取值",
+                )
+            env.setdefault(k, v)
+    merged = DSHSpec(
+        command=head.command, cwd=head.cwd,
+        patches=tuple(patches), plugin_artifacts=tuple(artifacts),
+        port_preference=head.port_preference, port_tries=head.port_tries,
+        env=env, ready=head.ready, stop_timeout=head.stop_timeout)
+    return _dsh_child(merged), merged
+
+
+def _dsh_child(dsh: DSHSpec) -> ChildSpec:
+    """dsh 声明 → child（⚠ 名字解析走 `which_or_raise`：起不来要**响亮**）。"""
+    return ChildSpec(
         id="dsh", argv=which_or_raise(dsh.argv()), cwd=dsh.cwd, env=dict(dsh.env),
         ready=dsh.ready, stop_timeout=dsh.stop_timeout, data_root=None,
-    ))
+    )
+
+
+def build_children(sites: Sequence[Site], enabled: Sequence[str]) -> tuple[ChildSpec, ...]:
+    """把勾中的服务 + dsh 翻成 child 列表（**顺序 = 拓扑序**，dsh **永远最后**）。"""
+    kids: list[ChildSpec] = []
+    for svc in flat_services(sites):            # ⭐ 站点出现顺序、站内声明顺序
+        if svc.id in enabled:
+            kids.append(svc.child())
+    dsh_child, _ = merge_dsh(sites)
+    kids.append(dsh_child)                      # ⭐ dsh 最后（它要用聚合端点的地址）
     return tuple(kids)
 
 
-def _detect_stale(site: Site,
+def _detect_stale(sites: Sequence[Site],
                   known_pids: dict[str, int]) -> tuple[StaleItem, ...]:
     """探"上次留下的残留"：**活着的孤儿进程** + **陈旧端口文件**。
 
@@ -191,11 +296,11 @@ def _detect_stale(site: Site,
             stale.append(StaleItem(
                 kind="orphan", target=f"{cid} pid={pid}", pid=pid,
                 why="上次记录在案、现在**还活着**（上次收尾没杀干净）"))
-    for svc in site.services:
+    for svc in flat_services(sites):
         pf = _port_file_of(svc)
         if pf is None or not pf.exists():
             continue
-        # 端口文件还在，但它记的端口**没人在听** ⇒ 陈旧（这正是 EL 那个假绿的现场）
+        # 端口文件还在，但它记的端口**没人在听** ⇒ 陈旧（这正是那个假绿的现场）
         from .portfile import read_port
         port = read_port(pf)
         listening = _listening(port) if port else False
@@ -215,14 +320,19 @@ def _listening(port: int) -> bool:
         return False
 
 
-def plan_startup(site: Site, enabled: Sequence[str],
+def plan_startup(sites: Sequence[Site], enabled: Sequence[str],
                  known_pids: dict[str, int] | None = None) -> StartupPlan:
-    """产出一份启动计划（顺序 + 待清理残留 + 勾选）。**不做任何副作用**。"""
-    chosen = tuple(s.id for s in site.services if s.id in enabled)
+    """产出一份启动计划（顺序 + 待清理残留 + 勾选）。**不做任何副作用**。
+
+    ⚠ **收全部站点**（§1.1）；``enabled`` 是**跨站点**的服务 id 集合。
+    """
+    ids = {s.id for s in flat_services(sites)}
+    chosen = tuple(sid for sid in (s.id for s in flat_services(sites))
+                   if sid in enabled and sid in ids)
     return StartupPlan(
-        site=site,
-        ordered=build_children(site, chosen),
-        stale=_detect_stale(site, known_pids or {}),
+        sites=tuple(sites),
+        ordered=build_children(sites, chosen),
+        stale=_detect_stale(sites, known_pids or {}),
         enabled=chosen,
     )
 
@@ -261,8 +371,13 @@ def acquire_singleton(runtime: Path) -> int:
 # --------------------------------------------------------------------------- 状态文件
 
 
-def _runtime_root(site: Site) -> Path:
-    """运行期根：**启动根**下的约定目录（不放各软件自己的数据根里——那是它们的）。"""
+def _runtime_root() -> Path:
+    """运行期根：**启动根**下的约定目录。
+
+    ⚠ §1.1 规则 3：**不取决于任何站点** —— 原先签名是 ``_runtime_root(site)``（虽然
+    参数没用过，但调用点写的是 ``_runtime_root(sites[0])``）⇒ **去掉入参**，
+    免得下次有人真拿它去算，让 runtime 随"谁排第一"漂。
+    """
     return Path.cwd() / RUNTIME_DIR_NAME
 
 
@@ -322,8 +437,11 @@ class LaunchController:
         return st
 
     def services(self) -> tuple[Service, ...]:
-        """**全部已声明**的软件（⚠ 与"勾过的"无关：面板**始终**展示全部）。"""
-        return tuple(self.sites[0].services)
+        """⭐ **全部站点的全部已声明服务**（§1.1 规则 6：面板**始终**列全部）。
+
+        ⚠ 与"勾过的"无关；⚠ 与"哪个站点排第一"无关（平铺）。
+        """
+        return flat_services(self.sites)
 
     def intent(self) -> dict[str, bool]:
         """每个软件"打算开着 / 打算关着"。
@@ -407,6 +525,13 @@ class LaunchController:
         svc = next((s for s in self.services() if s.id == svc_id), None)
         if svc is None:
             return {"ok": False, "why": f"没有这个软件：{svc_id!r}"}
+        if svc.data_root is None:
+            #: ⚠ 控制端点按**数据根**定位（`.control-port` 在数据根下）⇒ 没声明就定位不到。
+            #: ⚠ **不许把原始 `TypeError` 漏给页面**（实测就是这么漏的：
+            #: `expected str, bytes or os.PathLike object, not NoneType` —— 看页面的人读不懂）。
+            #: 铁律 8：读不到要**说得清**，而且与"确实没有"分开说。
+            return {"ok": False, "why": "这个软件没声明 data_root ⇒ 定位不到它的控制端点",
+                    "has_gui": bool(svc.has_gui), "read": None, "read_error": "读不到"}
         if not svc.has_gui:
             # NOTE: has_gui=False 的项目**仍然能切写权**（§7.1.1 定案：控制端点不按
             # `has_gui` 门控）⇒ 这里**只是不显示"切到手动"那个按钮**（它没有手动面），
@@ -452,7 +577,9 @@ class LaunchController:
         """
         st = self.write_authority_state(svc_id)
         if not st.get("ok"):
-            return {"ok": False, "id": svc_id, "error": st.get("why", "不可用"), "steps": []}
+            # ⚠ 文案必须**明说没切成**：人只看这一句就知道"没成"，而不是"看不太出来"。
+            return {"ok": False, "id": svc_id, "steps": [],
+                    "error": f"写权没切成：{st.get('why', '不可用')}"}
         svc = next(s for s in self.services() if s.id == svc_id)
         ctl = SoftwareControl.connect(svc_id, svc.data_root)
         steps: list[dict] = []
@@ -493,8 +620,7 @@ class LaunchController:
                          hint="只认 human（切到手动）/ ai（交还给 AI）")
 
     def plan(self, enabled: Sequence[str]) -> StartupPlan:
-        site = self.sites[0]
-        return plan_startup(site, enabled, self._known_pids())
+        return plan_startup(self.sites, enabled, self._known_pids())   # ⭐ 全部站点
 
     def _known_pids(self) -> dict[str, int]:
         out: dict[str, int] = {}
@@ -508,9 +634,8 @@ class LaunchController:
     def start(self, enabled: Sequence[str]) -> dict:
         if self._started:
             return {"ok": False, "error": "已经启动过了（本步不支持重启整站）"}
-        site = self.sites[0]
         try:
-            plan = plan_startup(site, enabled, self._known_pids())
+            plan = plan_startup(self.sites, enabled, self._known_pids())   # ⭐ 全部站点
             if plan.stale:
                 self.super.clean_stale(plan.stale)      # 清掉的会进 state().cleaned
             self._enabled = plan.enabled
@@ -551,9 +676,13 @@ class LaunchController:
 # --------------------------------------------------------------------------- CLI
 
 
-def build_aggregate_wiring(*, site: Site, supervisor: Supervisor,
-                           services: Sequence[Service] | None = None):
+def build_aggregate_wiring(*, sites: Sequence[Site], supervisor: Supervisor):
     """把**聚合端点**接起来，返回 ``(endpoint, runtime, registry_facade)``。
+
+    ⚠ **多站点（§1.1 规则 5）**：收**全部站点的全部服务**（平铺后的全集）——
+    一个聚合端点要能报/操作**所有**开着的软件。原来只收一个 ``site``。
+    ``server_name`` 取**第一个站点名**（只用于给 dsh 的 ``mcp__<serverName>__``
+    前缀；⚠ 它是**稳定**的：站点顺序稳定 ⇒ 名字稳定，见 §1.1 规则 4 的稳定顺序）。
 
     ## 三条设计决定（都不是随手）
 
@@ -577,7 +706,11 @@ def build_aggregate_wiring(*, site: Site, supervisor: Supervisor,
     from .providers.mcp import McpEndpoint
     from .providers.mcp_client import Backend
 
-    agg = Aggregator(server_name=site.name)
+    #: 聚合端点/``mcp__<serverName>__`` 前缀用的名字。
+    #: ⚠ **多站点下取第一个站点名**：站点顺序是**稳定**的（§1.1 规则 4）⇒ 名字稳定。
+    #: ⚠ 它**必须在使用之前**定义（这行被误放到函数中部 ⇒ 实测 `UnboundLocalError`）。
+    name_of_site = sites[0].name if sites else "mecha"
+    agg = Aggregator(server_name=name_of_site)
 
     class _LiveRegistry:
         """聚合端点的**活工具表门面**：每次问它都现算，别冻在上线那一刻。
@@ -597,8 +730,8 @@ def build_aggregate_wiring(*, site: Site, supervisor: Supervisor,
             return agg.registry().get(name)
 
     registry = _LiveRegistry()
-    endpoint = McpEndpoint(registry, server_name=site.name,
-                           instructions=f"{site.name} 的聚合端点（各软件一条脊椎合在这里）")
+    endpoint = McpEndpoint(registry, server_name=name_of_site,
+                           instructions=f"{name_of_site} 的聚合端点（各软件一条脊椎合在这里）")
     endpoint.start()                       # ⚠ 起在任何 child 之前；端口**回读**
     mcp_port = endpoint.port
     if mcp_port is None:
@@ -614,25 +747,42 @@ def build_aggregate_wiring(*, site: Site, supervisor: Supervisor,
         finally:
             loop.close()
 
+    # ⭐ 平铺全集：**全部站点的全部服务**（§1.1 规则 5）
+    all_svcs = flat_services(sites)
     runtime = AggregateRuntime(supervisor=supervisor,
-                               services=tuple(services or site.services),
+                               services=all_svcs,
                                aggregator=agg, backend_factory=backend_factory)
     # ⭐ 铁律 7：进程事实**只有一个来源**（supervisor）；``known`` 交出**声明里全部** id
     #   （否则"存在但没跑"会被误报成"压根没有这个软件"）。
     agg.wire(state_fn=supervisor.state,
              open_fn=runtime.open_service, close_fn=runtime.close_service,
-             known=[s.id for s in (services or site.services)],
+             known=[s.id for s in all_svcs],
              # ⭐ 站点声明（供聚合面取 `how_to_open` 原话）+ 写权探针（**不缓存**、每次真问）
-             specs=tuple(services or site.services),
+             specs=all_svcs,
              authority_probe=runtime.probe_authority)
     # ⭐ spawn dsh **之前那一刻**把 overlay 塞进它的 ``--patch``（端口此时已确定）。
     # ⚠ 走**公开追加口**，不直接改 ``_prepare_hooks``：私有名不许外面碰
     #   （钩子必须先拿到 supervisor 自己 ⇒ 构造参数那条路用不了 ⇒ 故给了这个方法）。
-    supervisor.add_prepare_hook(make_prepare_hook(runtime, site, lambda: mcp_port))
+    # ⚠ overlay 的 `serverName` 只用于给 dsh 的工具前缀 ⇒ 取第一个站点名即可
+    #   （`make_prepare_hook` 的 `site` 参数正是为这个用途）。
+    supervisor.add_prepare_hook(make_prepare_hook(
+        runtime, sites[0] if sites else None, lambda: mcp_port))
     return endpoint, runtime, registry
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    #: ⭐ **输出必须"立刻可见"**：`print` 到**被重定向的文件**时是**块缓冲**
+    #: ⇒ 那行 `mecha：已启动 ⇒ http://…` **会卡到进程退出才出现**
+    #: （`.bat`/脚本把 stdout 重定向到日志时就是这么踩的——**实测**：launcher 明明起来了，
+    #: 日志里只有聚合端点的日志，**拿不到地址**）。
+    #: ⚠ 这与铁律 1（日志必须留、不许 DEVNULL）是**同一件事的两半：留了还要看得见**。
+    #: ⚠ 顺带统一编码：Windows 控制台 cp936 会把中文输出打炸。
+    #: ⚠ 必须在 `argparse` **之前**（`--help` 的输出同理要可见）。
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+        except (AttributeError, ValueError):
+            pass
     ap = argparse.ArgumentParser(
         prog="python -m mecha",
         description="从 mecha 启动 = 永远是 AI 组：起各软件脊椎 + dsh，并给一个选择/状态页。")
@@ -656,28 +806,36 @@ def main(argv: Sequence[str] | None = None) -> int:
         #: ⇒ 所以这里**只读地**算计划：**不建目录、不抢单实例锁、不起任何东西**。
         #: ⚠ 连 `Supervisor(...)` 都不许构造 —— 它的 `__init__` 里也有 `log_dir.mkdir`
         #:   （第一版我在这里构造了它 ⇒ dry-run 照样建目录；**判据没抓到，是我读代码抓到的**）。
-        plan = plan_startup(sites[0], [s.id for s in sites[0].services if s.default_on])
-        print(f"站点：{sites[0].name}")
+        plan = plan_startup(sites, [s.id for s in flat_services(sites) if s.default_on])
+        print(f"站点（{len(sites)} 个）："
+              + "、".join(f"{s.name}[{len(s.services)}]" for s in sites))
         print("启动顺序：" + " → ".join(c.id for c in plan.ordered))
         print("待清理残留：" + (", ".join(i.target for i in plan.stale) or "（无）"))
         return 0
 
-    runtime = _runtime_root(sites[0])
+    runtime = _runtime_root()          # ⚠ §1.1 规则 3：不取决于任何站点
     try:
         acquire_singleton(runtime)
+    except MechaError as exc:
+        print(f"✖ {exc.message}", file=sys.stderr)
+        return 2
+    # ⭐ §1.1 规则 2/7：服务 id **跨站点**全局唯一（它是工具前缀）
+    try:
+        assert_service_ids_global_unique(sites)
+        merge_dsh(sites)               # ⭐ dsh 全生态一个：站点们共同贡献、身份必须一致
     except MechaError as exc:
         print(f"✖ {exc.message}", file=sys.stderr)
         return 2
     supervisor = Supervisor(log_dir=runtime / "logs", state_path=runtime / "state.json")
     controller = LaunchController(sites=sites, runtime=runtime, supervisor=supervisor)
 
-    # ⭐ 聚合端点：**起在任何 child 之前**（dsh 的 overlay 要指向它）
-    endpoint, agg_runtime, _ = build_aggregate_wiring(site=sites[0], supervisor=supervisor)
+    # ⭐ 聚合端点：**起在任何 child 之前**（dsh 的 overlay 要指向它），收**全部站点**
+    endpoint, agg_runtime, _ = build_aggregate_wiring(sites=sites, supervisor=supervisor)
     controller.after_start = lambda: agg_runtime.sync_backends()
     controller.agg_runtime = agg_runtime   # 面板的存活滑块走它那条正规路径（含端点同步）
 
     if args.all:
-        enabled = [s.id for s in sites[0].services if s.default_on]
+        enabled = [s.id for s in flat_services(sites) if s.default_on]
         result = controller.start(enabled)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         if not result.get("ok"):

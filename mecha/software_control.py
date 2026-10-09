@@ -48,14 +48,16 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from .errors import MechaError
 from .portfile import read_port
 from .providers.mcp_client import (Backend, BackendConnectError, BackendError,
                                    BackendProtocolError, BackendTimeoutError)
 
-__all__ = ["CONTROL_PORT_FILE", "CONTROL_TIMEOUT_S", "SoftwareControl",
-           "control_port_path"]
+__all__ = ["CONTROL_INSTRUCTIONS", "CONTROL_PORT_FILE", "CONTROL_TIMEOUT_S",
+           "SoftwareControl", "build_control_registry", "control_port_path",
+           "start_control_endpoint"]
 
 #: 控制端点的端口文件（与 ``.mcp-port`` **并列、同名族**）。
 CONTROL_PORT_FILE = ".control-port"
@@ -210,3 +212,131 @@ def _run(coro: object) -> object:
         return loop.run_until_complete(coro)      # type: ignore[arg-type]
     finally:
         loop.close()
+
+
+# =========================================================================== 服务端
+#
+# ⭐ **服务端也在这个模块**（与上面的客户端**同一份契约、同一个家**）。
+#
+# ## 为什么必须上提到框架（实测教训）
+#
+# 在它之前，**每一家各写一份 ≈134 行**（EL `mecha_v2/control.py` 134 行 ·
+# GP `mecha_adapter/control.py` 133 行，**结构逐行几乎相同**：同一个 ``.control-port``
+# 常量、同一个 ``build_control_registry``、同一个 ``start_control_endpoint``），
+# 而 **ML 干脆没有** ⇒ 它切不了写权。
+# ⇒ 用户裁决：*"把 GP 这套上升进框架……减少下游项目开发负担"*、
+#   *"我们为的是建设 mecha 框架，让以后的项目不用在启动、生存域这块费心，架构直接给安排好了"*。
+# ⇒ 于是：**机制在框架，项目只交 3 个回调**（见 :func:`build_control_registry`）。
+#
+# ## 项目只交这三样（其余全在框架）
+#
+# | 交什么 | 为什么是项目的 |
+# |---|---|
+# | ``switch(mode_value)`` | "怎么改本软件的写权"只有项目知道（它自己的闸门对象） |
+# | ``audit(op, value, reason)`` | 落**本项目那本账**（§4.3 的纪律：同一道门、同一本账） |
+# | ``open_surface()`` 或 ``None`` | "怎么开手动面"是本项目的事；没有 ⇒ 传 ``None``（调用时**响亮失败**） |
+# 外加两个**值**：``how_to_open`` 文案、``server_name``（端点服务名）。
+
+#: 控制端点的端点说明（⚠ **不写地址、不写端口**）。项目可覆盖。
+CONTROL_INSTRUCTIONS = (
+    "本端点供**人侧**（框架 / 面板 / 人手腿）控制这份软件：读当前写权、切写权、按需开手动面。"
+    "它不是给模型用的能力面——能力面在另一条端点上，两者共用同一套门与同一本账。"
+)
+
+
+def build_control_registry(authority: object, *,
+                           switch: "Callable[[str], None]",
+                           audit: "Callable[[str, str, str], None] | None" = None,
+                           open_surface: "Callable[[], str] | None" = None,
+                           how_to_open: str = "") -> object:
+    """建**控制面**的工具表（三个操作）。⭐ 项目只交回调，机制在这里。
+
+    ## 三个操作
+
+    | 操作 | 语义 |
+    |---|---|
+    | ``read_write_authority()`` | ⭐ **只读自省**，用框架的**唯一实现** :func:`authority.register_authority_read`（靠 ``gate(side)`` 纯查询探侧 ⇒ 报的就是闸门真会怎么判） |
+    | ``set_write_authority(mode)`` | 切写权（**裸值**）；未知值 ⇒ ``bad_mode`` **响亮失败**；切完**立刻生效** |
+    | ``open_manual_surface()`` | 开人那条腿的面；⚠ 没注入 ``open_surface`` ⇒ ``no_manual_surface`` **响亮失败**（不静默成功） |
+
+    ## ⚠⚠ `audit` 为什么**必须走 `Gate.record`、不许走 `Gate.set`**（防自锁）
+
+    ⭐ **切写权本身就是它要改的那个东西**：若这个操作过一次普通的写权门，
+    那么切到 ``ai`` 之后，**人侧就再也记不了账、也切不回来了** ⇒ **死锁**。
+    ⇒ 项目给的 ``audit`` 应当是"**只记史、不过写权门**"的那条路
+    （EL: ``bridge.record_audit``；GP: ``Gate.record``）。
+    ⚠ **仍然是同一本账**（§4.3 的纪律照旧成立：查得到"谁在什么时候把写权切走了"）。
+
+    ## ⚠ 纯查询不许有副作用
+
+    ``read_write_authority`` 只探侧、**不落账**（判据钉着"调前调后 mode 不变、账不增长"）。
+    """
+    from .authority import Mode as _Mode
+    from .authority import register_authority_read
+    from .tools import ToolRegistry, define_tool
+
+    reg = ToolRegistry()
+    register_authority_read(reg, authority, how_to_open=how_to_open)
+
+    def _set_write_authority(mode):
+        raw = str(mode).strip().lower()
+        try:
+            #: ⚠ 一律 `.value`：`Mode` 是 **str-Enum**（`str(Mode.AI)` 给 'Mode.AI' 不是 'ai'）。
+            m = _Mode(raw)
+        except ValueError:
+            raise MechaError(
+                f"未知写权模式：{mode!r}", kind="bad_mode",
+                hint="裸值只认 " + "/".join(x.value for x in _Mode)
+                     + "（⚠ 不是 `str(Mode.AI)` 那种 'Mode.AI' 形状）")
+        switch(m.value)
+        if audit is not None:
+            audit("control.write_authority", m.value, "人侧切写权（控制端点）")
+        return {"ok": True, "mode": m.value}
+
+    def _open_manual_surface():
+        if open_surface is None:
+            raise MechaError(
+                "本进程没有可开的「手动面」（项目未注入 open_surface）",
+                kind="no_manual_surface",
+                hint="只有带人面（GUI 窗口 / Web 工作台）的软件才有这条腿；"
+                     "没有就是没有，不假装开了一个")
+        status = str(open_surface())
+        if audit is not None:
+            audit("control.open_manual_surface", status, "人侧按需开手动面（控制端点）")
+        return {"ok": True, "status": status}
+
+    reg.register(define_tool(
+        name="set_write_authority",
+        description=("切换这份软件的写权归属（人侧专用）。切完**立刻生效**："
+                     "下一次写权判定就用新值（不允许'等一拍'）。"),
+        parameters={"mode": {"type": "string",
+                             "description": "裸值：locked / human / ai / open"}},
+        output_schema={"type": "object", "required": ["ok", "mode"]},
+        execute=lambda mode: _set_write_authority(mode),
+    ))
+    reg.register(define_tool(
+        name="open_manual_surface",
+        description=("请求打开「手动面」（人那条腿）。已经开着 ⇒ 幂等（不重复开、不报错）；"
+                     "本项目没有人面 ⇒ **响亮失败**。"),
+        parameters={},
+        output_schema={"type": "object", "required": ["ok", "status"]},
+        execute=lambda: _open_manual_surface(),
+    ))
+    return reg
+
+
+def start_control_endpoint(registry: object, *, port_file: object, server_name: str,
+                           instructions: str | None = None,
+                           host: str = "127.0.0.1", log: object = None):
+    """起控制端点（框架 :class:`~mecha.providers.mcp.McpEndpoint`；**端口回读**）。
+
+    返回 ``(endpoint, actual_port)``。⚠ 端口号**不要**打印/回显给 AI（§7.1.1）：
+    它只写进 ``port_file`` 给框架读。
+
+    ⚠ ``providers.mcp`` 是 **extra**（核心不 import 它）⇒ 这里**函数内**才 import。
+    """
+    from .providers.mcp import McpEndpoint
+    ep = McpEndpoint(registry, server_name=server_name,
+                     instructions=instructions or CONTROL_INSTRUCTIONS,
+                     host=host, port=0, port_file=str(port_file), log=log)
+    return ep, ep.start()

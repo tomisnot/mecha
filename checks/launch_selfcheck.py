@@ -574,7 +574,7 @@ def check_startup_plan_order_and_stale() -> None:
         dsh = DSHSpec(command=(sys.executable, "-c", "import time;time.sleep(30)"), cwd=env.dir)
         site = Site(name="demo-site", services=(svc,), dsh=dsh, strategy=Strategy())
         from mecha import launch
-        plan = launch.plan_startup(site, ["Demo"], {})
+        plan = launch.plan_startup([site], ["Demo"], {})
         _check("⑩ StartupPlan.ordered 是**显式顺序**：svc* → dsh（dsh 在最后）",
                plan.ordered[-1].id == "dsh" and plan.ordered[0].id == "Demo",
                f"ordered={[c.id for c in plan.ordered]}")

@@ -212,11 +212,18 @@ class Strategy:
 
 @dataclass(frozen=True)
 class Site:
-    """一个站点：一组软件 + 一个 dsh + 一份策略。"""
+    """一个站点：一组软件 +（可选的）dsh 贡献 + 一份策略。
+
+    ⚠ **dsh 可以不管它**（三层架构 §1.1.1）：dsh 是**全生态一个**，由各站点**共同贡献**：
+    ``None`` ⇒ 框架用默认（``command=("dsh",)``、cwd 取第一个站点）；
+    声明了 ⇒ 它的 ``patches``/``plugin_artifacts``/``env`` **并进那一个 dsh**
+    （每个项目都要能把自己的监控面板挂上）。
+    """
 
     name: str
     services: tuple[Service, ...]
-    dsh: DSHSpec
+    #: ⭐ 本站点给**那一个共用 dsh** 的贡献（可 ``None`` = 我不管 dsh）。
+    dsh: DSHSpec | None = None
     strategy: Strategy = Strategy()
 
     def validate(self) -> None:
@@ -254,4 +261,6 @@ class Site:
             seen_lower[low] = svc.id
             # ⚠ 这里**曾经**还要查 `svc.manual.id` 有没有撞上服务 id（约定 `<id>:manual`）。
             #   三层架构删了 `manual`（人那条腿不是 child）⇒ 那条查重随对象一起消失（R13）。
-        self.dsh.validate()
+        #: ⚠ dsh **可选**（§1.1.1：项目可以不管 dsh）⇒ 只在声明了才校验。
+        if self.dsh is not None:
+            self.dsh.validate()
