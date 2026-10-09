@@ -228,7 +228,10 @@ def merge_dsh(sites: Sequence[Site]) -> "tuple[ChildSpec, DSHSpec]":
         #: ⭐ "架构直接安排好了"：项目**可以完全不管 dsh**。
         first_svc = flat_services(sites)
         cwd = first_svc[0].cwd if first_svc else Path.cwd()
-        dsh = DSHSpec(command=("dsh",), cwd=cwd)
+        #: ⚠⭐ **`dsh` 不带 profile 会立刻退出**（实测：日志里刷 `error: --profile <name> is required`
+        #: ⇒ supervisor 反复重启 ⇒ `state=unhealthy` ⇒ **用户根本看不到 dsh**）。
+        #: `dsh --help` 明写 `dsh web` = 起 web profile ⇒ 默认值必须是它。
+        dsh = DSHSpec(command=("dsh", "web"), cwd=cwd)
         #: ⚠ 这一支也**必须**带上框架自己的面板插件：项目连 dsh 都没声明时，
         #: 更不该轮到它去挂框架插件（§7.3.3）。
         dsh = with_panel_contributions(dsh, sites)

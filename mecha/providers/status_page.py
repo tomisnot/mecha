@@ -361,7 +361,7 @@ def render_page(controller: Controller) -> str:
         f'<div id="main">{head}{"".join(items)}</div></div>'
         '<footer><button type="button" onclick="allOn(true)">全部启用</button>'
         '<button type="button" onclick="allOn(false)">全部停用</button>'
-        '<button onclick="startNow()">启动 ▸</button>'
+        '<button onclick="startNow(this)">启动 ▸</button>'
         '<button class="ghost" onclick="shutdownNow()">收尾退出</button>'
         '<span class="muted">存活滑块随时可动</span>'
         #: ⭐ 必须明说：用户实测问过关掉 web 窗口会不会关掉它 ——
@@ -376,9 +376,10 @@ def render_page(controller: Controller) -> str:
         'async function post(p,b){const r=await fetch(p,{method:"POST",body:b||""});'
         'document.documentElement.innerHTML=await r.text()}'
         'function toggle(id,on){post("/service", new URLSearchParams({svc:id,on:on?"1":"0"}))}'
+        'function startNow(b){b.disabled=true;b.textContent="启动中…（拉起软件要几秒）";'
+        'post("/start")}'
         'function mode(id,act){post("/mode", new URLSearchParams({svc:id,action:act}))}'
         'function allOn(v){post("/all", new URLSearchParams({on:v?"1":"0"}))}'
-        'function startNow(){post("/start")}'
         'function shutdownNow(){if(confirm("收尾退出：逆序停掉全部 child？"))post("/shutdown")}'
         '</script></body></html>')
 
