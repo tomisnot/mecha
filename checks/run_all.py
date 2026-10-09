@@ -80,6 +80,12 @@ CHECKS = [
     #   （MECHA_SITE_ROOTS 或 MECHA_ML_ROOT/MECHA_EL_ROOT/MECHA_GP_ROOT），缺 ⇒ SKIP
     #   （严格模式变 FAIL）——**不假装对拍过**。
     "checks/phase13_panel_decl_selfcheck.py",
+    # ⭐ 判据 ⑲：**dsh 的 argv 形状**（`--patch` 必须与它的值成对、overlay 必须最后）。
+    #   ⚠ 它是"面板点了启动、dsh 却每次都 exit=1 ⇒ dsh 窗口不弹出"那条**真因**的机器守卫
+    #   （2026-10-09：`with_overlay_patch` 把 overlay 插在标志与值之间 ⇒ 值被顶成裸 token）。
+    #   ⚠ 真机那一档要 **dsh 在 PATH** + **MECHA_SITE_ROOTS**（必须用真声明：`--port 0`
+    #   靠项目隔离层才生效）⇒ 缺则 SKIP，严格模式变 FAIL。①② 零外部依赖。
+    "checks/dsh_argv_selfcheck.py",
     "checks/phase5_el_selfcheck.py",
     "checks/phase5_hub_selfcheck.py",
     "checks/phase5_bridge_selfcheck.py",

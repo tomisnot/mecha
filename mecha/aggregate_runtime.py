@@ -136,13 +136,41 @@ def with_overlay_patch(child: ChildSpec, overlay: Path) -> ChildSpec:
 
     ⚠ 用 ``dataclasses.replace`` 造**新** spec：``ChildSpec`` 是冻结的，
     而且"改声明"与"改本次 spawn"是两件事（后者才是我们要的）。
+
+    ## ⛔ 这里曾经有一个**让 dsh 永远起不来**的错位（2026-10-09 实测抓到）
+
+    旧实现是 ``argv[idx + 1:idx + 1] = [overlay]``，而 ``idx`` 是最后一个 ``--patch``
+    **标志**的下标 ⇒ 插进去的是**标志与它的值之间**：
+
+    ```
+    期望：  --patch F  --patch OVERLAY  --port 3081
+    实际：  --patch OVERLAY  F  --port 3081        ← F 变成了**裸 token**
+    ```
+
+    ⚠ 而 dsh 的 CLI 规则是"**启动器选项在遇到它不认识的那个 token 为止；之后全归 app**"
+    （`apps/cli/src/args.ts` 的 `passThroughOptions` + `enablePositionalOptions`）
+    ⇒ 那个裸路径被交给 **web app** ⇒ commander 当场报
+
+    ```
+    error: too many arguments. Expected 0 arguments but got 1: <框架自己的 patch 路径>
+    ```
+
+    ⇒ ⭐ **dsh 以 exit=1 反复退出（`restarts=4`）、面板上那一行永远是 stopped、
+    "dsh 窗口不弹出"** —— 而日志里那句错的形状**看起来像 dsh 不认 `--patch`**
+    （⚠ 实测反了：`dsh web --patch X` **是合法的**，坏的是**值被顶掉**）。
+
+    ⇒ 修法：在**那个 ``--patch`` 的值之后**插入**成对的一份**（``["--patch", overlay]``）
+    —— ⚠ **不只是路径**：``--patch`` 是"标志 + 值"的成对形状，只插路径会把**前一个值**
+    或**这个路径自己**顶成一个**裸 token**（两种错位都实测过，报错措辞一模一样）。
     """
     import dataclasses
     argv = list(child.argv)
     # dsh 的 patch 是**有序**列表（旧实现就是按顺序给多个 --patch）；追加到末尾。
     if "--patch" in argv:
-        idx = len(argv) - 1 - argv[::-1].index("--patch")
-        argv[idx + 1:idx + 1] = [str(overlay)]      # 紧跟它已有的那一个之后
+        idx = len(argv) - 1 - argv[::-1].index("--patch")   # 最后一个 --patch **标志**
+        #: ⚠ 插到它的**值之后**（`idx + 1` 是那个值），且**必须带自己的 `--patch`**。
+        at = idx + 2 if idx + 1 < len(argv) else idx + 1
+        argv[at:at] = ["--patch", str(overlay)]
     else:
         argv += ["--patch", str(overlay)]
     return dataclasses.replace(child, argv=tuple(argv))
