@@ -210,7 +210,7 @@ class MonitorSpec:
 
     #: host 半注册的只读路由；client 半 fetch **同一个串**。**必填**。
     route_path: str
-    #: 权威写的**监控端口文件名**（相对 `cwd`）或绝对路径。**必填**。
+    #: 权威写的**监控端口文件名**（相对**数据根** `data_root`）或绝对路径。**必填**。
     port_file: str
     #: 面板标题（纯展示；模型不读它）。缺省 ⇒ 用 `Service.id`（由 ``Service`` 补齐）。
     title: str = ""
@@ -332,7 +332,7 @@ class Service:
         return None
 
     def monitor_port_file(self) -> "Path | None":
-        """声明的**监控端口文件**落在哪儿（相对 `cwd` 的按 `cwd` 解析；绝对路径原样）。
+        """声明的**监控端口文件**落在哪儿（相对根拼成**绝对**路径；绝对路径原样）。
 
         ⭐ 为什么要有这个口子（而不是各调用点各拼一遍）：它是"**声明 → 文件落点**"的
         **唯一那处翻译**。今天有两个消费者，将来只会更多：
@@ -342,19 +342,21 @@ class Service:
         | 框架的 host 插件参数（`dsh_panel.panel_port_files`） | 那个 node 侧插件**替项目取端口**（§7.3.8 末段的上提） |
         | `launch._detect_stale`（同族规则） | 判"陈旧端口文件"（⚠ 那里扫的是**就绪**用的那个文件，字段不同、**规则相同**） |
 
-        ⚠ **相对谁**是这份声明说了算的：`MonitorSpec.port_file` 的语义就是"相对 `cwd`
-        或绝对路径"（见 :class:`MonitorSpec`）⇒ 解析规则住在这里，别让调用点自己猜。
-
-        ⚠ **出口恒为绝对路径**（这是下游那个变量的契约：dsh 只有一个 cwd ⇒ 相对路径会在
-        **别人**的项目根上解析）。特殊情况：Windows 上 `/foo` 是"**有根无盘**"
-        （`is_absolute()` 仍是 `False`）⇒ 先按 `cwd` 的盘符拼，仍不绝对再兜一层 `abspath`。
+        ⚠ **相对哪个根**：`MonitorSpec.port_file` 写的是"相对根的文件名"，而这个"根"就是
+        **`data_root`** —— 它正是框架 spawn 软件时注入的 `MECHA_SOFTWARE_ROOT`
+        （软件**真正写文件**的那个根）。⚠ 三个真项目里 `data_root == cwd`（所以看不出差别），
+        但两者一旦分家，**按 cwd 拼就会读错文件**（症状是"那个 tab 永远 503"）。
         """
         if self.monitor is None:
             return None
         p = Path(self.monitor.port_file)
         if p.is_absolute():
             return p
-        joined = Path(self.cwd) / p
+        root = self.data_root if self.data_root is not None else self.cwd
+        joined = Path(root) / p
+        #: ⚠ Windows 上 `/foo` 是"**有根无盘**"（`is_absolute()` 仍是 `False`）⇒
+        #: 这种声明按根的盘符解析；再不行兜一层 `abspath`，保证**这一层出口恒为绝对路径**
+        #: （下游那个变量的契约就是"绝对路径"，别把判断推给下游）。
         return joined if joined.is_absolute() else Path(os.path.abspath(joined))
 
     def child(self) -> ChildSpec:

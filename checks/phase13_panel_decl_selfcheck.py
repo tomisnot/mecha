@@ -252,9 +252,9 @@ def _check_port_files_env() -> list[str]:
     """⭐ 第三个变量的**存在性 + 形状 + 不泄漏**（两个 dsh 分支都要有）。"""
     bad: list[str] = []
     svc = _svc("AAA", monitor=MonitorSpec(route_path="/a/monitor-url", port_file=".a-port"),
-               cwd=Path("/probe-root"))
+               cwd=Path("/probe-root"), data_root=Path("/probe-root"))
     payload = panel_payload((svc,))
-    # 解析规则住在 `Service.monitor_port_file()`（一处翻译）：相对 `cwd` ⇒ 拼成**绝对**
+    # 解析规则住在 `Service.monitor_port_file()`（一处翻译）：相对 `data_root` ⇒ 拼成**绝对**
     expect = svc.monitor_port_file()
     files = panel_port_files((svc,))
     if expect is None or not expect.is_absolute():

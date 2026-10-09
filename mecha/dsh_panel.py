@@ -149,6 +149,8 @@ def panel_port_files(services: Sequence[Service]) -> dict[str, str]:
     ⚠ **只含声明了 `monitor` 的服务**（与那份浏览器参数同一批、同一个顺序）。
     ⚠ 路径一律**绝对**：dsh 只有一个 cwd（§1.1.1）⇒ 相对路径会在 dsh 进程里按
     **别人的** cwd 解析（症状是"读不到端口 ⇒ 那个 tab 永远 503"）。
+    ⚠ 解析的根是 **`data_root`**（框架注入的 `MECHA_SOFTWARE_ROOT`，即软件真正写文件的根）
+    —— 见 `Service.monitor_port_file()`。
     ⚠ 它与 :func:`panel_services` 那份**必须分开**：那份给浏览器，**不许**带绝对路径。
     """
     out: dict[str, str] = {}
