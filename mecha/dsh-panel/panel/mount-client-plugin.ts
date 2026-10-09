@@ -62,6 +62,17 @@ export interface ClientContext {
       kind: string
       title: (address: string) => string
       patterns?: readonly string[]
+      /** ⭐ **右栏「guide」页的入口**（dsh 的 `SidebarRightGuideEntry`）。
+       *  ⚠ 不投条目 ⇒ 这个 tab 类型**不上那一页**；而 dsh 的 `defaultSeed()`
+       *  规则是"**guide 条目 0 个或多个 ⇒ 右栏默认页 = guide 页**"
+       *  ⇒ 这条正是我们"**一个按钮唤起所有监控面板**"的**唯一原语**
+       *  （`layout.openRightbar` 只开栏、**不选 tab** ⇒ 用户看到的是**空栏**，实测踩到）。 */
+      guide?: readonly {
+        id: string
+        order: number
+        title: () => string
+        description?: () => string
+      }[]
     }): Disposer
   }
   slots?: {
@@ -88,6 +99,10 @@ export interface MountClientPanelOptions {
   titleComponent?: unknown
   /** 标题前缀（如「◈ 监控 · ML」）；缺省只用 `panelConfig.title`。 */
   titlePrefix?: string
+  /** ⭐ 这一份在**右栏 guide 页**里的排位（升序；缺省 `0`）。
+   *  ⚠ 由调用方按**声明顺序**给（`panels.ts` 把那份参数的 index 传进来）⇒
+   *  一览里的顺序与声明顺序一致，而不是"谁先注册谁在前"（后者会随 bundle 加载顺序漂）。 */
+  guideOrder?: number
   /** ⭐ 是否注册那个**唯一的**会话头部按钮（缺省 `true`）。 */
   withHeaderButton?: boolean
   /** 跨"模块实例"的按钮登记表（⚠ 判据注入一份干净的；生产用 `globalThis` 上那份）。 */
@@ -103,6 +118,34 @@ export const PANE_TAB_SLOT = 'sidebar.right.pane.tab'
 export const PANE_TAB_TITLE_SLOT = 'sidebar.right.pane.tab.title'
 /** 会话头部动作槽位。 */
 export const HEADER_ACTIONS_SLOT = 'conversation.session.header.actions'
+
+/** ⭐ dsh 右栏那个**内置**的「guide」页的 kind（`sidebarRight` 的 `GUIDE_KIND`）。
+ *  ⚠ 它**不是**我们能改的东西（宿主内置）⇒ 这里只把那个字面量收成**一处**，
+ *  由判据钉住"按钮打开的是它"（而不是"随手开右栏"）。 */
+export const GUIDE_KIND = 'guide'
+
+/**
+ * 把**监控面**带到眼前（那**唯一**那个按钮的动作）。
+ *
+ * ## 为什么不是 `layout.openRightbar(true, false)`
+ *
+ * 实测（2026-10-09，用户报"点了一个面板都没开启"）：`openRightbar` **只把栏打开**、
+ * **不选任何 tab** ⇒ 用户看到的是**空栏**；而 dsh 的右栏**默认页是算出来的**
+ * （`contract/seed.ts::defaultSeed`：**guide 条目 0 个或多个 ⇒ 默认页 = guide 页**）。
+ * ⇒ 正确动作是**打开 guide 页**：它会列出**所有**投过 `guide` 条目的监控 tab
+ * （每个项目一个入口，按 `guideOrder` 升序），点哪个开哪个
+ * —— 这就是"**一个按钮、N 个面板**"。
+ *
+ * ⚠ 兜底：宿主版本没有 `sidebarRight.openTab` 时退回 `openRightbar`（不静默什么都不做）。
+ */
+export function openMonitorGuide(ctx: ClientContext): void {
+  const openTab = ctx.sidebarRight?.openTab
+  if (typeof openTab === 'function') {
+    openTab(GUIDE_KIND)
+    return
+  }
+  ctx.layout?.openRightbar?.(true, false)
+}
 
 /**
  * 挂一份面板 tab（**参数自己那份**）+ 那**唯一一个**头部按钮。
@@ -126,6 +169,14 @@ export function mountClientPanel(
     id: opts.id,
     kind: opts.kind,
     title: () => label,
+    // ⭐ **投一个 guide 条目**：右栏那一页（「guide」）会把**所有**投过条目的 tab 类型列出来，
+    //   dsh 的 `defaultSeed()` 又规定"条目 0 个或多个 ⇒ 默认页 = guide 页"
+    //   ⇒ 这才是"**一个按钮唤起所有项目的监控面板**"的实现方式（实测：只 `openRightbar` 得到空栏）。
+    guide: [{
+      id: opts.id,
+      order: opts.guideOrder ?? 0,
+      title: () => label,
+    }],
   })
   if (reg) disposers.push(reg)
 
@@ -143,7 +194,7 @@ export function mountClientPanel(
     if (tc) disposers.push(tc)
   }
 
-  // ---- ⭐ 头部按钮：**全局唯一**（语义 = 开右栏，不挑 tab） ----
+  // ---- ⭐ 头部按钮：**全局唯一**（语义 = 把监控面**一整页**带到眼前） ----
   if (opts.withHeaderButton !== false) {
     const flags = opts.buttonFlags ?? globalFlags()
     if (!flags[HEADER_BUTTON_ID]) {
@@ -153,9 +204,11 @@ export function mountClientPanel(
           id: HEADER_BUTTON_ID,
           order: 200,
           label: '◈ 监控',
-          // ⚠ **只开右栏**：用户要"唤起所有监控面板" ⇒ 不 `openTab(某个 id)`
+          // ⚠ 2026-10-09 改：**打开 guide 页**（= 那一页列出**所有**项目的监控面板），
+          //   而不是 `layout.openRightbar(...)`。后者**只开栏、不选 tab** ⇒ 用户看到
+          //   **空栏**，正是"点了一个面板都没开启"的现场（实测）。
           inject: () => ({
-            openCockpit: () => { ctx.layout?.openRightbar?.(true, false) },
+            openCockpit: () => { openMonitorGuide(ctx) },
           }),
         }))
       if (btn) {

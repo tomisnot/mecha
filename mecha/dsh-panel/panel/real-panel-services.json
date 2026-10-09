@@ -79,7 +79,7 @@
       "kind": "mecha:GP",
       "tabId": "mecha-panel:GP",
       "routePath": "/paperpilot/monitor-url",
-      "portFile": ".web-port",
+      "portFile": ".cockpit-port",
       "title": "操作审计",
       "extraPages": []
     }

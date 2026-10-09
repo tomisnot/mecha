@@ -28,7 +28,12 @@
  * 1. 从**同源只读路由**取那份参数（`services.ts` 的 `PANEL_SERVICES_ROUTE`）；
  * 2. 按服务**各挂一份** tab：每份的标题/取数路由/附加页都是**它自己那一份**
  *    （经 `mountClientPanel` 的 `panelConfig` 显式传参，⚠ 不读任何全局）；
- * 3. 头部按钮**恒为 1 个** —— 由 `mountClientPanel` 的**跨 bundle 全局登记**保证。
+ * 3. 头部按钮**恒为 1 个** —— 由 `mountClientPanel` 的**跨 bundle 全局登记**保证；
+ *    ⭐ 它的动作是 `openMonitorGuide(ctx)`（**打开右栏那个内置的「guide」页**）：
+ *    guide 页列出**所有**投过 `guide` 条目的监控 tab（每个项目一个，按声明顺序），
+ *    点哪个开哪个 ⇒ **一个按钮、N 个面板**。
+ *    ⚠ 而**不是** `layout.openRightbar(...)`：后者只开栏、**不选 tab** ⇒ 用户看到**空栏**
+ *    （实测：用户报"点了一个都没开启"，就是这个）。
  *
  * ## ⚠ 幂等必须**跨 bundle**（不是"同一模块 import 两次"那么简单）
  *
@@ -173,6 +178,7 @@ export async function applyMechaPanels(ctx: AutoContext, opts: ApplyOptions = {}
 
   const st = autoState()
   const mine: string[] = []
+  let order = 0
   for (const svc of payload.services as DeclaredPanelService[]) {
     if (st.mounted[svc.tabId] !== undefined) continue      // ⭐ 别的 bundle 已经挂过这一份
     const dispose = mountClientPanel(ctx as never, {
@@ -183,7 +189,10 @@ export async function applyMechaPanels(ctx: AutoContext, opts: ApplyOptions = {}
       body,
       bodyProps: { extraPages: extraPageSpecsFrom(svc.id, svc.extraPages ?? []) },
       titlePrefix: TITLE_PREFIX,
+      //: ⭐ 右栏「guide」页里的排位 = **声明顺序**（不是"谁先注册谁在前"）
+      guideOrder: order,
     })
+    order += 1
     st.mounted[svc.tabId] = dispose
     mine.push(svc.tabId)
   }

@@ -14,17 +14,28 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import { mountClientPanel, HEADER_ACTIONS_SLOT } from './mount-client-plugin.ts'
+import { mountClientPanel, GUIDE_KIND, HEADER_ACTIONS_SLOT } from './mount-client-plugin.ts'
 
 /** 记一笔的假 ctx：只实现本助手用到的那几片（**结构化**，与真 ctx 同形）。 */
 function fakeCtx() {
   const calls: { slot: string; def: Record<string, unknown> }[] = []
   const opened: string[] = []
-  const tabs: { id: string; kind: string; title: (a: string) => string }[] = []
+  const openedTabs: string[] = []
+  const tabs: {
+    id: string
+    kind: string
+    title: (a: string) => string
+    guide?: readonly { id: string; order: number; title: () => string }[]
+  }[] = []
   const ctx = {
     sidebarRightTabs: {
-      register: (def: { id: string; kind: string; title: (a: string) => string }) => {
-        tabs.push({ id: def.id, kind: def.kind, title: def.title })
+      register: (def: {
+        id: string
+        kind: string
+        title: (a: string) => string
+        guide?: readonly { id: string; order: number; title: () => string }[]
+      }) => {
+        tabs.push({ id: def.id, kind: def.kind, title: def.title, guide: def.guide })
         return () => { tabs.pop() }
       },
     },
@@ -36,8 +47,10 @@ function fakeCtx() {
       inject: (name: string, fn: () => () => void) => fn(),
     },
     layout: { openRightbar: (open: boolean) => { opened.push(String(open)) } },
+    //: ⭐ 右栏服务：按钮的正确动作是 `openTab('guide')`（见 `openMonitorGuide`）
+    sidebarRight: { openTab: (kind: string) => { openedTabs.push(kind) } },
   }
-  return { ctx, calls, opened, tabs }
+  return { ctx, calls, opened, openedTabs, tabs }
 }
 
 const OPTS = (svc: string, title: string, route: string) => ({
@@ -85,6 +98,37 @@ test('⭐ 两份注册并存：标题各读各的（不落到"最后注册那一
   disA()
 })
 
+test('⭐ 每个监控 tab 都往右栏 guide 页**投一个入口**（那才是"一个按钮、N 个面板"的原语）', () => {
+  const a = fakeCtx()
+  const b = fakeCtx()
+  const flags: Record<string, boolean> = {}
+  mountClientPanel(a.ctx, { ...OPTS('AAA', '甲的标题', '/a'), buttonFlags: flags, guideOrder: 0 })
+  mountClientPanel(b.ctx, { ...OPTS('BBB', '乙的标题', '/b'), buttonFlags: flags, guideOrder: 1 })
+
+  // ⚠ 不投 `guide` ⇒ 这个 tab 类型**不上那一页**；而 dsh 的 `defaultSeed()` 只在
+  //   "0 个或多个 guide 条目"时才把默认页算成 guide 页 ⇒ 投了条目，"一个按钮唤起全部"才成立。
+  const ga = a.tabs[0]?.guide?.[0]
+  const gb = b.tabs[0]?.guide?.[0]
+  assert.ok(ga && gb, `两个 tab 类型都该带 guide 条目：${JSON.stringify([a.tabs[0], b.tabs[0]])}`)
+  assert.equal(ga!.id, 'mecha-panel:AAA')
+  assert.equal(ga!.order, 0, 'guideOrder 应当按声明顺序传进来')
+  assert.equal(gb!.order, 1)
+  // ⭐ 标题与 tab 标题**同一份**（前缀也一致）⇒ 一览里看到的就是面板名
+  const label = (t: { title: (a: string) => string }) => t.title('ignored')
+  assert.equal(ga!.title(), label(a.tabs[0]!))
+  assert.equal(gb!.title(), label(b.tabs[0]!))
+})
+
+test('⭐ 兜底：宿主没有 `sidebarRight.openTab` ⇒ 退回 `openRightbar`（不静默什么都不做）', () => {
+  const a = fakeCtx()
+  delete (a.ctx as { sidebarRight?: unknown }).sidebarRight
+  mountClientPanel(a.ctx, OPTS('AAA', '甲', '/a'))
+  const header = a.calls.find((x) => x.slot === HEADER_ACTIONS_SLOT)!
+  const inj = header.def.inject as () => { openCockpit: () => void }
+  inj().openCockpit()
+  assert.deepEqual(a.opened, ['true'], '没有 openTab 时应当退回 openRightbar(true)')
+})
+
 test('⭐ 头部按钮恒为**一个**（后注册的不再注册第二个）', () => {
   const a = fakeCtx()
   const b = fakeCtx()
@@ -101,11 +145,14 @@ test('⭐ 头部按钮恒为**一个**（后注册的不再注册第二个）', 
   assert.equal(total, 1, `三个服务插件总共只该注册 1 个按钮，实际 ${total} 个`)
   assert.equal(btnCount(a.calls), 1, '第一个注册的拿到按钮')
 
-  // ⭐ 按钮语义 = **开右栏**，**不挑 tab**（用户要"唤起所有"）
+  // ⭐ 按钮语义 = **把监控面一整页带到眼前**（打开右栏那个内置的 guide 页）
+  //   ⚠ 本判据**改过**（2026-10-09）：原先是"调 `layout.openRightbar(true)`"，而用户实测
+  //   **点了什么都没开** —— 因为 `openRightbar` 只开栏、**不选 tab** ⇒ 用户看到**空栏**。
   const header = a.calls.find((x) => x.slot === HEADER_ACTIONS_SLOT)!
   const inj = header.def.inject as () => { openCockpit: () => void }
   inj().openCockpit()
-  assert.deepEqual(a.opened, ['true'], '按钮应当调 openRightbar(true)')
+  assert.deepEqual(a.openedTabs, [GUIDE_KIND], '按钮应当打开内置的 guide 页（那一页列出所有监控面板）')
+  assert.deepEqual(a.opened, [], '有 openTab 时**不该**退回 openRightbar')
 
   // ④ 收尾之后**允许别人再注册**（不是永久占位）
   dis[0]!()
