@@ -31,9 +31,9 @@ ftype Python.NoConFile ⇒ "C:\\WINDOWS\\pyw.exe" "%L" %*
 
 ```
 # 一行一个仓路径（`#` 起注释；两端空白与引号会被去掉）
-D:\\code-nosync\\Mechine learning
-D:\\code-nosync\\energy-level
-D:\\...\\Get Paper
+<盘>:\\<某父目录>\\Mechine learning
+<盘>:\\<某父目录>\\energy-level
+<盘>:\\...\\Get Paper
 ```
 ⚠ 它**是本机的东西** ⇒ 已 gitignore，仓里只放 `mecha_roots.txt.example`。
 """
