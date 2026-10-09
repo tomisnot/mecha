@@ -40,6 +40,8 @@ ftype Python.NoConFile ⇒ "C:\\WINDOWS\\pyw.exe" "%L" %*
 from __future__ import annotations
 
 import os
+import shutil
+import subprocess
 import sys
 import traceback
 from pathlib import Path
@@ -94,6 +96,43 @@ def _tell_user(title: str, msg: str) -> None:
         pass
 
 
+def _find_capable_python() -> list[str] | None:
+    """⭐ 找一个**装了依赖的**解释器（返回可执行 argv 前缀）；找不到 ⇒ ``None``。
+
+    ## 为什么必须有这一步（**实测的根因**，别再删）
+
+    双击 `.pyw` 时，拉起它的是 **`pyw.exe`**（Windows 的 Python 启动器），
+    而它按**它自己的默认**选版本 —— 实测这台机器：``py -0`` 的默认是 **3.14**（没装 `mcp`），
+    而装了依赖的是 **3.10**（PATH 上 `pythonw` 的第一个也是它）
+    ⇒ ⚠ 用户双击就吃 **`ModuleNotFoundError: No module named 'mcp'`**。
+
+    ⚠ **不硬编码任何本机路径**：本仓是**公开**的，写死 `<盘>:\\python310` 就是泄漏机器信息。
+    ⭐ 做法：**问启动器自己**（`pyw -3.10` / `py -3.10` …）＋ PATH（`pythonw`）＋ 环境变量
+    ``MECHA_PYTHON``（给用户一个显式覆盖口），逐个探 `import mcp`，用**第一个成功的**。
+    """
+    probes: list[list[str]] = []
+    env = os.environ.get("MECHA_PYTHON", "").strip()
+    if env:
+        probes.append([env])
+    for launcher in ("pyw", "py"):                       # ⚠ pyw 优先：它是**无控制台**那个
+        exe = shutil.which(launcher)
+        if exe:
+            for v in ("-3.10", "-3.12", "-3.11", "-3.13", "-3"):
+                probes.append([exe, v])
+    w = shutil.which("pythonw")
+    if w:
+        probes.append([w])
+    for probe in probes:
+        try:
+            r = subprocess.run([*probe, "-c", "import mcp"],
+                               capture_output=True, timeout=25)
+        except Exception:                                # noqa: BLE001 - 探不通就下一个
+            continue
+        if r.returncode == 0:
+            return probe
+    return None
+
+
 def main(argv: list[str] | None = None) -> int:
     RUNTIME.mkdir(parents=True, exist_ok=True)
     #: ⭐ 第 1 件事：输出落文件（**在调任何东西之前**，否则最早的报错会丢）。
@@ -109,6 +148,25 @@ def main(argv: list[str] | None = None) -> int:
         sys.path.insert(0, str(ENTRY_DIR))
 
     try:
+        #: ⭐ **先解决"用哪个解释器"**（实测根因：`pyw.exe` 按自己的默认选了没装依赖的那个）。
+        #: ⚠ 用 `MECHA_ENTRY_REEXEC` 防自锁（换过一次就不再换）。
+        if os.environ.get("MECHA_ENTRY_REEXEC") != "1":
+            try:
+                import mcp                                    # noqa: F401
+            except ModuleNotFoundError:
+                found = _find_capable_python()
+                if found is None:
+                    raise RuntimeError(
+                        f"当前 Python（{sys.executable}）缺 `mcp`，且**没找到**装了它的解释器。\n"
+                        f"　· 给它装上：\"{sys.executable}\" -m pip install \"mecha[mcp]\"\n"
+                        f"　· 或用环境变量 MECHA_PYTHON 指定一个装好的解释器路径")
+                print(f"[start] ⚠ 当前解释器缺依赖 ⇒ 换用：{' '.join(found)}", flush=True)
+                fh.flush()
+                return subprocess.call(
+                    [*found, str(Path(__file__).resolve()), *(argv if argv is not None
+                                                              else sys.argv[1:])],
+                    env={**os.environ, "MECHA_ENTRY_REEXEC": "1"})
+
         if not os.environ.get("MECHA_SITE_ROOTS", "").strip():
             roots = _roots_file_text()
             if roots:
