@@ -530,13 +530,29 @@ class LaunchController:
 
     # ---- 写权（③）：走"控制端点"那条腿（§7.1.1）----
     def write_authority_state(self, svc_id: str) -> dict:
-        """面板要的事实：能不能点 / 为什么不能 / ⭐ **当前写权真值**。
+        """面板要的事实：⭐ **能不能切** / **当前写权真值** / **该给哪个动作**。
 
         ⭐ **真值从控制端点读回来**（契约 §7.1.1 的 ``read_write_authority``），
         **不是**面板记着自己点过什么——面板记账 = **第二份真值**。
 
         ⚠ 读不到时**如实说"读不到"**：不显示旧值、也不显示 0
         （铁律 8：读不到 ≠ 确实没有）。
+
+        ## ⚠⚠ 两件事**必须分开报**（2026-10-09 审计抓到的偏差，§7.1.1 已补）
+
+        | 问的问题 | 取决于 |
+        |---|---|
+        | **能不能切写权**？ | ⭐ **控制端点通不通**（= `ok`） |
+        | **有没有"手动面"可开**？ | ⭐ **`has_gui`** |
+
+        ⚠ 原先 `has_gui=False` 时直接回 `ok=False` ⇒ **切写权被拒**
+        ⇒ ⭐ **正是 §7.1.1 那条裁决要避免的盲区**（"裁决写在端点那层，
+        同一件事在控制器这层又长回来了"）。⇒ 现在**解耦**：
+        `has_gui=False` 只是**没有"手动面"那一档**，**不是**"不能切写权"。
+
+        ⭐ 面板据此给**不同名字的动作**（干的事真的不同）：
+        `has_gui=True` ⇒ 「切到手动」（切写权 **+** 开窗）；
+        `has_gui=False` ⇒ 「收回写权（冻结）」（**只**切写权 ⇒ `locked`，⚠ **不**调开窗）。
         """
         svc = next((s for s in self.services() if s.id == svc_id), None)
         if svc is None:
@@ -547,21 +563,37 @@ class LaunchController:
             #: `expected str, bytes or os.PathLike object, not NoneType` —— 看页面的人读不懂）。
             #: 铁律 8：读不到要**说得清**，而且与"确实没有"分开说。
             return {"ok": False, "why": "这个软件没声明 data_root ⇒ 定位不到它的控制端点",
-                    "has_gui": bool(svc.has_gui), "read": None, "read_error": "读不到"}
-        if not svc.has_gui:
-            # NOTE: has_gui=False 的项目**仍然能切写权**（§7.1.1 定案：控制端点不按
-            # `has_gui` 门控）⇒ 这里**只是不显示"切到手动"那个按钮**（它没有手动面），
-            # 但**仍然去读真值**并显示出来，好让人看到"写权现在在哪一侧"。
-            ctl0 = SoftwareControl.connect(svc_id, svc.data_root)
-            avail0, why0 = ctl0.available()
-            read0 = self._read_true_authority(ctl0, avail0)
-            return {"ok": False, "why": "无手动面（has_gui=false）", "has_gui": False,
-                    "read": read0, "read_error": "" if avail0 else why0}
+                    "has_gui": bool(svc.has_gui), "read": None, "read_error": "读不到",
+                    "action": self._authority_action(svc)}
+        #: ⭐ 能不能切，只看**控制端点通不通** —— ⚠ 与 `has_gui` **无关**。
         ctl = SoftwareControl.connect(svc_id, svc.data_root)
         avail, why = ctl.available()
         read = self._read_true_authority(ctl, avail)
-        return {"ok": avail, "why": why, "has_gui": True,
-                "read": read, "read_error": "" if read else ("读不到" if avail else why)}
+        return {"ok": avail, "why": why, "has_gui": bool(svc.has_gui),
+                "read": read, "read_error": "" if read else ("读不到" if avail else why),
+                "action": self._authority_action(svc)}
+
+    @staticmethod
+    def _authority_action(svc: Service) -> str:
+        """面板上"归人"那个按钮该发**哪个动作**（⚠ 与 `control_write_authority` **同一套词**）。
+
+        | 返回 | 按钮（面板的标签） | 干什么 |
+        |---|---|---|
+        | `"human"` | 「切到手动」 | 切写权(=human) **+ 开窗**（两步） |
+        | `"freeze"` | 「收回写权（冻结）」 | **只**切写权 ⇒ `locked` |
+
+        ⚠ **返回值必须是 `control_write_authority` 认的动作名**（`human`/`freeze`），
+        **不是**按钮的显示文字 —— ⚠ 我第一版在这里返回 `"manual"`，
+        而控制器只认 `"human"` ⇒ 面板点下去会**报 `bad_write_action`**
+        （**两套词**是这种 bug 的温床：一个东西两个名字，迟早对不上）。
+        **标签**由面板按这个动作决定（UI 的事归 UI）。
+
+        ⚠ **为什么无手动面时是 `freeze`（`locked`）而不是 `human`**：
+        `Mode.HUMAN` 的语义是"**人侧通道可写**"，而**没有手动面的软件里人没有可写通道**
+        ⇒ 给 `HUMAN` 等于**贴一个"写权归人"的标签、实际谁都不能写** —— **骗人的标签**。
+        人的真实意图是"**先把写权收回**" ⇒ `locked`（谁都不能写）**才是老实的那一个**。
+        """
+        return "human" if bool(svc.has_gui) else "freeze"
 
     @staticmethod
     def _read_true_authority(ctl: object, available: bool) -> dict | None:
@@ -582,14 +614,25 @@ class LaunchController:
         return {k: out.get(k) for k in ("ok", "mode", "ai_can_write", "human_holds")}
 
     def control_write_authority(self, svc_id: str, action: str) -> dict:
-        """面板的写权按钮：``action="human"``（切到手动）/ ``"ai"``（交还给 AI）。
+        """面板的写权按钮。⭐ **三种动作**（面板按 `write_authority_state()['action']` 选）。
+
+        | action | 按钮 | 做什么 |
+        |---|---|---|
+        | `"human"` | 「切到手动」（**只** `has_gui=true` 有） | ① `set_write_authority(human)` ② `open_manual_surface()` |
+        | `"freeze"` | 「收回写权（冻结）」（`has_gui=false`） | ⭐ **只** `set_write_authority(locked)`，⚠ **不**调开窗 |
+        | `"ai"` | 「交还给 AI」 | `set_write_authority(ai)` |
 
         ⭐ **切到手动 = 两次调用、按顺序、分开报告**（契约 §7.1.1）：
-        ① ``set_write_authority("human")`` ② ``open_manual_surface()``。
         ⚠ **不许合并成一次"看起来成功了"**：写权切成功、窗口开失败时，人必须看到
         **哪一步成了、哪一步没成**——否则他会对着一台"以为开着窗口"的机器发呆。
 
         ⚠ 交还给 AI **只切写权、不关窗**（§1：切写权不动进程/连接；关窗是另一件事）。
+
+        ## ⚠ `freeze` 为什么必须存在（2026-10-09，§7.1.1 补）
+
+        没有手动面的软件**仍然要能切写权**（否则就是那条裁决要避免的盲区）。
+        但它**没有面可开** ⇒ 归人的动作只能是"**把写权收回**" ⇒ 语义 = `locked`
+        （⚠ **不是** `human`：那会贴一个"写权归人"却谁也不能写的**骗人标签**）。
         """
         st = self.write_authority_state(svc_id)
         if not st.get("ok"):
@@ -608,6 +651,19 @@ class LaunchController:
                 steps.append({"step": name, "ok": False,
                               "error": f"{exc.kind}：{exc.message}"})
                 return False
+
+        if action == "freeze":
+            #: ⭐ 只切写权 ⇒ `locked`（谁都不能写）。⚠ **不调** `open_manual_surface`
+            #: —— 它没有面，调了只会响亮失败，而那不是这次操作的目的。
+            ok = step("set_write_authority(locked)",
+                      lambda: ctl.set_write_authority(Mode.LOCKED.value))
+            if ok:
+                self._mode_intent[svc_id] = Mode.LOCKED.value
+                self._save_status()
+            return {"ok": ok, "id": svc_id, "steps": steps,
+                    "note": "写权已收回（**冻结**：谁都不能写）。"
+                            "⚠ 这不是「改由人写」—— 这个软件**没有人手面**；"
+                            "要恢复请点「交还给 AI」"}
 
         if action == "human":
             if not step("set_write_authority(human)",
@@ -633,7 +689,8 @@ class LaunchController:
             return {"ok": ok, "id": svc_id, "steps": steps,
                     "note": "⚠ 窗口**不关**（切写权不动进程/连接；关窗是另一件事）"}
         raise MechaError(f"未知的写权动作：{action!r}", kind="bad_write_action",
-                         hint="只认 human（切到手动）/ ai（交还给 AI）")
+                         hint="只认 human（切到手动，需有手动面）/ freeze（收回写权，无手动面时用）"
+                              "/ ai（交还给 AI）")
 
     def plan(self, enabled: Sequence[str]) -> StartupPlan:
         return plan_startup(self.sites, enabled, self._known_pids())   # ⭐ 全部站点

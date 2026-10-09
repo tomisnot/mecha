@@ -154,20 +154,46 @@ def _badge(state: str) -> str:
 def _mode_cell(svc: object, ctl_state: dict | None) -> str:
     """写权那栏（③）——⭐ 显示**从控制端点读回来的真值**，不是面板记的意图。
 
-    形态（**不许出现第五种**）：
+    ## ⚠⚠ 两件事**分开**（2026-10-09 审计偏差的修正，设计文档 §7.1.1 已补）
+
+    | 问的问题 | 取决于 | 面板 |
+    |---|---|---|
+    | **能不能切写权**？ | ⭐ **控制端点通不通** | 能不能给按钮 |
+    | **有没有"手动面"可开**？ | ⭐ **`has_gui`** | 按钮**叫什么、干什么** |
+
+    ⚠ 原先 `has_gui=false` ⇒ **一个按钮都不给** ⇒ 那个项目**再也切不了写权**
+    ⇒ **正是 §7.1.1 那条裁决要避免的盲区**（裁决写在端点那层，这层又长回来了）。
+    ⇒ 现在：`has_gui=false` **也给按钮**，但它是**另一个动作**（干的事真的不同）：
+
+    | `has_gui` | 归人的按钮 | 干什么 |
+    |---|---|---|
+    | `true` | 「**切到手动**」 | 切写权 **+ 开窗**（两步分开报告） |
+    | `false` | 「**收回写权（冻结）**」 | ⭐ **只**切写权 ⇒ `locked`（⚠ 不调开窗 —— 它没有面，调了只会响亮失败） |
+
+    ⚠ **为什么不给 `human`**：`HUMAN` 的语义是"人侧通道可写"，
+    而**没有手动面的软件里人没有可写通道** ⇒ 那是**骗人的标签**；
+    人的真实意图是"先把写权收回" ⇒ `locked`（谁都不能写）**才是老实的那个**。
+
+    形态（**不许出现别的**）：
+
     | 形态 | 何时 | 渲染 |
     |---|---|---|
-    | 能点 | ``has_gui=true``、控制端点可用、真值说**人工持有** | 「交还给 AI」 |
-    | 能点 | 同上，但真值说**AI 持有** | 「切到手动」 |
+    | 能点 | 控制端点可用 + 真值说**人工持有** | 「交还给 AI」 |
+    | 能点 | 控制端点可用 + 真值说**AI 持有** | `has_gui` ⇒ 「切到手动」；否则 ⇒ 「收回写权（冻结）」 |
     | 读不到 | 控制端点可用但**读操作失败**（如项目还没实现它） | 「读不到」+ 原因（**不显示旧值/不显示 0**） |
-    | 不可用 | ``has_gui=true`` 但**软件没起来** | 灰按钮 + 为什么（不是点了才报错） |
-    | — | ``has_gui=false`` | 破折号（没有手动面）**但仍显示真值** |
+    | 不可用 | **软件没起来** | 灰按钮 + 为什么（不是点了才报错） |
 
     ⚠ 端口号**绝不出现**在这里（契约：不许把 ``:control-port`` 写进给 AI 的文本/输出）。
     """
     sid = html.escape(str(getattr(svc, "id", "")))
     st = ctl_state or {}
     read = st.get("read") or None
+    has_gui = bool(getattr(svc, "has_gui", False))
+    #: ⭐ 归人那个动作**由控制器给**（`human` / `freeze`）—— 面板**不自己判** `has_gui`
+    #: （判两遍 = 两份真值；而"该给哪个动作"是控制器的事实）。
+    #: ⚠ 控制器返回的**就是动作名**（能直接发给 `POST /mode`），面板只负责**贴标签**。
+    act = str(st.get("action") or ("human" if has_gui else "freeze"))
+    label = {"human": "切到手动", "freeze": "收回写权（冻结）"}.get(act, act)
     # ⭐ 真值那一栏：**读得到就报真值；读不到就如实说读不到**（铁律 8）
     if read:
         mode = html.escape(str(read.get("mode", "?")))
@@ -179,22 +205,20 @@ def _mode_cell(svc: object, ctl_state: dict | None) -> str:
     else:
         truth = '<span class="pending">写权：—</span>'
 
-    if not getattr(svc, "has_gui", False):
-        return truth        # 没有手动面 ⇒ 只报真值，**不给按钮**
     if not st.get("ok"):
         why = html.escape(str(st.get("why") or "控制端点不可用"))
-        return (truth + f' <button class="ghost" disabled title="{why}">切到手动</button>'
+        return (truth + f' <button class="ghost" disabled title="{why}">{label}</button>'
                 f'<span class="pending"> {why}</span>')
     human_holds = bool((read or {}).get("human_holds"))
     if not read:
         # 读不到 ⇒ **不给可点的按钮**（按下去也是猜），但如实说明
-        return (truth + '<button class="ghost" disabled title="写权读不到，先查明原因">'
-                        '切到手动</button>')
+        return (truth + f'<button class="ghost" disabled title="写权读不到，先查明原因">'
+                        f'{label}</button>')
     if human_holds:
         # ⭐ **待命语义**：写被拒、读照常，面板与 dsh **不关闭**（这是语义，不是状态）
         return (truth + ' <button class="ghost" '
                 f"onclick=\"mode('{sid}','ai')\">交还给 AI</button>")
-    return truth + f' <button onclick="mode(\'{sid}\',\'human\')">切到手动</button>'
+    return truth + f' <button onclick="mode(\'{sid}\',\'{act}\')">{label}</button>'
 
 
 def _service_row(svc: object, row: dict | None, intent: bool, started: bool,

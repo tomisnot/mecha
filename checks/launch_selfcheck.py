@@ -1019,15 +1019,25 @@ def check_status_page_console() -> None:
             self.mode_intent: dict[str, str] = {}
 
         def write_authority_state(self, sid: str) -> dict:
+            #: ⚠ 替身必须与**真实现的形状**一致（R12）：真 `write_authority_state` 现在
+            #: ⭐ **解耦**了两件事 —— `ok` 只看**控制端点通不通**，
+            #: 而 `action`（`human`/`freeze`）表达"归人那个按钮该发哪个动作"。
+            #: ⚠ 旧替身把 `has_gui=False` 写成 `ok=False`（= 那个**盲区**的旧行为）——
+            #: 那正是 2026-10-09 审计抓到的偏差（设计 §7.1.1 已补），**不许抄回来**。
             if sid == "GP":
-                return {"ok": False, "why": "无手动面（has_gui=false）", "has_gui": False,
-                        "read": None, "read_error": ""}
+                #: GP 是 `has_gui=False`：⭐ **仍然能切写权**（控制端点通着），
+                #: 只是归人的动作是「收回写权（冻结）」⇒ `freeze`（不是 `manual`）。
+                return {"ok": True, "why": "", "has_gui": False, "action": "freeze",
+                        "read": {"ok": True, "mode": "ai", "ai_can_write": True,
+                                 "human_holds": False},
+                        "read_error": ""}
             ok = self.ctl_ok.get(sid, False)
             # ⭐ 面板现在显示**从控制端点读回来的真值**（不再是面板记的意图）
             read = ({"ok": True, "mode": "ai", "ai_can_write": True, "human_holds": False}
                     if ok else None)
             return {"ok": ok, "why": "" if ok else f"软件 {sid} 还没起来（没有控制端点）",
-                    "has_gui": True, "read": read, "read_error": "" if read else "读不到"}
+                    "has_gui": True, "action": "human", "read": read,
+                    "read_error": "" if read else "读不到"}
 
         def control_write_authority(self, sid: str, action: str) -> dict:
             return {"ok": True, "id": sid, "steps": []}
@@ -1074,13 +1084,53 @@ def check_status_page_console() -> None:
     # ⭐ 判据 4/5：写权栏的**三种形态**（能点 / 不可用 / —），不许出现第四种
     _check("⑪ ⭐ 控制端点可用的 ML ⇒ **真按钮**「切到手动」",
            "切到手动" in p1 and "mode('ML','human')" in p1, "没有渲染出可点的按钮")
+    #: ⭐⭐ 判据 6（2026-10-09 补，钉住那个**盲区不许长回来**）：
+    #: `has_gui=False` 的项目**也必须有可点的按钮** —— 只是**动作与标签都不同**。
+    #: ⚠ 旧行为是"一个按钮都不给" ⇒ 那个项目**再也切不了写权**
+    #: ⇒ 正是设计 §7.1.1 那条裁决要避免的盲区（裁决写在端点那层，这层又长回来了）。
+    _check("⑪ ⭐⭐ `has_gui=False` 的 GP **也有可点按钮**（不许退化成'一个按钮都不给'）",
+           "收回写权（冻结）" in p1 and "mode('GP','freeze')" in p1,
+           "GP 没有渲染出「收回写权（冻结）」按钮 ⇒ 盲区长回来了")
+    _check("⑪ ⭐ GP 的按钮**不是**「切到手动」（它没有手动面 ⇒ 不能贴那个标签）",
+           "mode('GP','human')" not in p1, "给没有手动面的项目渲染了「切到手动」")
     _check("⑪ ⭐ 软件没起来的 EL ⇒ 按钮**不可点**（`disabled`）+ 说明为什么",
            'disabled title="软件 EL 还没起来' in p1, f"p1 里没找到 EL 的禁用按钮")
     _check("⑪ ⭐ 不可点的那一档**不是点了才报错**（渲染期就带上了原因）",
            "还没起来" in p1)
-    _check("⑪ `has_gui=False` ⇒ 写权栏「—」（它没有手动这一档）", "—" in p1)
-    _check("⑪ ⭐ `has_gui=False` 的 GP **不出现可点的写权按钮**",
-           "mode('GP'" not in p1, "给没有手动面的项目也渲染了按钮")
+    _check("⑪ `has_gui=False` 的写权栏**仍然报真值**（读得到就报，读不到就说读不到）",
+           "写权 ai" in p1 or "读不到" in p1)
+    #: ⚠ **这条判据被有意反转了**（2026-10-09）：它原先钉的是
+    #: "`has_gui=False` 的 GP **不出现**可点的写权按钮" —— ⚠ 而那**正是那个盲区**：
+    #: 没有手动面的项目**再也切不了写权**，与设计 §7.1.1 的裁决相反（那条裁决明写
+    #: "人可能仍想**先把写权收回**"）。⇒ 现在钉**反面**：**必须有**按钮，
+    #: 且它发的动作是 `freeze`（不是 `human`）—— 已在上面那条判据里钉住。
+    #: ⚠ 留这条注释是刻意的：**判据也会随设计换代**，反转时要让人看见"为什么反了"。
+    _check("⑪ ⭐ `has_gui=False` 的 GP **有**写权按钮，且**只发 `freeze`**（旧行为已废）",
+           "mode('GP'" in p1 and "mode('GP','freeze')" in p1 and "mode('GP','human')" not in p1,
+           "GP 的按钮不对（应当只有 freeze）")
+    #: ⭐⭐ 判据 7（**不经过替身**）—— 上面那几条走的是**替身**，而替身已经把
+    #: `action` **写死成 `"freeze"`** ⇒ ⚠ **测不出控制器的退化**。
+    #: ⚠ 实测（红证）：把 `_authority_action` 退化成"一律 `human`"，
+    #: **上面那几条照样绿**（exit=0 PASS）⇒ ⭐ 这就是 R12「替身失真」的又一例：
+    #: **判据测的是替身里那个写死的值，不是真逻辑**。
+    #: ⇒ 必须有一条**直接问真控制器**的断言（它才是那个决策点）。
+    from mecha.launch import LaunchController
+    from mecha.site import ReadySpec as _RS3, Service as _S3
+
+    def _svc_with(hg: bool) -> "_S3":
+        return _S3(id="ZZ", brief="x", argv=("x",), cwd=Path.cwd(),
+                   ready=_RS3(port_file=".p"), data_root=None, has_gui=hg)
+
+    _check("⑪ ⭐⭐ 真控制器：**有**手动面 ⇒ 动作为 `human`；**无** ⇒ `freeze`（盲区不许回来）",
+           LaunchController._authority_action(_svc_with(True)) == "human"
+           and LaunchController._authority_action(_svc_with(False)) == "freeze",
+           f"有={LaunchController._authority_action(_svc_with(True))!r} "
+           f"无={LaunchController._authority_action(_svc_with(False))!r}")
+    _check("⑪ ⭐⭐ 动作词**只有一套**（`human`/`freeze`）—— ⚠ 不许再出现 `manual` 这种别名"
+           "（两套词 = 面板点下去报 `bad_write_action`，我第一版就这么错的）",
+           {LaunchController._authority_action(_svc_with(True)),
+            LaunchController._authority_action(_svc_with(False))} == {"human", "freeze"},
+           "动作词集合不对")
     _check("⑪ ⭐ 页面里**没有端口号**（契约：不许把 :control-port 写进给 AI 的输出）",
            "端口" not in p1 and ":65" not in p1, "页面里出现了端口字样/数字")
     # ⭐ 同页：不是两步向导
