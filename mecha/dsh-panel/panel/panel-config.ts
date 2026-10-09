@@ -62,9 +62,34 @@ export interface ResolvedPanelConfig {
   readonly tabs?: PanelTabOverrides
 }
 
-let current: ResolvedPanelConfig | undefined
+/**
+ * ⚠ **多项目同时挂**：注入态是**一个栈**，`panelConfig()` 读**栈顶**。
+ *
+ * 为什么必须是栈（2026-10 实测抓到的真缺陷）：原先这里是**模块级单例**
+ * `let current: ResolvedPanelConfig | undefined` ⇒ ⭐ **三个项目插件装进同一个 dsh 时，
+ * 后加载的会把前一个覆盖掉**：N 个 tab 都在，但它们**全都读同一个项目的**
+ * `routePath`/`portFile`/`title` ⇒ 现象是"三个面板都列同一个项目的账"，**且不报任何错**
+ * （最坏的一类）。
+ *
+ * ⇒ 改法：**参数跟着"那一次注册"走**。`mountHostPlugin` 每次注册都
+ * :func:`openPanelConfig` 推一份、并在自己的收尾里弹掉；注册期间发生的所有读取
+ * （路由注册、页面组件取 `routePath`/`tabs`）都在**它自己的那一层**上。
+ * ⚠ 项目侧**零改动**——它们本来就把参数交进来了。
+ */
+const stack: ResolvedPanelConfig[] = []
 
-/** 未注入时抛的错误（**响亮失败**，不是"用一个中性默认"). */
+/**
+ * ⚠ **单槽**（"最后注入的那一份"），给**非注册场景**用（单测、独立页面路由等）。
+ *
+ * 为什么栈之外还要有它：`configurePanel` 的既有契约是"**注入 → 收尾清回未注入**"
+ * （本目录单测就是靠"`dispose()` 之后 `panelConfig()` 必须抛"来守**响亮失败**那条纪律的）。
+ * 若让 `configurePanel` 也往栈上推，那个"清回未注入"就永远不成立（模块加载时的
+ * 中性注入还留在栈里）⇒ ⭐ 会**把那条纪律的判据弄坏**。
+ * ⇒ 分工：`stack` 管"**跟着一次注册走**"的多份并存；`fallback` 管"单份可清回"。
+ */
+let fallback: ResolvedPanelConfig | undefined
+
+/** 未注入时抛的错误（**响亮失败**，不是"用一个中性默认"）。 */
 const NOT_CONFIGURED =
   '面板参数未注入：请在使用面板前调用一次 configurePanel({ routePath, portFile, title })。'
   + '⚠ 资产不提供默认值——路由名 / 端口文件名 / 标题都是**项目专有**的值，'
@@ -81,33 +106,65 @@ function required(name: string, value: string | undefined): string {
   return v
 }
 
-/**
- * 注入面板参数。返回 **disposer**（把注入态清回"未注入"）。
- *
- * ⚠ 为什么要 disposer（而不是"测试专用清除函数"）：这是本仓**到处都在用**的可逆副作用形状
- * （`register(...) → disposer`、`subscribe(...) → disposer`），所以它**不是测试脚手架**——
- * 任何"临时注入、用完还原"的真实消费者（含本目录的单测）都用同一个口子。
- * ⚠ 重复调用会覆盖（最后一次为准）。
- */
-export function configurePanel(options: PanelOptions): Disposer {
-  current = {
+function resolve(options: PanelOptions): ResolvedPanelConfig {
+  return {
     routePath: required('routePath', options.routePath),
     portFile: required('portFile', options.portFile),
     title: required('title', options.title),
     ...(options.tabs !== undefined ? { tabs: options.tabs } : {}),
   }
-  return () => {
-    current = undefined
+}
+
+/**
+ * ⭐ **把这一份参数推上栈**，返回它自己 + 收尾器。**没有**"全局只许一份"的语义。
+ *
+ * 与 :func:`configurePanel` 的区别：它**把解析后的那份交回给调用方**（调用方拿它当
+ * "**我这次注册**的参数"用），而不是让调用方事后再去问"现在栈顶是谁"——
+ * 后者在多项目下会读到**别人**那份。⚠ 字段留空同样当场抛（响亮失败）。
+ */
+export function openPanelConfig(options: PanelOptions): {
+  config: ResolvedPanelConfig
+  dispose: Disposer
+} {
+  const config = resolve(options)
+  stack.push(config)
+  return {
+    config,
+    dispose: () => {
+      const i = stack.lastIndexOf(config)
+      if (i >= 0) stack.splice(i, 1)     // ⚠ 按身份弹，不 pop：防"弹掉别人的"
+    },
   }
 }
 
 /**
- * 读注入后的参数。**未注入即抛**（响亮失败）——这是本模块存在的理由那一半：
+ * 注入面板参数。返回 **disposer**（把这一份从栈上弹掉）。
+ *
+ * ⚠ 为什么要 disposer（而不是"测试专用清除函数"）：这是本仓**到处都在用**的可逆副作用形状
+ * （`register(...) → disposer`、`subscribe(...) → disposer`），所以它**不是测试脚手架**——
+ * 任何"临时注入、用完还原"的真实消费者（含本目录的单测）都用同一个口子。
+ * ⚠ **多份可以并存**：后推的在栈顶（`panelConfig()` 读到的是它）；各弹各的。
+ */
+export function configurePanel(options: PanelOptions): Disposer {
+  fallback = resolve(options)
+  return () => {
+    fallback = undefined            // ⚠ 清回**未注入**（单份语义；判据守的就是这条）
+  }
+}
+
+/**
+ * 读**当前这一层**的参数。**未注入即抛**（响亮失败）——这是本模块存在的理由那一半：
  * 宁可当场炸，也不许静默用一个中性默认把"忘了注入"演成"面板空的"。
+ *
+ * ⚠ 多项目下它读的是**栈顶**（= 正在注册的那一次）；**要拿"我这次"的那一份，
+ * 请用 :func:`openPanelConfig` 的返回值**，不要在事后问栈顶。
  */
 export function panelConfig(): ResolvedPanelConfig {
-  if (current === undefined) throw new Error(NOT_CONFIGURED)
-  return current
+  // ⚠ 顺序：**注册期的那一层优先**（`openPanelConfig` 推的），没有才回落到单槽。
+  //   多项目同时挂时，各 tab 的读取都发生在**自己那次注册**的作用域里 ⇒ 读到自己的。
+  const top = stack[stack.length - 1] ?? fallback
+  if (top === undefined) throw new Error(NOT_CONFIGURED)
+  return top
 }
 
 /**

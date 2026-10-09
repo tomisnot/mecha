@@ -13,7 +13,7 @@
  * ⚠ 本文件是**入口**（`exports` 里的 `./panel`）。逐文件子路径 `./panel/*` 也照常可用，
  * 项目沿用原来的写法即可。
  */
-export { configurePanel, panelConfig } from './panel-config.ts'
+export { configurePanel, openPanelConfig, panelConfig } from './panel-config.ts'
 export type { Disposer, PanelOptions, PanelTabOverrides, ResolvedPanelConfig } from './panel-config.ts'
 export { BASIC_ROUTES, DEFAULT_ROUTE_PATH } from './routes.ts'
 export {

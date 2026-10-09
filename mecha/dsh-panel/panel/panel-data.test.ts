@@ -29,6 +29,7 @@ import {
 import {
   DEFAULT_ROUTE_PATH,
   configurePanel,
+  openPanelConfig,
   panelConfig,
   type Disposer,
 } from './panel-config.ts'
@@ -232,4 +233,44 @@ test('⭐ 附加页：各自取数；**附加路由失败不牵连标准两页**
   assert.equal(badExtra.ok === false && badExtra.failure.tier, 'route')
   assert.ok(calls.some((c) => c.includes('/extra-ok?limit=1')), '附加路由按声明里的路径取')
   assert.deepEqual((await loadPanel(f, [])).extras, {}, '没声明附加页 ⇒ 空对象')
+})
+
+test('⭐ 多项目同时挂：两份注册参数**并存不覆盖**（各读各的）', () => {
+  // 这是 2026-10 实测抓到的真缺陷：原先注入态是**模块级单例** ⇒ 后注册的覆盖前一个
+  // ⇒ N 个 tab 都在，但**全都读同一个项目的** routePath/portFile/title，**且不报错**。
+  // ⇒ 本用例守的就是"参数**跟着一次注册走**"。
+  const a = openPanelConfig({ routePath: '/a', portFile: 'a.port', title: '甲' })
+  const b = openPanelConfig({ routePath: '/b', portFile: 'b.port', title: '乙' })
+  // ① 两份**同时存在**：栈顶是后来推的那份（乙）
+  assert.equal(panelConfig().routePath, '/b')
+  // ⭐ 但**甲那份仍在**（没被覆盖）——这正是"并存"的意思
+  assert.equal(a.config.routePath, '/a')
+  assert.equal(a.config.portFile, 'a.port')
+  assert.equal(b.config.title, '乙')
+  // ② 注销乙 **不影响** 甲
+  b.dispose()
+  assert.equal(panelConfig().routePath, '/a', '弹掉乙之后栈顶应回到甲')
+  assert.equal(a.config.title, '甲')
+  // ③ 全弹完 ⇒ **这次注册的那一层没有了**（响亮失败那条纪律没被破坏）
+  a.dispose()
+  assert.equal(a.config.title, '甲', '弹掉的只是"作用域"，那份值本身还在调用方手里')
+  // ⚠ 这里**不能**断言 `panelConfig()` 抛：本文件顶部有一个**模块级基线注入**
+  //   （`inject()`，故意的）⇒ 栈弹空之后会回落到它。要验"未注入即抛"，
+  //   得先把那份基线也收掉（下一条断言就是），别把两件事混成一条。
+  const base = inject()
+  base()                                     // 收掉基线 + 只留单槽的那一份
+  assert.throws(() => panelConfig(), /未注入/, '两层都空 ⇒ 必须响亮失败')
+  inject()                                   // 还原本文件的模块级基线
+})
+
+test('⭐ 每份注册只读**自己**那份（不是模块里最后一个）', () => {
+  const a = openPanelConfig({ routePath: '/a2', portFile: 'a2.port', title: '甲2',
+                              tabs: { rec: '甲的记录' } })
+  const b = openPanelConfig({ routePath: '/b2', portFile: 'b2.port', title: '乙2',
+                              tabs: { rec: '乙的记录' } })
+  // ⚠ **正文组件读的是"当前作用域"**：各自注册期间读到的必须是自己的
+  assert.equal(tabLabel('rec'), '乙的记录', '乙注册期间应读乙的 tabs')
+  b.dispose()
+  assert.equal(tabLabel('rec'), '甲的记录', '乙弹掉后应回到甲的 tabs')
+  a.dispose()
 })

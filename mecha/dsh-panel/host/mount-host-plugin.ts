@@ -41,7 +41,7 @@ import { MechaMcpBridge } from '../mcp-bridge.ts'
 import type { BridgeLogger, BridgeOptions, BridgeStatus, SessionFactory, ToolDef } from '../mcp-bridge.ts'
 import { syncTools, type ToolDisposers } from './register-tools.ts'
 import { makeMonitorUrlHandler } from './monitor-url.ts'
-import { type PanelOptions, configurePanel, panelConfig } from '../panel/panel-config.ts'
+import { type PanelOptions, openPanelConfig } from '../panel/panel-config.ts'
 
 /** cordis 的 `ctx`：只声明**我们真正用到的那一片**（结构化类型接受真 `Context`）。 */
 export interface HostContext {
@@ -174,10 +174,14 @@ export async function mountHostPlugin(
   }
   const tag = `[${logLabel}]`
 
-  // 面板参数注入（可逆）：字段留空 ⇒ `configurePanel` 自己抛（响亮失败）。
+  // 面板参数注入（可逆，**跟着这一次注册走**）：字段留空 ⇒ 当场抛（响亮失败）。
+  // ⚠ 用 `openPanelConfig` 而不是"注入后问全局"：⭐ 多项目同时挂时，全局/栈顶会读到
+  //   **别人**那份（实测抓到的真缺陷：N 个 tab 全都读同一个项目的 routePath/portFile）。
+  //   ⇒ 这里拿**本次注册自己那一份** `panel`，路由注册与页面都只用它。
   // 骨架**不解释**这些值，只透传 ⇒ 面板参数的字段名只有一处真值（panel-config.ts）。
-  const disposePanel = configurePanel(opts.panelConfig)
-  const panel = panelConfig()
+  const opened = openPanelConfig(opts.panelConfig)
+  const disposePanel = opened.dispose
+  const panel = opened.config
 
   const mount = async (): Promise<() => Promise<void>> => {
     let disposers: ToolDisposers = new Map()
