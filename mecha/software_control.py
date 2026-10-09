@@ -46,6 +46,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -178,7 +179,50 @@ class SoftwareControl:
                 hint="看软件日志；失败原因分类见上层 kind",
             ) from exc
         result = dict(out) if isinstance(out, dict) else {"value": out}
-        return _check_domain_result(self.svc_id, op, result)
+        _check_domain_result(self.svc_id, op, result)     #: ① 信封的 ``is_error``
+        payload = _unwrap_domain(result)
+        #: ② ⭐ **回执里 ``ok=false`` 也是域失败**（实测：软件把异常翻成
+        #: ``{"ok": false, "error": …}`` **而没设 ``isError``** ⇒ 只看信封会漏掉它，
+        #: 调用方拿到一个"看着像成功"的字典 —— 那正是本工程最忌讳的静默坏事）。
+        if isinstance(payload, dict) and payload.get("ok") is False:
+            detail = payload.get("error") or payload.get("message") or payload
+            raise MechaError(
+                f"软件 {self.svc_id} 拒绝了 {op}：{str(detail)[:200]}",
+                kind="control_rejected",
+                hint="这是**软件侧**的判断（不是连不上）；按它给的 hint 处理",
+            )
+        return payload
+
+
+def _unwrap_domain(result: dict) -> dict:
+    """把回执**信封**解成**域结果**（⚠ 少了这一步，调用方读什么都恒 ``None``）。
+
+    ## 为什么必须有（**实测抓到的真 bug**）
+
+    `Backend.call()` 回的是**信封**：``{"is_error": bool, "text": "<JSON>", "structured": …}``
+    —— 域结果（``{"ok": true, "mode": "ai", …}``）**藏在** ``structured`` 或 ``text`` 的 JSON 里。
+
+    ⚠ 不解包会怎样（实测）：ML 真起 `--mcp` 后，``read_write_authority()`` 回的字典里
+    **没有 ``mode``** ⇒ 调用方读 ``out["mode"]`` **恒 ``None``**
+    ⇒ ⭐ **面板的"读真值"对真软件形同不存在**（它以为读到了，其实全是空）。
+
+    ⚠ 为什么零件判据一直没抓到：那些判据**短路网络**、用**内存替身**，
+    而替身的形状与真信封**不同**（R12「替身失真」的同款）。
+
+    ⚠ 解包顺序：``structured``（结构化，最可信）⇒ ``text`` 的 JSON（回落）⇒ 原样回。
+    """
+    structured = result.get("structured")
+    if isinstance(structured, dict):
+        return structured
+    txt = result.get("text")
+    if isinstance(txt, str) and txt.lstrip().startswith("{"):
+        try:
+            parsed = json.loads(txt)
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, dict):
+            return parsed
+    return result
 
     def close(self) -> None:
         """短连实现 ⇒ 无常驻资源（留着是为了接口稳定）。"""
