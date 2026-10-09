@@ -64,6 +64,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Protocol
 from urllib.parse import parse_qs, urlsplit
 
+from ..site import DSH_CHILD_ID
+
 __all__ = ["PageOptions", "StatusPage", "render_page", "MODE_PENDING_TEXT"]
 
 #: 写权那栏在本轮的文案（⚠ 刻意叫"待接"：它现在**不能点**，依赖控制通道）
@@ -265,7 +267,14 @@ def _service_row(svc: object, row: dict | None, intent: bool, started: bool,
 
 
 def _dsh_row(row: dict | None) -> str:
-    sid = "dsh"
+    """dsh 那一行（§7：它是控制台的一项，**不是"起了才有"**）。
+
+    ⭐ 它的滑块与软件那个**同形**：**关掉再打开 = 重启 harness**
+    （改了 dsh 侧插件/配置 ⇒ 关开即生效；⚠ 这条由 §7 的定案钉住，
+    实现走 `LaunchController.set_dsh_enabled` → `supervisor.start/stop`，
+    **不是**"勾选意图"那一支：dsh 是载体、不在 `services()` 里）。
+    """
+    sid = DSH_CHILD_ID
     running = bool((row or {}).get("pid"))
     return (
         f'<div class="row"><span></span><span class="name">dsh</span>'
@@ -345,12 +354,12 @@ def render_page(controller: Controller) -> str:
         dsh_declared = controller.dsh_spec() is not None   # type: ignore[attr-defined]
     except Exception:                                      # noqa: BLE001 - 页面如实降级
         dsh_declared = False
-    if rows.get("dsh") is not None or dsh_declared:
-        items.append(_dsh_row(rows.get("dsh")))
+    if rows.get(DSH_CHILD_ID) is not None or dsh_declared:
+        items.append(_dsh_row(rows.get(DSH_CHILD_ID)))
         #: ⚠ 左栏也要有它 —— 否则两处清单不一致
         #: （右栏 4 行、左栏 3 行），而左栏本该是运行时一览。
         side.append('<div class="sideitem"'
-                    + (' on' if (rows.get("dsh") or {}).get("pid") else '')
+                    + (' on' if (rows.get(DSH_CHILD_ID) or {}).get("pid") else '')
                     + '>dsh</div>')
 
     return (

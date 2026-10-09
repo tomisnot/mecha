@@ -27,7 +27,8 @@
 2. ⭐ **真页面**：`GET /` 返回 200，且**列出两个站点的两个服务**（`sites[0]` 那种实现会红）；
 3. ⭐ **一个 dsh**：`POST /start` 之后，child 表里 dsh 只有**一个**，且**排在服务之后**；
 4. ⭐ **热更新**：`POST /service off → on` ⇒ 该服务**新 pid**、别家不受影响；
-5. ⭐ **切写权**：没有控制端点的软件 ⇒ `POST /mode` **如实报失败**（不许静默"成功"）。
+5. ⭐ **切写权**：没有控制端点的软件 ⇒ `POST /mode` **如实报失败**（不许静默"成功"）；
+6. ⭐ **dsh 的存活滑块**：关 → 开 = **重启 harness**（新 pid、仍只有一行 dsh）。
 
 ## Known Limitations and Deferred Work
 
@@ -36,9 +37,8 @@
 - ⚠ **不测 dsh 真起来**：声明里 dsh 的 command 指向 mock（真 dsh 会开浏览器、几十秒）。
 - ⚠ **没测**"改一行真代码 ⇒ 新版本生效"那个字面意义的热更新：这里测的是
   "**关→开 = 新进程 pid 变了**"（那是热更新成立的结构前提）。
-- ⚠ **dsh 那一行**：本判据只在 `POST /start` **之后**断言它出现在页面上。
-  ⚠ **启动前**页面还没有 dsh 行（`render_page` 只在 child 表里有 dsh 时才渲染它），
-  而 §7 的定稿形态是"控制台**始终**列出 dsh 一行" ⇒ 那是**面板侧的待办**（记在这里，别忘）。
+- ⚠ **dsh 那一行**：本判据在**启动前**（③）与**启动后**（⑦）都断言它出现在页面上
+  （§7 的定稿形态：控制台**始终**列出 dsh 一行），并在 ⑧ 真去动它的滑块。
 - ⚠ **Windows 上读子进程 stdout 走文件**（不走管道）：沙箱下管道 stdio 会 EPERM，
   而且框架自己的纪律就是"日志落文件"。
 """
@@ -238,6 +238,29 @@ def check_end_to_end_two_sites() -> None:
             _check("⑦ 页面上 dsh 一行**始终在**（启动后也在；它是控制台的一项）",
                    re.search(r'class="name">dsh<', html2) is not None,
                    "启动后页面里没有 dsh 行")
+
+            # ---- ⑧ ⭐ dsh 那一行的存活滑块：**关→开 = 重启 harness**（§7 定案）
+            #: ⚠ 这条是**补上来的**：滑块一直在页面上（`_dsh_row` 渲染它），
+            #: 而它原先走的是"在服务的声明表里找 dsh"那条路 ⇒ 点下去**抛
+            #: `unknown_service：没有这个软件 'dsh'`** —— 页面上只多一句红字。
+            #: ⚠ 判据原先只断言"dsh 这一行在页面上"（③/⑦）⇒ **从没点过那个滑块**
+            #: （"看着能用、按下去报错"的又一例）。
+            #: 🔬 红证：把 `LaunchController.set_service_enabled` 里那个
+            #: `svc_id == DSH_CHILD_ID` 的分支删掉 ⇒ 下面第 2 条必红
+            #: （`pid_of('dsh')` 一直是同一个，停不掉）。
+            d1 = pid_of("dsh")
+            _check("⑧ 前置：dsh 在跑（pid=%r）" % d1, d1 is not None, f"pid={d1}")
+            _http(port, "POST", "/service", "svc=dsh&on=0")
+            _check("⑧ ⭐ 关掉 dsh 滑块 ⇒ **它真停了**（pid 没了；不是只改了个意图）",
+                   pid_of("dsh") is None, f"pid={pid_of('dsh')}")
+            _http(port, "POST", "/service", "svc=dsh&on=1")
+            d2 = pid_of("dsh")
+            _check("⑧ ⭐ 再打开 ⇒ **新 pid**（关→开 = 重启 harness，与软件滑块同形）",
+                   d2 is not None and d2 != d1, f"旧={d1} 新={d2}")
+            _check("⑧ ⭐ 面板上那一行仍**只有一行 dsh**（重启不是又起了一个）",
+                   [str(r.get('id')) for r in json.loads(_http(port, "GET", "/state.json")[1])
+                    .get("children", [])].count("dsh") == 1,
+                   "children 里 dsh 不止一个")
     finally:
         if proc is not None and proc.poll() is None:
             #: ⚠ 它自己会连带收尾（Job Object）⇒ 先温和终止，再兜底杀树。

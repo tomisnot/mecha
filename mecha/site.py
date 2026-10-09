@@ -385,6 +385,14 @@ class Service:
             self.monitor.validate()
 
 
+#: ⭐ **那一个共用 dsh 的 child id**（全生态一个；框架的约定，不是项目的字段）。
+#: ⚠ 它**必须只有一个家**：这个 id 同时是
+#: ① 面板上「dsh 存活滑块」要操作的对象（§7）、② supervisor 子进程表里的键（`dsh` **永远最后**）、
+#: ③ `prepare_hooks` 里"只给 dsh 塞 overlay"的判据（`spec.id == DSH_CHILD_ID`）。
+#: ⇒ 三处各写一遍字面量 = 迟早对不上（改一处漏一处，症状是"滑块点了没反应"或"dsh 没拿到聚合端点"）。
+DSH_CHILD_ID = "dsh"
+
+
 @dataclass(frozen=True)
 class DSHSpec:
     """dsh（AI 的宿主）怎么起。字段全是声明，框架不猜。"""

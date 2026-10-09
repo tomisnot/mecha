@@ -44,7 +44,7 @@ from .authority import Mode
 from .dsh_panel import with_panel_contributions
 from .errors import MechaError
 from .software_control import SoftwareControl
-from .site import AutoShutdown, DSHSpec, Service, Site, Strategy
+from .site import (DSH_CHILD_ID, AutoShutdown, DSHSpec, Service, Site, Strategy)
 from .supervise import ChildSpec, StaleItem, Supervisor, pid_alive, which_or_raise
 
 #: 站点声明的**约定文件名**（暴露模块级 ``SITE: Site``）。
@@ -279,7 +279,7 @@ def merge_dsh(sites: Sequence[Site]) -> "tuple[ChildSpec, DSHSpec]":
 def _dsh_child(dsh: DSHSpec) -> ChildSpec:
     """dsh 声明 → child（⚠ 名字解析走 `which_or_raise`：起不来要**响亮**）。"""
     return ChildSpec(
-        id="dsh", argv=which_or_raise(dsh.argv()), cwd=dsh.cwd, env=dict(dsh.env),
+        id=DSH_CHILD_ID, argv=which_or_raise(dsh.argv()), cwd=dsh.cwd, env=dict(dsh.env),
         ready=dsh.ready, stop_timeout=dsh.stop_timeout, data_root=None,
     )
 
@@ -531,7 +531,13 @@ class LaunchController:
           （"调它响亮失败"由 2a 的墓碑语义负责 —— 那是**第二条**防线，不是替代。）
 
         未启动整站时 ⇒ **只记意图**（不 spawn）：面板在启动前也要能表达"我打算开哪几个"。
+
+        ⚠ **dsh（`DSH_CHILD_ID`）走另一支**（:meth:`set_dsh_enabled`）：它不在 `services()` 里
+        —— 载体不是服务 ⇒ 不能落到下面"没有这个软件"那条上去（那正是它原先点了报错的原因）。
         """
+        #: ⭐ dsh 那一行的滑块：**关→开 = 重启 harness**（§7 定案），恒为 live、不走意图。
+        if svc_id == DSH_CHILD_ID:
+            return self.set_dsh_enabled(enabled)
         svc = next((s for s in self.services() if s.id == svc_id), None)
         if svc is None:
             raise MechaError(
@@ -565,6 +571,66 @@ class LaunchController:
             self._last_error = f"{exc.kind}：{exc.message}"
             self._save_status()
             return {"ok": False, "id": svc_id, "error": self._last_error}
+
+    # ---- dsh 的存活（①：载体自己的起停；§7 定案与软件滑块**同形**）----
+    def dsh_child(self) -> ChildSpec | None:
+        """⭐ 那**一个**共用 dsh 的 child（**每次现算**）。
+
+        ⚠ 为什么返回 ``None`` 而不是抛：合并失败（各站点 dsh 身份/环境变量冲突）时
+        ``main()`` 会**响亮失败**，面板不该在这里再炸一次（与 :meth:`dsh_spec` 同一口径）。
+
+        ⚠ 为什么**每次现算**而不是缓存：聚合端点 overlay 由 ``prepare_hooks`` 在
+        **spawn 那一刻**塞进 ``--patch``（``with_overlay_patch``）——
+        若把"上一次 spawn 用过的那份 argv"缓存下来再喂给 ``start()``，
+        就会**叠出第二个 ``--patch``**（overlay 写两遍）。
+        """
+        try:
+            child, _ = merge_dsh(self.sites)
+        except MechaError:
+            return None
+        return child
+
+    def set_dsh_enabled(self, enabled: bool) -> dict:
+        """⭐ 面板上 **dsh 那一行**的存活滑块（§7 定案：**关掉再打开 = 重启 harness**）。
+
+        ## 为什么它就是"其他软件那个滑块"的同形
+
+        | | 软件滑块 | dsh 滑块 |
+        |---|---|---|
+        | 谁执行 | `supervisor.start/stop`（**唯一进程控制面**） | ⭐ **同一条路** |
+        | 关→开 | 新进程（= 热更新的结构前提） | ⭐ **新进程**（改了 dsh 侧插件/配置 ⇒ 关开即生效） |
+        | 失败 | 响亮（`MechaError` ⇒ 面板如实报） | ⭐ 同 |
+
+        ## 三点与软件滑块**不同**（都不是随手，各对着一条纪律）
+
+        1. ⚠ **不走"勾选意图"**：意图是"**打算开哪几个服务**"的集合，而 dsh 是**载体**、
+           不在 ``services()`` 里 ⇒ 它**恒为 live**：点开就真起、点关就真停，
+           **即使整站还没启动**（§1 的三个生命周期：①软件存活与②客户端连接是两件事；
+           需求 11 也要求"滑块随时可动"）。
+        2. ⚠ **每次现算 child**（:meth:`dsh_child`）：见那里"别叠 overlay"的说明。
+        3. ⚠ **起不来要响亮**：`merge_dsh` 会校验站点间 dsh 身份一致、`which_or_raise`
+           会解析命令 ⇒ 失败**抛**，绝不回一句"已启动"（"静默假成功"是本工程最忌的形态）。
+        """
+        child = self.dsh_child()
+        if child is None:
+            self._last_error = ("dsh 声明合并失败（各站点的 dsh 身份/环境变量不一致）"
+                                "⇒ 面板没法起它")
+            self._save_status()
+            return {"ok": False, "id": DSH_CHILD_ID, "error": self._last_error}
+        try:
+            if enabled:
+                #: 已停/已退出 ⇒ supervisor **重启**它（新实例）；还在跑 ⇒ 响亮拒绝
+                #: （面板的 checkbox 只在"当前是关"时才发 on=1，所以正常路径不会撞）。
+                self.super.start(child)
+            elif DSH_CHILD_ID in self.super.state_ids():
+                self.super.stop(DSH_CHILD_ID)      # 停进程、**保留 spec**（关→开才可能）
+            self._save_status()
+            return {"ok": True, "id": DSH_CHILD_ID, "enabled": bool(enabled),
+                    "applied": "live"}
+        except MechaError as exc:
+            self._last_error = f"{exc.kind}：{exc.message}"
+            self._save_status()
+            return {"ok": False, "id": DSH_CHILD_ID, "error": self._last_error}
 
     # ---- 写权（③）：走"控制端点"那条腿（§7.1.1）----
     def write_authority_state(self, svc_id: str) -> dict:

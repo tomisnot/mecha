@@ -58,7 +58,7 @@ from typing import Protocol
 from .aggregate import META_CLOSE, META_OPEN, Aggregator
 from .errors import MechaError
 from .providers.mcp_client import Backend
-from .site import Service, Site
+from .site import DSH_CHILD_ID, Service, Site
 from .software_control import SoftwareControl
 from .supervise import ChildSpec, Supervisor
 
@@ -308,7 +308,7 @@ def make_prepare_hook(runtime: AggregateRuntime, site: Site,
     这正是步骤 1 留这个出口的原因（修正 1）。
     """
     def hook(spec: ChildSpec, child: object) -> ChildSpec | None:
-        if spec.id != "dsh":
+        if spec.id != DSH_CHILD_ID:
             return None                                   # 只管 dsh
         port = mcp_port_getter()
         if port is None:
