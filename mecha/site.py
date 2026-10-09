@@ -19,6 +19,10 @@
   ⚠ 人那条腿**不是 child**，它跑在**软件进程内**（A1/A2）⇒ 这里只声明"有没有"，
   不声明"怎么起它"。
 - ``Service.initial_mode``：开始时用什么写权，**由启动者（人）声明**。
+- ``Service.monitor``：⭐ 这个服务的**监控面声明**（``MonitorSpec``，三层架构 §7.3.6）。
+  ⚠ 它是"声明 ↔ 面板"之间**唯一那份参数**的家：路由 / 端口文件名 / 标题 / 附加页
+  都只在这里写一次，框架只**生成与转交**（:mod:`mecha.dsh_panel`），
+  **不解释、不写死任何项目值**。缺省 ``None`` ⇒ 这个服务没有监控面板。
 - ``DSHSpec.command`` 是 ``tuple`` 而不是单个字符串：dsh 有时要经 ``cmd /c`` 起
   （EL/ML 的实测形态），有时是裸可执行——由声明决定，框架不猜。
 - ``Strategy`` 的取值与 OTP **同名**（``one_for_one`` / ``rest_for_one`` / ``one_for_all``）；
@@ -37,7 +41,7 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
 from collections.abc import Mapping
@@ -128,6 +132,131 @@ def software_root_from_env(default: "Path | None" = None) -> "Path | None":
 
 
 @dataclass(frozen=True)
+class ExtraColumn:
+    """附加页表格的**一列**（纯数据：**取哪个字段**，不取"怎么格式化"）。
+
+    ⚠ **为什么只有 `label` + `field`**（三层架构 §7.3.8 第 4 条）：声明是**数据**
+    （JSON 要装得下、要能给浏览器），而"取值 + 格式化"是**代码**（ML 的 `metricCell`
+    要按来源各取一次 `score` / `metrics[primary_metric]`）⇒ 那种函数**进不了声明**，
+    它走"**自定义 UI**"那条路（资产 `contributeExtraPageRender`）。
+    """
+
+    #: 表头文案（人看的；项目词）。
+    label: str
+    #: 从附加路由回的 `rows[i]` 里**取哪个键**。
+    field: str
+
+
+@dataclass(frozen=True)
+class ExtraPage:
+    """该项目**自己的**一个附加页（面板右栏里额外的一页）。"""
+
+    #: 页签标识（**只在本服务内唯一**）。
+    id: str
+    #: 页签文案。
+    label: str
+    #: 附加路由的**请求路径**（含查询串，如 `/runs?limit=50`）。
+    path: str
+    #: 页内标题。缺省 ⇒ 用 :attr:`label`。
+    title: str = ""
+    #: 空表文案。⚠ **必须与"读不到"分开**（铁律 8）；缺省由资产给**中性**文案。
+    empty_text: str = ""
+    #: 读不到时的文案。⚠ **面板必画它**，不许渲染成空表。
+    unreadable_text: str = ""
+    #: 常驻脚注（可选）。
+    note: str = ""
+    #: 表格列（**至少一列**：没有列的表看着像坏了）。
+    columns: tuple[ExtraColumn, ...] = ()
+
+    def validate(self) -> None:
+        for name, value in (("id", self.id), ("label", self.label), ("path", self.path)):
+            if not str(value).strip():
+                raise MechaError(
+                    f"ExtraPage({self.id!r}).{name} 不能为空",
+                    kind="bad_extra_page",
+                    hint="附加页的 id/label/path 都是**人看/路由用**的必填值（声明只放数据）",
+                )
+        if not self.path.startswith("/"):
+            raise MechaError(
+                f"ExtraPage({self.id!r}).path 要以 '/' 开头：{self.path!r}",
+                kind="bad_extra_page",
+                hint="它是**请求路径**（附加路由），不是 URL —— 写完整 URL 会让端口/来源进声明",
+            )
+        if not self.columns:
+            raise MechaError(
+                f"ExtraPage({self.id!r}) 没有列",
+                kind="bad_extra_page",
+                hint="没有列的表在面板上是一张空表 —— 看着像坏了。至少给一列（label + field）",
+            )
+        for col in self.columns:
+            if not col.label.strip() or not col.field.strip():
+                raise MechaError(
+                    f"ExtraPage({self.id!r}) 的列 label/field 都不能为空：{col!r}",
+                    kind="bad_extra_page",
+                    hint="field 是**从 rows[i] 里取哪个键**（取值函数是代码，走自定义 UI）",
+                )
+
+
+@dataclass(frozen=True)
+class MonitorSpec:
+    """一个服务的**监控面**声明（它自己有监控端点时才写）。
+
+    ⭐ **唯一原则**（三层架构 §7.3.6）：端点的地址 / 标题 / 附加页
+    **只能有【一处】真值 —— 就在这里**。框架只**生成与转交**，不解释、不写死任何项目值。
+
+    ⚠ 框架把它翻成一份参数（:mod:`mecha.dsh_panel`）交给**框架自己的 dsh 插件**
+    （那插件由**框架的 patch** 带上）⇒ **不含端口号**（端口由路由**现取**）。
+    """
+
+    #: host 半注册的只读路由；client 半 fetch **同一个串**。**必填**。
+    route_path: str
+    #: 权威写的**监控端口文件名**（相对 `cwd`）或绝对路径。**必填**。
+    port_file: str
+    #: 面板标题（纯展示；模型不读它）。缺省 ⇒ 用 `Service.id`（由 ``Service`` 补齐）。
+    title: str = ""
+    #: 该项目**自己的**附加页。缺省 ⇒ 无。
+    extra_pages: tuple[ExtraPage, ...] = ()
+
+    def validate(self) -> None:
+        if not self.route_path.strip():
+            raise MechaError(
+                "MonitorSpec.route_path 不能为空",
+                kind="bad_monitor_spec",
+                hint="它是监控地址的**只读路由**（浏览器 fetch 的那个串）",
+            )
+        if not self.route_path.startswith("/"):
+            raise MechaError(
+                f"MonitorSpec.route_path 要以 '/' 开头：{self.route_path!r}",
+                kind="bad_monitor_spec",
+                hint="路由是**路径**，不是 URL —— 写完整 URL 会把主机/端口带进声明",
+            )
+        if not self.port_file.strip():
+            raise MechaError(
+                "MonitorSpec.port_file 不能为空",
+                kind="bad_monitor_spec",
+                hint="它是**权威实际写**的那个端口文件名（如 .ml-monitor-port）",
+            )
+        #: ⚠ **端口号不许进这份参数**（三层架构 §7.3.3：它会给浏览器、也会进日志）——
+        #: `port_file` 是**文件名**，写成一个 URL 就是把这个坑挖回来。
+        if "://" in self.port_file:
+            raise MechaError(
+                f"MonitorSpec.port_file 是**文件名**，不是地址：{self.port_file!r}",
+                kind="bad_monitor_spec",
+                hint="端口**现取**（读那个文件），不写进声明 ⇒ 也不进给 AI/浏览器的任何文本",
+            )
+        seen: set[str] = set()
+        for page in self.extra_pages:
+            page.validate()
+            if page.id in seen:
+                raise MechaError(
+                    f"附加页 id 重复：{page.id!r}（服务 {self.title or self.route_path}）",
+                    kind="duplicate_extra_page_id",
+                    hint="附加页 id 是页签的键（在本服务内唯一）",
+                )
+            seen.add(page.id)
+
+
+@dataclass(frozen=True)
 class Service:
     """一个软件（"各自一条脊椎"）。
 
@@ -159,6 +288,10 @@ class Service:
     #: ⇒ 框架里写死任何一句都等于把**领域知识**塞进框架（且必然对某一家是错的）。
     #: ⚠ 它会进 ``read_write_authority`` 的返回给 AI 看 ⇒ 别塞端口/路径/凭据。
     how_to_open: str = ""
+    #: ⭐ **这个服务的监控面**（三层架构 §7.3.6）：它有监控端点时才写。
+    #: ⚠ 这是**声明与面板之间唯一那份参数**的住处 —— 框架只生成与转交，
+    #: **不解释、不写死任何项目值**（路由/标题/附加页都只有这一个家）。
+    monitor: MonitorSpec | None = None
     default_on: bool = True
     env: Mapping[str, str] = field(default_factory=dict)
 
@@ -189,6 +322,12 @@ class Service:
                     hint=f"写 `Path(...)` 或一个字符串；⚠ 声明里只放**数据**，"
                          f"放不了会被框架解释的东西就别放",
                 )
+        #: ⭐ `MonitorSpec.title` **缺省 ⇒ 用 `Service.id`**（§7.3.6）。
+        #: ⚠ 这不是"给资产一个中性默认"（资产**未注入即抛**是刻意的）：这个缺省是
+        #:   **框架从声明推出来的**（`svc_id`）⇒ 仍然只有一处真值，而且不必逼项目编一句标题。
+        if self.monitor is not None and not self.monitor.title.strip():
+            object.__setattr__(self, "monitor",
+                               replace(self.monitor, title=self.id))  # type: ignore[arg-type]
         return None
 
     def child(self) -> ChildSpec:
@@ -238,6 +377,11 @@ class Service:
         #   `manual_root_mismatch`）。三层架构删掉了 `manual`（人那条腿不是 child）
         #   ⇒ 那两条校验随之删除：它们校验的对象在新架构里**不存在**。
         #   （R13：删机制时把承诺改写成行为级判据；这里的承诺由 `has_gui` 承担。）
+        #: ⭐ 监控声明（有就校验）：路由/端口文件名/附加页都必须在**声明期**就响亮失败
+        #: —— 它们会变成浏览器 fetch 的地址与面板上的页签，写歪的症状是"面板空的"
+        #: （最坏的一类假绿），所以不许飘到运行期。
+        if self.monitor is not None:
+            self.monitor.validate()
 
 
 @dataclass(frozen=True)

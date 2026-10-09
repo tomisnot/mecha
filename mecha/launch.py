@@ -41,6 +41,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .authority import Mode
+from .dsh_panel import with_panel_contributions
 from .errors import MechaError
 from .software_control import SoftwareControl
 from .site import AutoShutdown, DSHSpec, Service, Site, Strategy
@@ -219,6 +220,7 @@ def merge_dsh(sites: Sequence[Site]) -> "tuple[ChildSpec, DSHSpec]":
     | 身份（`command`/`port_preference`/`port_tries`/`stop_timeout`/`ready`） | 都给了就**必须一致**；不一致 ⇒ **响亮失败** |
     | `cwd` | 取**第一个**声明者（站点顺序稳定） |
     | `patches`/`plugin_artifacts`/`env` | ⭐ **取并集**（顺序 = 站点出现顺序）；⚠ `env` 同名不同值 ⇒ **响亮失败** |
+    | ⭐ **框架那一份** | **框架的 patch + 框架的插件 + 两个面板变量**（`dsh_panel.with_panel_contributions`）——**恒加上**，两个分支都加 |
     | 一个都没声明 | 框架默认（`command=("dsh",)`、`cwd=`第一个站点的 cwd、3081/10/8.0） |
     """
     decls = [(s, s.dsh) for s in sites if getattr(s, "dsh", None) is not None]
@@ -227,6 +229,9 @@ def merge_dsh(sites: Sequence[Site]) -> "tuple[ChildSpec, DSHSpec]":
         first_svc = flat_services(sites)
         cwd = first_svc[0].cwd if first_svc else Path.cwd()
         dsh = DSHSpec(command=("dsh",), cwd=cwd)
+        #: ⚠ 这一支也**必须**带上框架自己的面板插件：项目连 dsh 都没声明时，
+        #: 更不该轮到它去挂框架插件（§7.3.3）。
+        dsh = with_panel_contributions(dsh, sites)
         return _dsh_child(dsh), dsh
 
     head_site, head = decls[0]
@@ -261,6 +266,10 @@ def merge_dsh(sites: Sequence[Site]) -> "tuple[ChildSpec, DSHSpec]":
         patches=tuple(patches), plugin_artifacts=tuple(artifacts),
         port_preference=head.port_preference, port_tries=head.port_tries,
         env=env, ready=head.ready, stop_timeout=head.stop_timeout)
+    #: ⭐ **框架自己的 dsh 贡献**（监控面板插件 + 那两个变量）：由**框架的 patch** 带上
+    #: （§7.3.3 定案）⇒ 新项目**不挂**框架插件、也不手抄那份参数。
+    #: ⚠ 放最后：框架的变量与站点声明撞名要**响亮失败**（见 :func:`with_panel_contributions`）。
+    merged = with_panel_contributions(merged, sites)
     return _dsh_child(merged), merged
 
 

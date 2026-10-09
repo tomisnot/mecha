@@ -1,0 +1,87 @@
+{
+  "routePath": "/mecha/panels",
+  "services": [
+    {
+      "id": "ML",
+      "kind": "mecha:ML",
+      "tabId": "mecha-panel:ML",
+      "routePath": "/ml-toolbox/monitor-url",
+      "portFile": ".ml-monitor-port",
+      "title": "ML 监控",
+      "extraPages": [
+        {
+          "id": "summary",
+          "label": "运行记录",
+          "path": "/summary",
+          "title": "运行记录（操作史 ml.run 事件）",
+          "emptyText": "本次会话还没有运行记录——AI/人每跑一次方法都会出现在这里。",
+          "unreadableText": "运行记录读取失败：这一格不是「没有运行」，是没读到",
+          "note": "来自操作史 ml.run 事件：AI 跑过就一定在这里（与磁盘存档是两件事）。",
+          "columns": [
+            {
+              "label": "运行编号",
+              "field": "run_id"
+            },
+            {
+              "label": "方法",
+              "field": "method"
+            },
+            {
+              "label": "主指标",
+              "field": "primary_metric"
+            },
+            {
+              "label": "操作者",
+              "field": "actor"
+            }
+          ]
+        },
+        {
+          "id": "runs",
+          "label": "磁盘存档",
+          "path": "/runs?limit=50",
+          "title": "磁盘存档 runs/（跨重启可见）",
+          "emptyText": "磁盘上没有落盘的运行。**注意：存档为空不等于没跑过**——运行只在 persist=True（或 GUI 批量成功）时写入 runs/。",
+          "unreadableText": "磁盘存档读取失败：这一格**不是空的**，是没读到（权威的存档读取出错了）",
+          "note": "跨重启可见；与「运行记录」是两件事（那份来自操作史，这份来自磁盘）。",
+          "columns": [
+            {
+              "label": "运行编号",
+              "field": "run_id"
+            },
+            {
+              "label": "方法",
+              "field": "method"
+            },
+            {
+              "label": "主指标",
+              "field": "primary_metric"
+            },
+            {
+              "label": "时间",
+              "field": "saved_at"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "EL",
+      "kind": "mecha:EL",
+      "tabId": "mecha-panel:EL",
+      "routePath": "/re0-mecha/monitor-url",
+      "portFile": ".monitor-port",
+      "title": "机甲监控",
+      "extraPages": []
+    },
+    {
+      "id": "GP",
+      "kind": "mecha:GP",
+      "tabId": "mecha-panel:GP",
+      "routePath": "/paperpilot/monitor-url",
+      "portFile": ".web-port",
+      "title": "操作审计",
+      "extraPages": []
+    }
+  ]
+}

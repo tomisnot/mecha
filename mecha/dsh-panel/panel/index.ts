@@ -77,3 +77,37 @@ export { MonitorTabBody } from './MonitorTabBody.tsx'
 
 export { mountClientPanel, HEADER_BUTTON_ID, PANE_TAB_SLOT, PANE_TAB_TITLE_SLOT, HEADER_ACTIONS_SLOT } from './mount-client-plugin.ts'
 export type { ClientContext, MountClientPanelOptions } from './mount-client-plugin.ts'
+
+// ⭐ 阶段②：**框架自己的 client 插件**（`@mecha/dsh-panel/auto`）与它消费的那份参数。
+// ⚠ 两个模块**都在 panel/ 内**（叶子层）：`auto.ts` 只 import 本目录的件 ⇒ 浏览器安全
+//   那条结构守卫（`monitor-client.test.ts` 的 import 闭包检查）覆盖得到它们。
+// ⚠ `Disposer` **只从 panel-config.ts 出**（一处家）；services.ts 的 `export type { Disposer }`
+//   是同一份类型，这里不重复列出。
+export {
+  PANEL_SERVICES_ROUTE,
+  NEUTRAL_EMPTY_TEXT,
+  NEUTRAL_UNREADABLE_TEXT,
+  contributeExtraPageRender,
+  extraPageRenderFor,
+  extraPageRenderKey,
+  extraPageSpecsFrom,
+  fieldText,
+  isPanelServicesPayload,
+  type DeclaredExtraColumn,
+  type DeclaredExtraPage,
+  type DeclaredPanelService,
+  type ExtraPageRender,
+  type PanelServicesPayload,
+} from './services.ts'
+export {
+  TITLE_PREFIX,
+  PLUGIN_NAME,
+  PLUGIN_INJECT,
+  applyMechaPanels,
+  loadPanelServices,
+  type ApplyOptions,
+  type AutoContext,
+} from './panels.ts'
+// ⚠ 入口（`auto.ts`）**不在本索引里**：它静态 import `.tsx` 壳，而 `.tsx` 不能进
+//   `node --test`（资产既有边界）⇒ 本项目索引（会被单测 import）不许把它拖进来。
+//   项目侧照 §7.3.8 的原文从**显式子路径** import 它。

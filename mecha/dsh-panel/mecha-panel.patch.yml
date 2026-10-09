@@ -1,0 +1,13 @@
+# mecha 框架自己的 dsh patch：把**框架的**监控面板 host 插件挂上。
+#
+# ⚠ 这一份是**框架**的（不是项目的）：`launch.py::merge_dsh` 把它并进那**一个** dsh 的
+#   `--patch` 列表 ⇒ ⭐ 新项目**不用自己挂框架插件**（三层架构 §7.3.3）。
+#
+# ⚠ 为什么 `name:` 是**相对路径**：dsh 把插入条目的 rel 名**锚在 patch 文件自己所在目录**
+#   （`anchorInsertedPluginNames`），所以这个文件住在资产旁边就能指到资产里的插件
+#   ⇒ **无需按机器生成**（生成物要写 `_mecha_runtime/`，而 `--dry-run` 必须零副作用）。
+#
+# ⚠ `- insert:` 是必须的：裸 `- id: …` 会被判「目标不存在」并**静默跳过**（实测过）。
+- insert:
+    - id: mecha-panel-host
+      name: './host-plugin/mecha-panel-host.mjs'

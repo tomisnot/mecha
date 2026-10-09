@@ -11,6 +11,9 @@
   `mecha/dsh-panel/` 这份共享资产的 TS 自测，Node ≥22.6 原生剥类型）**与一份可用的
   `tsc`**（借接入项目装的那份：`node --test` 只剥类型、**看不见只在类型位置的错**）。
   ⇒ **跑完 `run_all` 需要 EL 仓 + node + 一份可用的 `tsc`**。
+- ⭐ 另一条**可选**外部依赖：`phase13_panel_decl_selfcheck` 的「**夹具 ↔ 三家真声明对拍**」
+  要三家仓在位（`MECHA_SITE_ROOTS`，或 `MECHA_ML_ROOT`/`MECHA_EL_ROOT`/`MECHA_GP_ROOT`）；
+  缺 ⇒ 那一支 SKIP（严格模式变 FAIL）。⚠ 它是**夹具失真**那条红线的机器守卫。
 - Phase 6 命令面判据用中性假宿主（命令名与状态键都是判据自己的中性值），
   不依赖任何真宿主的 adapter；真宿主的命令表对齐归各宿主自己的判据。
 - Phase 5 的 EL 侧判据（el/hub/bridge）在列——EL 领域实现住本仓外的 EL 项目
@@ -72,6 +75,11 @@ CHECKS = [
     #   接入项目不再持有副本、也不再跑这份共享单测 ⇒ 本判据不跑或跑假，三家都发现不了。
     #   （此前是三个消费者各跑一遍；减负的代价如实记在 docs/v2/清点-公共部分与上提候选.md §3.6.9。）
     "checks/dsh_panel_selfcheck.py",
+    # ⭐ 阶段②-1：监控声明 → dsh 参数（形状 / 那份参数 / **框架自己的 patch** /
+    #   路由常量两处相等 / **夹具与三家真声明对拍**）。⚠ 「夹具对拍」要三家仓在位
+    #   （MECHA_SITE_ROOTS 或 MECHA_ML_ROOT/MECHA_EL_ROOT/MECHA_GP_ROOT），缺 ⇒ SKIP
+    #   （严格模式变 FAIL）——**不假装对拍过**。
+    "checks/phase13_panel_decl_selfcheck.py",
     "checks/phase5_el_selfcheck.py",
     "checks/phase5_hub_selfcheck.py",
     "checks/phase5_bridge_selfcheck.py",

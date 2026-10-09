@@ -44,8 +44,11 @@ test('⭐ client 半的 **import 闭包里没有 `node:`**（浏览器安全靠�
   const escapes: string[] = []
   const bareHits: string[] = []
   // client 半的入口（含面板层；`.tsx` 壳也在内——它只许 import react）
+  // ⚠ 2026-10 阶段② 起多了 `auto.ts` / `services.ts`（框架自己的 client 插件 + 那份参数）
+  //   —— 它们同样是**浏览器里跑**的件 ⇒ 必须进这条闭包检查（否则"把 node-only 带进
+  //   浏览器 bundle"能在没人看的角落里发生，而这条检查正是为它存在的）。
   const queue = ['monitor-client.ts', 'panel-config.ts', 'panel-data.ts',
-                 'panel-view.ts', 'MonitorTabBody.tsx']
+                 'panel-view.ts', 'MonitorTabBody.tsx', 'services.ts', 'panels.ts', 'auto.ts']
   // 唯一允许的**裸包名**：宿主 dsh 通过模块表注入的 react（项目的 bundler 把它外置）。
   // 其余裸包名一律红 ⇒ 把"能随资产发货"变成机械可查的性质。
   const ALLOWED_BARE = new Set(['react', 'react/jsx-runtime'])
@@ -88,7 +91,7 @@ test('⭐ client 半的 **import 闭包里没有 `node:`**（浏览器安全靠�
     + ' ⇒ panel 是叶子层，它只许 import 本目录内的件（node-only 的归 host 面）')
   // R8 自证：闭包必须**真的走过了几个文件**，否则"没命中"只是因为什么都没读到
   assert.ok(seen.size >= 5, `闭包只走了 ${seen.size} 个文件 ⇒ 检查可能没生效：${[...seen]}`)
-  for (const must of ['routes.ts', 'panel-view.ts', 'MonitorTabBody.tsx']) {
+  for (const must of ['routes.ts', 'panel-view.ts', 'MonitorTabBody.tsx', 'services.ts', 'panels.ts', 'auto.ts']) {
     assert.ok(seen.has(must), `闭包里应当有 ${must}：${[...seen]}`)
   }
 })
