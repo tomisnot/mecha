@@ -62,6 +62,8 @@ mecha/providers/  Provider 层（dsh 的 churn 关在这里）：log_local / job
                 approval / skills / codeact —— local 是出厂默认
 checks/         判据（见下）+ 门禁；python checks/run_all.py 一条跑全
                 （缺外部依赖会**跳过并打印判据名**，见「安装」节）
+docs/v2/交接-给下一个模型.md  ⭐ **接手先读这个**（入口：读什么文档 / 用户要什么 /
+                现在到哪了 / 别踩哪些坑）
 docs/v2/        架构总纲（规范源：为什么这么设计）+ 架构详解（建成态导览：代码
                 现在长什么样）+ 框架准入线（改动纪律 R 系列）+ 操作陷阱（工具与
                 测量层面的坑）+ **软件-交互-写权-三层架构（⭐ 当前架构权威）+
