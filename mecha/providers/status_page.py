@@ -413,8 +413,14 @@ class _Handler(BaseHTTPRequestHandler):
                     self.controller.set_intent(str(getattr(svc, "id", "")), on)
             elif path == "/shutdown":
                 self.controller.shutdown()
+                #: ⭐⭐ **收尾必须把 launcher 自己也停掉**（实测抓到的真 bug）：
+                #: 原来只调 `controller.shutdown()`（停子进程）⇒ 而 `serve_forever()`
+                #: **还在阻塞** ⇒ ⚠ **launcher 永远不退出** ⇒ 用户点了「收尾退出」
+                #: （或者 `--stop`）却看见它**还在跑**，只能去任务管理器强杀（**跳过收尾**）。
+                #: ⚠ 用**定时器延后**停：先把这次响应发出去，否则浏览器只看得到连接被断。
+                threading.Timer(0.6, self.page.stop).start()
             else:
-                return self._html(404, "<h1>404</h1><p>只有 /start 与 /service。</p>")
+                return self._html(404, "<h1>404</h1><p>没有这个页面。</p>")
         except Exception as exc:                           # noqa: BLE001 - 页面如实报故障
             return self._html(200, f'<div class="notice err">{html.escape(str(exc))}</div>')
         return self._html(200, render_page(self.controller))
@@ -428,6 +434,9 @@ class StatusPage:
         self.opts = opts
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
+        #: ⭐ **停旗**：`serve_forever()` 靠它退出。
+        #: ⚠ 原来那个循环**只认 Ctrl+C** ⇒ 无控制台入口下**永远退不出**（实测）。
+        self._stopped = threading.Event()
 
     def start(self) -> int:
         """起服务，返回**实际绑定端口**（回读，不用传入的偏好值）。"""
@@ -457,9 +466,14 @@ class StatusPage:
         """阻塞到 Ctrl-C（``--all`` 之后仍要让控制台可看）。"""
         if self._httpd is None:
             raise RuntimeError("先 start() 再 serve_forever()")
+        self._stopped.clear()
         try:
-            while True:
-                threading.Event().wait(0.5)
+            #: ⚠⭐ 原实现是 `while True: wait(0.5)` —— **只有 Ctrl+C 能出来**，
+            #: 而 `page.stop()` 停的是**另一个线程里的 HTTP 服务**、打不断这个循环。
+            #: ⇒ 实测：点了「收尾退出」/ `--stop` 之后 **launcher 还在跑**，
+            #: 用户只能去任务管理器**强杀**（跳过收尾）。⇒ 现在认**停旗**。
+            while not self._stopped.is_set():
+                self._stopped.wait(0.5)
         except KeyboardInterrupt:
             raise
 
@@ -486,6 +500,8 @@ class StatusPage:
                 f'<p><a href="/">← 回控制台</a></p>')
 
     def stop(self) -> None:
+        #: ⭐ 先立旗：让 `serve_forever()` 那个循环退出（否则 launcher 不退出）。
+        self._stopped.set()
         if self._httpd is not None:
             try:
                 self._httpd.shutdown()

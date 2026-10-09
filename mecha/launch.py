@@ -340,6 +340,11 @@ def plan_startup(sites: Sequence[Site], enabled: Sequence[str],
 # --------------------------------------------------------------------------- 单实例
 
 
+#: ⭐ **面板端口文件**：无黑框入口下 stdout 没人看 ⇒ 端口必须落文件，
+#: 否则 `--stop` / `stop_mecha.pyw` **没有确定的找法**（与 `.mcp-port` 同族）。
+PAGE_PORT_FILE = ".page-port"
+
+
 def _pid_file(runtime: Path) -> Path:
     return runtime / "supervisor.pid"
 
@@ -843,6 +848,45 @@ def build_aggregate_wiring(*, sites: Sequence[Site], supervisor: Supervisor):
     return endpoint, runtime, registry
 
 
+def _request_stop(runtime: Path) -> int:
+    """⭐ 请那个**常驻 launcher** 收尾退出（读 ``.page-port`` 打一次 ``POST /shutdown``）。
+
+    ## 为什么必须有它（用户实测问到的缺口）
+
+    无黑框入口下**没有控制台** ⇒ 用户关掉浏览器之后：
+    - **看不到**它还在跑；**没有 Ctrl+C**；再双击只会得到"已经有一个在跑"；
+    - ⚠ 原来的**唯一**出路是"重新打开面板点『收尾退出』"，或去**任务管理器强杀**
+      —— ⚠ 而强杀**跳过收尾**（子进程成孤儿，端口文件留一地）。
+    ⇒ 补一条**确定的、从命令行/双击都能走的**停止路径。
+
+    ⚠ 走的是**面板自己的 `POST /shutdown`**（与那个按钮**同一条路**）⇒
+    **收尾语义完全一致**（逆序停 child、清端口文件），不是另写一套停法。
+    """
+    import urllib.error
+    import urllib.request
+
+    from .portfile import read_port
+
+    pf = runtime / PAGE_PORT_FILE
+    if not pf.is_file():
+        print(f"没有在跑的 launcher（找不到 {pf}）")
+        return 1
+    port = read_port(pf)
+    if not port:
+        print(f"端口文件读不出端口：{pf}")
+        return 1
+    req = urllib.request.Request(f"http://127.0.0.1:{port}/shutdown",
+                                 method="POST", data=b"")
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            resp.read()
+    except (urllib.error.URLError, OSError) as exc:
+        print(f"请求收尾失败（{exc}）：那个 launcher 可能已经没了 ⇒ 可删掉 {pf} 再试")
+        return 1
+    print(f"已经请 pid 文件里的那个 launcher（面板 :{port}）收尾退出。")
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     #: ⭐ **输出必须"立刻可见"**：`print` 到**被重定向的文件**时是**块缓冲**
     #: ⇒ 那行 `mecha：已启动 ⇒ http://…` **会卡到进程退出才出现**
@@ -866,7 +910,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--port", type=int, default=0, help="状态页端口（0=自动）")
     ap.add_argument("--no-browser", action="store_true", help="不要自动开浏览器")
     ap.add_argument("--dry-run", action="store_true", help="只打印计划，不 spawn")
+    ap.add_argument("--stop", action="store_true",
+                    help="把在跑的那个常驻 launcher **收尾停掉**（读 .page-port 请求它退出）")
     args = ap.parse_args(list(argv) if argv is not None else None)
+
+    #: ⭐ `--stop`：**先于一切**处理（不 load_sites ⇒ 站点声明不在了也能停；
+    #: 不抢单实例锁、不建目录 —— 与 `--dry-run` 同一纪律）。
+    if args.stop:
+        return _request_stop(Path.cwd() / RUNTIME_DIR_NAME)
 
     roots = [Path(r) for r in args.root] if args.root else None
     sites = load_sites(roots)
@@ -917,6 +968,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     from .providers.status_page import PageOptions, StatusPage
     page = StatusPage(controller, PageOptions(port=args.port, open_browser=not args.no_browser))
     port = page.start()
+    #: ⭐ **面板端口落成文件** —— 原来只打印在 stdout 里，而无黑框入口下
+    #: **没人看得到 stdout** ⇒ `--stop` / `stop_mecha.pyw` 就**没有确定的找法**。
+    #: ⚠ 这与 `.mcp-port` 同族：**端口一律落文件**，别只靠"人记得那个 URL"。
+    (runtime / PAGE_PORT_FILE).write_text(str(port), encoding="utf-8")
     print(f"mecha：{'已启动' if args.all else '等待选择'} ⇒ http://127.0.0.1:{port}/")
     try:
         page.serve_forever()
@@ -925,6 +980,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     finally:
         page.stop()
         controller.shutdown()
+        #: ⭐ 谁写的谁清（铁律）：退出时把自己那两个文件收掉，
+        #: 否则 `--stop` 会拿一个**陈旧端口**去打，报一句让人摸不着头脑的失败。
+        for name in (PAGE_PORT_FILE, _pid_file(runtime).name):
+            try:
+                (runtime / name).unlink(missing_ok=True)
+            except OSError:
+                pass
         try:
             endpoint.stop()            # 聚合端点是我们自己起的 ⇒ 也要自己收
         except Exception:              # noqa: BLE001 - 收尾失败不该盖住退出码
