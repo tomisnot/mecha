@@ -140,7 +140,10 @@ button{background:#2f81f7;color:#fff;border:0;border-radius:8px;padding:8px 14px
 button.ghost{background:transparent;border:1px solid #2d3442;color:#e6e6e6}
 footer{display:flex;gap:10px;align-items:center;padding:11px 18px;border-top:1px solid #242a35;
        flex-wrap:wrap}                 /* ⚠ 窄窗口/文字多时**换行**，别把右边裁掉 */
-.foot-note{flex:1;min-width:0}        /* 说明吃剩余宽度，且**允许收缩**（否则溢出被裁） */
+/*: ⚠⚠ **`flex-basis:100%` 是必须的**（实测踩到的坑，用户截图抓到）：
+   原来写 `flex:1;min-width:0`，而**中文的最小内容宽度就是 1 个字**（汉字之间处处可断）
+   ⇒ 它**塌成一字一行**、在页面最右边竖着排。⇒ 让它**独占一行**（宽度 = 整行）就不可能竖排。 */
+.foot-note{flex:1 1 100%}
 /* 存活滑块：checkbox + 纯 CSS 开关（零依赖） */
 .sw{position:relative;display:inline-block;width:50px;height:23px}
 .sw input{display:none}
