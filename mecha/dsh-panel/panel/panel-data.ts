@@ -44,6 +44,12 @@ import type { ConfigWire, Ev } from './panel-view.ts'
  * `/history?since_seq=0`，事件数会**恒为 0**（真实踩过：自证行打出"事件行=0"而数据其实到了）
  * ——查询串只属于**请求路径**，不属于键。
  */
+/** 取数/文案只用得到这两片 ⇒ 结构化描述（**不 import panel-config**，免得两处真值）。 */
+export type PanelConfigLike = { routePath: string; tabs?: PanelTabOverridesLike }
+
+/** 页签文案覆盖（与 panel-config 的 PanelTabOverrides 同形）。 */
+export type PanelTabOverridesLike = { rec?: string; cfg?: string; dash?: string }
+
 export const HISTORY_ROUTE = '/history'
 export const CONFIG_ROUTE = '/config'
 /** 实际请求路径：全量尾（`since_seq=0`），键仍用 `HISTORY_ROUTE`。 */
@@ -54,10 +60,10 @@ export const CONFIG_PATH = CONFIG_ROUTE
 export type StandardPage = 'rec' | 'cfg' | 'dash'
 
 /** 页签文案：**共享默认 + 项目可覆盖**（覆盖在注入的 `tabs` 里）。 */
-export function tabLabel(id: string): string {
+export function tabLabel(id: string, config?: PanelConfigLike): string {
   // ⚠ 这里**没有守卫**：`panelConfig().tabs` 的类型就是可选的
   //   ⇒ "没注入 tabs"与"注入了一个空 tabs"在类型上就分得清（结构保证，不靠判据围堵）。
-  const over = panelConfig().tabs ?? {}
+  const over = (config ?? panelConfig()).tabs ?? {}
   if (id === 'rec') return over.rec ?? '飞行记录仪'
   if (id === 'cfg') return over.cfg ?? '配置态'
   if (id === 'dash') return over.dash ?? '仪表盘'
@@ -83,8 +89,9 @@ export interface PanelLoad {
 }
 
 export async function loadPanel(doFetch: typeof fetch = fetch,
-                                extraRoutes: ExtraRoute[] = []): Promise<PanelLoad> {
-  const base = await fetchMonitorBase(doFetch, panelConfig().routePath)
+                                extraRoutes: ExtraRoute[] = [],
+                                cfg?: PanelConfigLike): Promise<PanelLoad> {
+  const base = await fetchMonitorBase(doFetch, (cfg ?? panelConfig()).routePath)
   if (base.ok !== true) return { state: panelState({ base }), extras: {} }
   const history = await readJson(base.data, HISTORY_PATH, doFetch)
   const config = await readJson(base.data, CONFIG_PATH, doFetch)

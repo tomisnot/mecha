@@ -74,3 +74,6 @@ export {
 // ⚠ 地址路由（`monitor-url.ts`）**不在本入口**：它是 node-only（`node:fs`/`http`/`path`），
 //   归 `host` 面。面板侧要它，请从 `@mecha/dsh-panel/host/monitor-url.ts` 取。
 export { MonitorTabBody } from './MonitorTabBody.tsx'
+
+export { mountClientPanel, HEADER_BUTTON_ID, PANE_TAB_SLOT, PANE_TAB_TITLE_SLOT, HEADER_ACTIONS_SLOT } from './mount-client-plugin.ts'
+export type { ClientContext, MountClientPanelOptions } from './mount-client-plugin.ts'

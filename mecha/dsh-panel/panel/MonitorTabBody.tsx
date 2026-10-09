@@ -36,6 +36,7 @@ import {
   stateBadge,
   stateText,
   tabLabel,
+  type PanelConfigLike,
   type StandardPage,
 } from './panel-data.ts'
 import {
@@ -65,9 +66,9 @@ let savedPage = 'rec'
 const isOpen = (k: string) => openSet.has(k)
 
 /** 标准三页（页签文案可在参数块 `TABS` 里覆盖）。 */
-function standardPages(): { id: string; label: string }[] {
+function standardPages(config?: PanelConfigLike): { id: string; label: string }[] {
   const ids: StandardPage[] = ['rec', 'cfg', 'dash']
-  return ids.map((id) => ({ id, label: tabLabel(id) }))
+  return ids.map((id) => ({ id, label: tabLabel(id, config) }))
 }
 
 /**
@@ -79,9 +80,12 @@ function standardPages(): { id: string; label: string }[] {
  */
 type UseProjectionLike = <K extends string>(key: K) => unknown
 
-export function MonitorTabBody({ extraPages = [], useProjection }: {
+export function MonitorTabBody({ extraPages = [], useProjection, config }: {
   extraPages?: ExtraPageSpec[]
   useProjection?: UseProjectionLike
+  /** ⭐ **这一次注册自己那份**面板参数（由 mountClientPanel 显式传入）。
+   *  ⚠ 不给则回落到既有的作用域/单槽语义（老调用方仍能跑）。 */
+  config?: PanelConfigLike
 } = {}) {
   const ref = useRef<HTMLDivElement>(null)
   const [page, setPage] = useState<string>(savedPage)
@@ -98,7 +102,7 @@ export function MonitorTabBody({ extraPages = [], useProjection }: {
     const routes = extraPages.map((p) => ({ id: p.id, path: p.path }))
     const poll = async () => {
       const st: { state: PanelState; extras: Record<string, FetchResult<unknown>> } =
-        await loadPanel(fetch, routes)
+        await loadPanel(fetch, routes, config)
       if (dead) return
       setState(st.state)
       setExtras(st.extras)
@@ -148,7 +152,7 @@ export function MonitorTabBody({ extraPages = [], useProjection }: {
   }
 
   const b = stateBadge(state)
-  const pages = [...standardPages(), ...extraPages.map((p) => ({ id: p.id, label: p.label }))]
+  const pages = [...standardPages(config), ...extraPages.map((p) => ({ id: p.id, label: p.label }))]
   const head = tabsHtml(pages, page, badgeHtml(b.cls, b.text))
 
   // ⚠ 取事件与配置**走 panel-data 里那两个被单测覆盖的纯函数**（键只有一处）：
