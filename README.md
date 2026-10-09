@@ -106,9 +106,12 @@ print(sw.gate.snapshot)                     # {'power': 42}——写经门、记
 
 真项目接线（EL 消费配置）：领域实现住 **EL 项目仓**（`mecha_v2` 包：ElEngine +
 build_tool_registry + V2Bridge + hub），不在本框架仓——"个性知识归所属项目"
-（ADR `领域参考实现搬回所属项目`）。EL 起软件走 `python launcher.py`（两模式：
-GUI 纯本地 / AI 经 dsh），详见 `docs/v2/notes/implemented/` 下 `两模式启动` 与
-`phase5-el接线` 两篇 ADR。本仓判据的 phase5_* 直接 import EL 仓的 `mecha_v2`
+（ADR `领域参考实现搬回所属项目`）。⭐ **起软件走 `python -m mecha --all`**（统一启动器；
+⚠ 是 `-m mecha`，**不是** `-m mecha.launch` —— 后者是模块不是包，会**静默什么都不做**）。
+⚠ 各家**不再自己编排进程**：EL 原来的看门人 `launcher.py` 已按三层架构删除
+（它干的事——起进程、等就绪、编排 dsh——整块归框架）。
+⭐ 架构权威见 [`docs/v2/软件-交互-写权-三层架构.md`](docs/v2/软件-交互-写权-三层架构.md)。
+本仓判据的 phase5_* 直接 import EL 仓的 `mecha_v2`
 （缺 EL 即红，不假绿）。
 
 ## 验证
