@@ -323,8 +323,17 @@ def render_page(controller: Controller) -> str:
         head = ""
     cleaned = st.get("cleaned") or []
     if cleaned:
-        lis = "".join(f"<li>{html.escape(str(x))}</li>" for x in cleaned)
-        items.append(f'<h3>启动前清掉的陈旧残留</h3><ul class="muted">{lis}</ul>')
+        #: ⭐⭐ **机器能自己解决的事，就别摊给人看**（用户原话：「要是他都能预判出现什么问题了，
+        #: 干脆替用户解决了不就得了」）。
+        #: ⚠ 原来那几句明细是 `<h3>` + 列表**摊在页面正中** —— 而它**早就被处理掉了**，
+        #: 人看了只会想「这关我什么事、我是不是该做点什么」。
+        #: ⇒ ⭐ **账照旧留**（`state.json` 与日志里一条不少 —— 纪律：清掉了什么必须可查），
+        #: 页面只给**一行**：已自动处理、无需操作。
+        #: ⚠ 反过来：**需要人动手**的事（如杀不掉的孤儿进程）**不许走这条**，那种必须醒目。
+        items.append(
+            f'<div class="notice muted">已自动清掉 {len(cleaned)} 项陈旧残留'
+            f'（<strong>无需你操作</strong>）'
+            f'<span class="pending">　明细见 state.json 与 supervisor 日志</span></div>')
     #: ⭐ **dsh 那一行始终在**（§7 定稿形态）：它**不是**"起了才有"的一项，
     #: 而是控制台的一项（"它只是 AI 那条腿的载体"）。
     #: ⚠ 原先只在 `rows` 里有 dsh 时才渲染 ⇒ **启动前那一行是缺的**（实测抓到）。
