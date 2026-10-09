@@ -243,7 +243,16 @@ class AggregateRuntime:
         probe = svc.ready.probe
         if probe:
             # 探活串形如 http://127.0.0.1:{port}/health ⇒ 换成 MCP 端点
+            #
+            # ⚠⭐ **冒号可能在 `{port}` 之前，也可能不在**（实测抓到的真 bug）：
+            # 三家的探活串都是 ``http://127.0.0.1:{port}/mcp`` ⇒ **自带冒号**；
+            # 而这里若再补一个冒号 ⇒ 拼出 ``http://127.0.0.1::62499/mcp``
+            # ⇒ ⚠ **后端永远 attach 不上**（现象："启动失败：backend_protocol 协议错"），
+            # 而**三家全中** —— AI 那条腿从来没接上过真项目。
+            # ⚠ 判据没抓到它：夹具的探活串**没有那个冒号**（又是"替身失真"）。
             base = probe.split("{port}")[0].rstrip("/")
+            if base.endswith(":"):
+                base = base[:-1]
             return f"{base}:{port}/mcp"
         return f"http://127.0.0.1:{port}/mcp"
 

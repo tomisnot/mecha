@@ -294,12 +294,39 @@ def check_merge_dsh_by_contract() -> None:
                exc.kind == "dsh_decl_conflict", f"kind={exc.kind}")
 
 
+def check_backend_url_single_colon() -> None:
+    """⑧ ⭐ 后端 URL **只许有一个冒号** —— 实测三家的探活串自带冒号，而夹具没有。
+
+    ⚠ **这条是补上来的、不是先有的**：实测用户点「启动 ▸」报
+    ``backend_protocol：后端 ML（http://127.0.0.1::62499/mcp）协议错``
+    —— ⚠ **两个冒号**。根因：`_url_for` 假设探活串是 `http://host{port}/…`（**不带冒号**），
+    而三家的都是 ``http://127.0.0.1:{port}/mcp``（**自带冒号**）⇒ 它又补了一个。
+    ⇒ ⚠ **三家全中**（AI 那条腿从来没接上过真项目），而判据全绿 ——
+    因为**夹具的探活串没有那个冒号**（"替身失真"的又一例）。
+    ⇒ 这条判据**按真形状**喂（自带冒号），并钉住"只许一个冒号"。
+    """
+    from mecha.aggregate_runtime import AggregateRuntime
+
+    class _Svc:
+        ready = type("R", (), {"probe": "http://127.0.0.1:{port}/mcp"})()
+
+    url = AggregateRuntime._url_for(None, _Svc(), {"port": 62499})   # type: ignore[arg-type]
+    _check("⑧ ⭐ 探活串**自带冒号**时，后端 URL **不许拼出双冒号**",
+           url == "http://127.0.0.1:62499/mcp", f"url={url!r}")
+    class _Svc2:
+        ready = type("R", (), {"probe": "http://127.0.0.1{port}/mcp"})()
+    url2 = AggregateRuntime._url_for(None, _Svc2(), {"port": 62499})  # type: ignore[arg-type]
+    _check("⑧ 对偶：探活串**不带冒号**时也要对（两种形状都收）",
+           url2 == "http://127.0.0.1:62499/mcp", f"url={url2!r}")
+
+
 def main() -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     print("[endtoend_selfcheck] ⭐ 目标场景：真起 launcher + 真页面 + 多站点 + 热更新 + 切写权")
     try:
         check_merge_dsh_by_contract()
+        check_backend_url_single_colon()
         check_end_to_end_two_sites()
     except Exception as exc:                                # noqa: BLE001 - 判据护栏
         #: ⚠ **崩溃必须转成判据失败**（框架 R 系列的老教训：崩溃冒充"没测出问题"）。
