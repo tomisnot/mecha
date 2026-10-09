@@ -56,9 +56,15 @@ from .portfile import read_port
 from .providers.mcp_client import (Backend, BackendConnectError, BackendError,
                                    BackendProtocolError, BackendTimeoutError)
 
+#: ⭐ **`open_manual_surface` 自己的超时** —— ⚠ 它**不是小事**：等于"起一个窗口"（≈小启动）。
+#: ⚠ 一刀切用 `CONTROL_TIMEOUT_S`（3s）的后果实测过：窗口**开成功了**（5.8s），
+#: 而客户端把会话掐了、报成「协议错」⇒ **人看到失败、窗口却开着**。
+#: 60s 要盖住一次冷启动，同时**仍然有限**（覆盖不到就如实报超时）。
+OPEN_SURFACE_TIMEOUT_S = 60.0
+
 __all__ = ["CONTROL_INSTRUCTIONS", "CONTROL_PORT_FILE", "CONTROL_TIMEOUT_S",
-           "SoftwareControl", "build_control_registry", "control_port_path",
-           "start_control_endpoint"]
+           "OPEN_SURFACE_TIMEOUT_S", "SoftwareControl", "build_control_registry",
+           "control_port_path", "start_control_endpoint"]
 
 #: 控制端点的端口文件（与 ``.mcp-port`` **并列、同名族**）。
 CONTROL_PORT_FILE = ".control-port"
@@ -142,6 +148,35 @@ class SoftwareControl:
         """
         return self._call("read_write_authority", {})
 
+    def _op_timeout(self, op: str) -> float:
+        """⭐ **每个操作自己的超时**（⚠ 一刀切 3 秒是错的 —— 实测抓到的）。
+
+        ## 实测（ML 门化时撞到的）
+
+        `open_manual_surface()` 在 ML 上要 **5.8 秒**（要建 PyQt + matplotlib + pyqtgraph 的
+        真窗口），而客户端一刀切 **3 秒** ⇒ 客户端**把会话掐了**、报成
+        **`control_protocol`「协议错」**；⚠ 而**窗口其实开成功了**
+        （紧接着调一次 ⇒ `already-open`）。
+        ⇒ ⭐ **人看到"失败"，而窗口已经开着** —— 正是本工程最忌的"**看着像失败、其实成了**"。
+
+        ## 为什么"一刀切"当初看起来对
+
+        设计 §7.1.1 把 3 秒的理由写成"软件可能正在做一件**小事**（记账 / **开窗**）就被判超时"。
+        ⚠ **开窗不是小事**：它等于"起一个 UI"，量级接近**小启动**（几秒）。
+        ⇒ 三类操作的量级**本来就不同**，就该**分开定**：
+
+        | 操作 | 量级 | 超时 |
+        |---|---|---|
+        | `read_write_authority` | 纯查询（探侧一次） | `CONTROL_TIMEOUT_S`（3s） |
+        | `set_write_authority` | 改一个字段 | `CONTROL_TIMEOUT_S`（3s） |
+        | ⭐ `open_manual_surface` | **起一个窗口**（≈小启动） | `OPEN_SURFACE_TIMEOUT_S`（60s） |
+
+        ⚠ 60 秒不是"随便放大"：它要**盖住一次冷启动**（ML 实测 5.8s，别的项目可能更慢），
+        同时仍然**有限** —— 覆盖不到就**如实报超时**（铁律 8：超时是**独立一种**失败，
+        不许与"连不上"混成一句话；⚠ 也**不许**像原来那样报成"协议错"）。
+        """
+        return OPEN_SURFACE_TIMEOUT_S if op == "open_manual_surface" else self.timeout_s
+
     def _call(self, op: str, args: dict) -> dict:
         """调一次控制端点。⚠ 把三种**传输**失败翻译成三种不同措辞（铁律 8）。
 
@@ -151,7 +186,7 @@ class SoftwareControl:
         """
         try:
             backend = _run(Backend.connect(self._url(), server_name=f"{self.svc_id}:control",
-                                          timeout_s=self.timeout_s))
+                                          timeout_s=self._op_timeout(op)))
             out = _run(backend.call(op, args))
         except BackendTimeoutError as exc:
             raise MechaError(
