@@ -20,11 +20,11 @@ import { mountClientPanel, HEADER_ACTIONS_SLOT } from './mount-client-plugin.ts'
 function fakeCtx() {
   const calls: { slot: string; def: Record<string, unknown> }[] = []
   const opened: string[] = []
-  const tabs: { id: string; kind: string }[] = []
+  const tabs: { id: string; kind: string; title: (a: string) => string }[] = []
   const ctx = {
     sidebarRightTabs: {
       register: (def: { id: string; kind: string; title: (a: string) => string }) => {
-        tabs.push({ id: def.id, kind: def.kind })
+        tabs.push({ id: def.id, kind: def.kind, title: def.title })
         return () => { tabs.pop() }
       },
     },
@@ -128,4 +128,21 @@ test('⚠ 参数留空 ⇒ **当场抛**（响亮失败，不许静默用别人�
       routePath: '/a', portFile: 'p', title: '   ' } }),
     /title/,
   )
+})
+
+test('⭐ 标题 **thunk 闭包捕获自己那份**（渲染时不许读全局）', () => {
+  // ⚠ 这条是"渲染时读到栈顶"那个 bug 的**正面**对偶：`title` 是契约要求的 thunk
+  //   （每次使用时重读），所以断言必须**调用它**——只看"正文拿到了什么"抓不到这个 bug
+  //   （正文的 config 是显式 prop，退化 A 里它照样对 ⇒ 那条断言会假绿，实测过）。
+  const a = fakeCtx()
+  const b = fakeCtx()
+  const flags: Record<string, boolean> = {}
+  const disA = mountClientPanel(a.ctx, { ...OPTS('AAA', '甲的标题', '/a'), buttonFlags: flags })
+  const disB = mountClientPanel(b.ctx, { ...OPTS('BBB', '乙的标题', '/b'), buttonFlags: flags })
+  assert.equal(a.tabs[0]!.title('whatever'), '甲的标题')
+  assert.equal(b.tabs[0]!.title('whatever'), '乙的标题')
+  // ⭐ 对偶：**B 注册之后**再问 A 的 thunk，仍然必须是甲的（不许变成乙）
+  assert.equal(a.tabs[0]!.title('whatever'), '甲的标题', 'B 注册后 A 的标题不许被顶掉')
+  disB()
+  disA()
 })
