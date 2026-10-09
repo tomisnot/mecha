@@ -157,18 +157,44 @@ def _check_payload() -> list[str]:
         bad.append(f"列 wire 不对：{page['columns']}")
     if not isinstance(page["title"], str) or page["title"] != "L":
         bad.append("附加页 title 缺省应当补成 label")
-    # ⭐ 端口号/绝对路径**不许**进那份参数（它给浏览器）
+    # ⭐ **那份参数本身的禁项**（端口号/地址/绝对路径）——**单独一个函数**：
+    #   红证要**真跑它**（喂一份下毒的载荷），不是另抄一遍谓词（那会变成"关于守卫的假结论"）。
+    bad += payload_defects(payload)
+    return bad
+
+
+def payload_defects(payload: dict) -> list[str]:
+    """那份参数的**禁项**（它给浏览器 ⇒ 不许有端口号/地址/本机绝对路径）。
+
+    ⚠ 独立成函数是**为了红证能真跑它**（`_red_proofs` 喂一份下毒的载荷，断言它当场报红）。
+    """
+    bad: list[str] = []
     text = json.dumps(payload, ensure_ascii=False)
     if "://" in text or "http" in text:
         bad.append(f"那份参数里出现了地址：{text[:200]}")
     if re.search(r":\d{2,5}\b", text):
-        # `:50`（`/runs?limit=50` 那种）不算端口；这里抓的是 `:<3~5 位数字>`
+        # `/runs?limit=50` 那种（`=` 后面的数）不算；这里抓的是 `:<2~5 位数字>`
         bad.append(f"那份参数里出现了像端口的东西：{text[:200]}")
     if re.search(r"[A-Za-z]:[\\/]", text):
         bad.append(f"那份参数里出现了本机绝对路径：{text[:200]}")
     for forbidden in ("root", "cwd", "data_root"):
         if forbidden in text:
             bad.append(f"那份参数里出现了 {forbidden}（绝对路径/根不该给浏览器）")
+    return bad
+
+
+def fixture_defects(real: dict, fixture: dict) -> list[str]:
+    """夹具 ↔ 真声明的**差异清单**（空 = 一致）。⚠ 独立成函数：红证要真跑它。"""
+    bad: list[str] = []
+    for sid in sorted({s["id"] for s in real["services"]} | {s["id"] for s in fixture["services"]}):
+        got = next((s for s in real["services"] if s["id"] == sid), None)
+        want = next((s for s in fixture["services"] if s["id"] == sid), None)
+        if got != want:
+            bad.append(f"夹具与真声明不一致（{sid}）：真={got!r} 夹具={want!r}")
+    if real.get("routePath") != fixture.get("routePath"):
+        bad.append("夹具的 routePath 与框架的不一致")
+    if real.get("services") is not None and not real["services"] and fixture.get("services"):
+        bad.append("真声明里一个监控面都没有，而夹具里有 ⇒ 夹具是编的")
     return bad
 
 
@@ -263,48 +289,74 @@ def _check_fixture_against_real() -> tuple[list[str], str]:
         bad.append(f"三家声明里带监控面的服务应当是 {REAL_IDS}，实际 {ids}"
                    "（新增/删掉一家 ⇒ 本判据与夹具都要跟着改）")
     real = panel_payload(svcs)
-    fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
-    if real != fixture:
-        # ⚠ 逐服务指出差异（"整个 JSON 不等"读起来没有信息量）
-        for sid in sorted({s["id"] for s in real["services"]} | {s["id"] for s in fixture["services"]}):
-            got = next((s for s in real["services"] if s["id"] == sid), None)
-            want = next((s for s in fixture["services"] if s["id"] == sid), None)
-            if got != want:
-                bad.append(f"夹具与真声明不一致（{sid}）：真={got!r} 夹具={want!r}")
-        if real.get("routePath") != fixture.get("routePath"):
-            bad.append("夹具的 routePath 与框架的不一致")
+    bad += _fixture_defects_vs(real)
     return bad, ""
+
+
+def _fixture_defects_vs(real: dict) -> list[str]:
+    """读夹具并与 `real` 对拍。⚠ **夹具本身坏掉也要报成"一条不过"**，不许抛穿：
+    它正是这条判据要守的东西 —— 一次 `SyntaxError`/`JSONDecodeError` 冒到顶，
+    看到的人只会以为"框架坏了"，而真因是夹具被改坏（或带了 BOM）。"""
+    raw = FIXTURE.read_bytes()
+    bad: list[str] = []
+    if raw[:3] == b"\xef\xbb\xbf":
+        # ⚠ 本工程在 BOM 上栽过两次（入口读根清单、判据 ast.parse）；JSON 带 BOM 还会让
+        #   浏览器侧的 `JSON.parse` 直接炸 ⇒ 这里是**缺陷**，不是"读的时候宽容一点"。
+        bad.append(f"夹具带了 BOM（{FIXTURE.name}）：JSON 带 BOM 会让 `JSON.parse` 抛")
+    try:
+        fixture = json.loads(raw.decode("utf-8-sig"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        return bad + [f"夹具读不出（{FIXTURE.name}）：{type(exc).__name__}: {exc}"]
+    if not isinstance(fixture, dict):
+        return bad + [f"夹具的顶层不是对象：{type(fixture).__name__}"]
+    return bad + fixture_defects(real, fixture)
 
 
 # ------------------------------------------------------------------ 红证（扰动必须落上）
 
 def _red_proofs() -> list[str]:
+    """两条红证：**扰动真造出来**，且**真的判据**在扰动上变红。
+
+    ⚠ 本仓纪律（R7/R16）：红证**不许**另抄一遍谓词 —— 那得到的是"关于守卫的假结论"。
+    ⇒ 这里喂的是**真判据函数**（:func:`payload_defects` / :func:`fixture_defects`）。
+    ⚠ 另一条同样重要：**扰动没落上也要报红**（否则"判据抓不住"这个结论本身是假的）。
+    """
     bad: list[str] = []
-    # 红证 ①：往那份参数里塞一个**端口地址** ⇒ "没端口号"那条断言必须变红。
+    # 红证 ①：把那份参数**下毒**（塞一个端口地址）⇒ `payload_defects` 必须当场报出来。
     payload = panel_payload((_svc("AAA", monitor=MonitorSpec(
         route_path="/a/monitor-url", port_file=".a-port")),))
+    clean = payload_defects(payload)
+    if clean:
+        bad.append(f"红证①的前提不成立：干净的载荷本该 0 缺陷，实际 {clean}")
     poisoned = json.loads(json.dumps(payload))
     poisoned["services"][0]["routePath"] = "http://127.0.0.1:62499/mcp"
-    text = json.dumps(poisoned, ensure_ascii=False)
-    if not ("://" in text and re.search(r":\d{2,5}\b", text)):
-        bad.append("红证①没造出扰动：那份被下毒的参数里没看到地址/端口")
-    elif not (("://" in text) or re.search(r":\d{2,5}\b", text)):
-        bad.append("红证①：端口守卫抓不住被下毒的参数")
+    defects = payload_defects(poisoned)
+    if not defects:
+        bad.append("红证①没红：往那份参数里塞了 `http://127.0.0.1:62499/mcp`，"
+                   "而 payload_defects 一个缺陷都没报（⇒ 端口守卫是哑的）")
+    elif not any("地址" in d for d in defects):
+        bad.append(f"红证①红了但不是那条：{defects}")
 
-    # 红证 ②：夹具与真声明不一致时，对拍必须报红（喂一份被改过的夹具副本）。
+    # 红证 ②：把夹具**改一个字段** ⇒ `fixture_defects` 必须报出差异（并点名是哪个服务）。
     roots, _how = _roots()
     if roots is not None:
         try:
-            sites = load_sites(roots)
-            real = panel_payload(flat_services(sites))
+            real = panel_payload(flat_services(load_sites(roots)))
         except MechaError:
             real = None
         if real is not None:
+            if fixture_defects(real, real):
+                bad.append("红证②的前提不成立：拿**同一份**当真/当夹具，本该 0 差异")
             tampered = json.loads(json.dumps(real))
             if tampered["services"]:
+                sid = tampered["services"][0]["id"]
                 tampered["services"][0]["routePath"] = "/not/what/the/declaration/says"
-            if tampered == real:
-                bad.append("红证②没造出扰动：改过的夹具与真的相等")
+                diffs = fixture_defects(real, tampered)
+                if not diffs:
+                    bad.append("红证②没红：夹具被改了一个字段，而对拍一条差异都没报"
+                               "（⇒ 夹具失真抓不住）")
+                elif not any(sid in d for d in diffs):
+                    bad.append(f"红证②红了但没点名是哪个服务（{sid}）：{diffs}")
     return bad
 
 
