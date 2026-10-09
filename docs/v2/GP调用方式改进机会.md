@@ -28,7 +28,7 @@
 | 我以为 | 实际 |
 |---|---|
 | "GP 的大结果直接倒进上下文" | ⚠ **错**。它有**体积闸**（`base.py:30`）：`_RETURN_BUDGET = 65536`、长列表留 20 条、截断时附 `kept`/`total`/`where`（"全量见 Web 面板，或按 id 精确查询"）。**不静默**。 |
-| "GP 没做 AI 调用体验" | ⚠ **错**。它有 `check/test_ai_experience.py`，对应一份 `AI-EXPERIENCE-PLAN`，已修 **E1.1–E1.7**：单字段不击穿整批、信封纪律（无裸 `ok:false`）、`read_authority` 自省、三段 `date` 对称、label 归一化+enum、**评审输入豁免体积截断**。 |
+| "GP 没做 AI 调用体验" | ⚠ **错**。它有 `check/test_ai_experience.py`（⚠ 其中写权自省那个工具 2026-10-08 已上提为框架的 `read_write_authority`），对应一份 `AI-EXPERIENCE-PLAN`，已修 **E1.1–E1.7**：单字段不击穿整批、信封纪律（无裸 `ok:false`）、`read_authority` 自省、三段 `date` 对称、label 归一化+enum、**评审输入豁免体积截断**。 |
 
 ⭐ **而且它有一条注释本身就是"用真实需求驱动设计"的范本**（`base.py:33`）：
 
