@@ -697,6 +697,97 @@ def check_declared_env_is_injected_with_values() -> None:
                got == m.value, f"got={got!r}")
 
 
+def check_startup_env_roundtrip() -> None:
+    """⭐ 判据 ⑮：启动者声明的**往返** —— 框架**注入**的值，软件**读回来**必须一致。
+
+    ## 为什么必须有这条（实测：这个契约的两半曾经各写各的）
+
+    | 半 | 在哪 |
+    |---|---|
+    | **注入**（框架 → 软件进程的 env） | `Service.child()`（判据 ⑭ 钉着） |
+    | **读取**（软件进程读它） | ⚠ **三家各写一份**：EL 有 `_initial_mode()`；**ML/GP 注释里自认"还没读"** |
+
+    ⇒ 于是"**框架声明的**"与"**软件实际用的**"成了**两份真值**，而**谁都没报错**。
+    ⇒ 读取口已上提为 `mecha.site.initial_mode_from_env` / `software_root_from_env`
+    （与注入点**同一个模块** —— 一个契约的两半住一起，不然名字/语义/空串规则会各自漂）。
+
+    ⚠ **`Mode` 是 str 枚举** ⇒ `str(Mode.AI)` 给的是 `'Mode.AI'`。
+    ⇒ 读取侧对**非法值**必须**回落并出声**，**不许静默当成 ai**
+    （⚠ 这个坑今天坑过三个子代理 + 一家判据；本判据把它钉死）。
+    """
+    import contextlib
+    import io
+
+    from mecha.authority import Mode
+    from mecha.site import (MECHA_MODE_ENV, MECHA_ROOT_ENV, ReadySpec as _RS, Service,
+                            initial_mode_from_env, software_root_from_env)
+
+    #: ① 四档**逐档往返**：注入什么，读回来就是什么
+    for m in (Mode.LOCKED, Mode.HUMAN, Mode.AI, Mode.OPEN):
+        svc = Service(id="rt", brief="x", argv=("x",), cwd=Path.cwd(),
+                      ready=_RS(port_file=".p"), data_root=Path.cwd() / "rt",
+                      initial_mode=m)
+        injected = svc.child().env.get(MECHA_MODE_ENV)
+        old = os.environ.get(MECHA_MODE_ENV)
+        os.environ[MECHA_MODE_ENV] = str(injected)
+        try:
+            got = initial_mode_from_env()
+        finally:
+            if old is None:
+                os.environ.pop(MECHA_MODE_ENV, None)
+            else:
+                os.environ[MECHA_MODE_ENV] = old
+        _check(f"⑮ 往返：注入 {m.value!r} ⇒ 读回 {got.value!r}",
+               got is m, f"注入={injected!r} 读回={got!r}")
+
+    #: ② **空串 = 显式取消**（与 PYTHONIOENCODING 同一纪律）⇒ 回落默认
+    for env_name, reader, want in (
+            (MECHA_MODE_ENV, lambda: initial_mode_from_env(Mode.LOCKED), Mode.LOCKED),
+            (MECHA_ROOT_ENV, lambda: software_root_from_env(None), None)):
+        old = os.environ.get(env_name)
+        os.environ[env_name] = ""
+        try:
+            got = reader()
+        finally:
+            if old is None:
+                os.environ.pop(env_name, None)
+            else:
+                os.environ[env_name] = old
+        _check(f"⑮ 空串 = **显式取消** ⇒ 回落默认（{env_name}）", got == want, f"got={got!r}")
+
+    #: ③ ⭐ **非法值回落，但必须出声**（静默回落 = 让人以为"声明生效了"）
+    old = os.environ.get(MECHA_MODE_ENV)
+    os.environ[MECHA_MODE_ENV] = "Mode.AI"            # ⭐ 正是那个坑的字面形状
+    buf = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buf):
+            got = initial_mode_from_env(Mode.LOCKED)
+    finally:
+        if old is None:
+            os.environ.pop(MECHA_MODE_ENV, None)
+        else:
+            os.environ[MECHA_MODE_ENV] = old
+    _check("⑮ ⭐ 非法值 `'Mode.AI'`（str 枚举那个坑）⇒ **回落**",
+           got is Mode.LOCKED, f"got={got!r}")
+    _check("⑮ ⭐ 且**出声**（不许静默当成 ai）",
+           "不是合法写权" in buf.getvalue(), f"输出={buf.getvalue()!r}")
+
+    #: ④ 数据根往返
+    svc2 = Service(id="rt2", brief="x", argv=("x",), cwd=Path.cwd(),
+                   ready=_RS(port_file=".p"), data_root=Path.cwd() / "root2")
+    old = os.environ.get(MECHA_ROOT_ENV)
+    os.environ[MECHA_ROOT_ENV] = svc2.child().env[MECHA_ROOT_ENV]
+    try:
+        back = software_root_from_env(None)
+    finally:
+        if old is None:
+            os.environ.pop(MECHA_ROOT_ENV, None)
+        else:
+            os.environ[MECHA_ROOT_ENV] = old
+    _check("⑮ 数据根往返：注入的根 = 读回来的根",
+           back == svc2.data_root, f"注入={svc2.data_root} 读回={back}")
+
+
 def check_status_page_console() -> None:
     """⑪ **常驻控制台**（一页）+ 三个控件分工 + 四条布局要求。
 
@@ -836,6 +927,7 @@ def main() -> int:
     check_startup_plan_order_and_stale()
     check_dry_run_has_no_side_effects()
     check_declared_env_is_injected_with_values()
+    check_startup_env_roundtrip()
     check_status_page_console()
     if FAILS:
         print(f"launch_selfcheck: FAIL（{len(FAILS)} 条）：{FAILS}")

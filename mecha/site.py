@@ -35,6 +35,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, field
 from enum import Enum
@@ -53,6 +54,53 @@ _SERVICE_ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
 #: ⚠ 走 env（而不是 argv）的理由见 :meth:`Service.child`。
 MECHA_MODE_ENV = "MECHA_INITIAL_MODE"
 MECHA_ROOT_ENV = "MECHA_SOFTWARE_ROOT"
+
+
+# --------------------------------------------------------------- 启动者声明的**读取口**
+#
+# ⭐ 这两个函数是**契约的另一半**：上面是框架**注入**（`Service.child()`），
+# 这里是软件**读取**。⚠ 放同一个模块是刻意的 —— 一个契约的两半**必须住在一起**，
+# 否则"名字/语义/空串规则"会在两边各自漂。
+#
+# ⚠ **为什么要上提到框架**（实测）：三家各自写了读取代码，做法**三种**：
+# EL 有 `_initial_mode()`（读了）；**ML/GP 全是"注释里自认还没读"**，各按旧口径开闸。
+# ⇒ 于是"框架声明的"与"软件实际用的"成了**两份真值**，而**谁都没报错**。
+#
+# ⚠ **空串 = 显式取消该变量**（与框架统一注入 `PYTHONIOENCODING` 同一纪律）⇒ 视同没给。
+
+
+def initial_mode_from_env(default: Mode = Mode.LOCKED) -> Mode:
+    """读启动者声明的初始写权（``MECHA_INITIAL_MODE``）。
+
+    ⚠ **缺省 / 空串 ⇒ 回落 ``default``**；⚠ **非法值 ⇒ 回落并出声**（不静默：
+    一个拼错的模式名会让人以为"声明生效了"，而实际按默认走）。
+
+    ⚠ 软件侧**必须用它装配闸门**（不能只声明不读 —— 那正是本函数存在的理由）。
+    """
+    raw = os.environ.get(MECHA_MODE_ENV, "").strip()
+    if not raw:
+        return Mode(default)
+    try:
+        return Mode(raw)
+    except ValueError:
+        print(f"[mecha] ⚠ {MECHA_MODE_ENV}={raw!r} 不是合法写权 ⇒ 回落 {Mode(default).value}",
+              flush=True)
+        return Mode(default)
+
+
+def software_root_from_env(default: "Path | None" = None) -> "Path | None":
+    """读框架声明的数据根（``MECHA_SOFTWARE_ROOT``）。
+
+    ⚠ **缺省 / 空串 ⇒ 回落 ``default``**（通常是项目自己算出来的仓根）。
+
+    ⚠ 为什么要有它：数据根决定"账写在哪、写租约钉在哪"。若软件**不读**框架声明的那个，
+    就会出现"**框架以为软件在用 A 根，软件实际在写 B 根**"——现象是"看不到刚才的改动"，
+    **且无任何报错**（EL 实测过同一形状的坑，故它自建了 `resolve_data_root`）。
+    """
+    raw = os.environ.get(MECHA_ROOT_ENV, "").strip()
+    if not raw:
+        return default
+    return Path(raw)
 
 
 @dataclass(frozen=True)
