@@ -377,7 +377,7 @@ def check_open_mode(out: list[str]) -> None:
     else:
         _fail(out, f"LOCKED 下竟落了值：{locked.snapshot}")
 
-    # ③ 对偶二：既有两模式的**互斥一字未改**
+    # ③ 对偶二：写权的**互斥一字未改**（三层架构下它仍是"同一时刻只一侧能写"）
     _, _, g_human = _make_gate(Mode.HUMAN)
     _, _, g_ai = _make_gate(Mode.AI)
     still_exclusive = True

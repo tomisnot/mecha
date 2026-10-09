@@ -8,7 +8,8 @@ Monitor 是软件自己四件里与 Gate / History / Surface **并列的第一�
 ## 只读是设计红线
 
 路由表里**没有任何**写 / 切模式入口，一切 ``POST`` 恒 ``404``。读的是"谁改了什么"
-的操作流水，不是域数据覆写面；控制权切换归**看门人的进程级交接**。因此端点
+的操作流水，不是域数据覆写面；⭐ **切写权归软件进程内的控制端点**（三层架构 §7.1.1：
+`.control-port`，那条面**只给框架/面板** ⇒ AI 拿不到地址）。因此端点
 **无鉴权**、默认只绑回环——「AI 不能自授权」的护栏靠 ``Authority`` 的 side 判定
 （AI 通道改不了 mode），不靠端点鉴权，也不靠 token。
 
@@ -67,7 +68,7 @@ Monitor 是软件自己四件里与 Gate / History / Surface **并列的第一�
   抹平成空表，正是本仓反复在防的假绿。
 - **``runtime_writer`` 只在 start / stop 各调一次**（``monitor_port=<端口>`` /
   ``monitor_port=None``）：不做周期性刷新，也不代管描述符的其它字段（``mode`` /
-  ``dsh_port`` 归看门人，两方"合并写、互不抹掉"是宿主的实现责任）。
+  ``dsh_port`` 归框架的启动编排，两方"合并写、互不抹掉"是宿主的实现责任）。
 - **不持有端口文件名字面量**：``.mcp-port`` 一类名字是宿主与其消费方的发现约定，
   库内不写死（D-7 纪律）。调用方给路径。
 """
@@ -478,7 +479,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         return True
 
     def do_POST(self) -> None:                       # noqa: N802 - 基类约定
-        """只读红线：一切写 / 切模式 POST 恒 404（控制权归看门人的进程交接）。
+        """只读红线：一切写 / 切模式 POST 恒 404（切写权归软件进程内的控制端点）。
 
         ⚠ 回响应前**必须先把请求体读干净**（:meth:`_drain_request_body`）。读不干净
         时只多加 ``Connection: close``——**状态码与 body 一字不变**。

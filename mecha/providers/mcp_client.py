@@ -27,7 +27,7 @@
 ## Known Limitations and Deferred Work
 
 - **每次调用一个会话**：``call()`` 是**短连**（连→调→关），不做长连接复用。
-  理由：后端可能随时被 supervisor 重启/换腿，长连接的失效判定与重连会立刻变成
+  理由：后端可能随时被 supervisor 重启（`restart`），长连接的失效判定与重连会立刻变成
   第二套桥（``mcp-bridge.ts`` 已经有一份自愈桥，但那是**宿主侧**的；这里再长一份
   是并行实现）。真需要性能时再评估（n=1 不预建）。
 - 不实现 ``notifications/tools/list_changed`` 的**接收**：本模块只做请求/响应面。
@@ -68,7 +68,7 @@ class Backend:
     """一个后端 MCP 服务端（跨进程，绝不进程内直调）。
 
     ⚠ **每次 :meth:`call` 现连**（短连，见模块 Known Limitations）：后端会随 supervisor
-    重启/换腿而换实例，长连接的失效判定会变成第二套自愈桥。
+    重启（`restart`）而换实例，长连接的失效判定会变成第二套自愈桥。
     """
 
     url: str
