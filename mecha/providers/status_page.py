@@ -72,9 +72,16 @@ _TITLE = "mecha"
 
 
 class Controller(Protocol):
-    """页面需要的最小控制面（``launch.LaunchController`` 结构上满足它）。"""
+    """页面需要的最小控制面（``launch.LaunchController`` 结构上满足它）。
 
-    def sites(self) -> object: ...
+    ⚠ **`sites` 是属性，不是方法** —— 原先这里写成 ``def sites(self)``，
+    与页面里的 `self.controller.sites()` 一起构成一个**从未被执行过**的错误契约
+    （真实现是 `self.sites = sites`）⇒ 页面起不来、判据却全绿。
+    ⇒ 契约必须**照真实现**写，否则它会替页面撒谎。
+    """
+
+    #: 站点元组（`launch.LaunchController.sites` 是属性）。
+    sites: object
     def services(self) -> object: ...
     def started(self) -> bool: ...
     def intent(self) -> dict: ...
@@ -378,7 +385,13 @@ class StatusPage:
 
     def start(self) -> int:
         """起服务，返回**实际绑定端口**（回读，不用传入的偏好值）。"""
-        site = self.controller.sites()[0]                  # type: ignore[index]
+        #: ⚠ **这里是属性不是方法**（`LaunchController.sites` 是一个 tuple 属性）。
+        #: 原先写成 `self.controller.sites()` ⇒ `TypeError: 'tuple' object is not callable`
+        #: ⇒ ⭐ **页面根本起不来**，而且**没有任何判据抓到**：所有判据只调 `render_page(stub)`，
+        #: 而 `render_page` 读的是 `state()["sites"]`、**不碰 `sites`** ⇒ 这一行从未被执行过。
+        #: 判据的替身还把 `sites` 写成了方法（与页面同错、与真实现不同）⇒ 全绿。
+        #: ⇒ 现在有一条**真起 `StatusPage`** 的判据钉住（见 `checks/launch_selfcheck.py`）。
+        site = self.controller.sites[0]
         global _TITLE
         _TITLE = f"mecha · {site.name}"
         handler = type("_Bound", (_Handler,), {"controller": self.controller, "page": self})
