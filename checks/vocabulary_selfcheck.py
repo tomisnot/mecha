@@ -39,10 +39,18 @@ ASSET_SUFFIXES = (".py", ".html", ".js", ".css", ".json", ".yaml", ".yml", ".tom
 #: EL 消费配置判据：它们的**职责**就是拿 EL 领域键跑端到端（ADR 领域参考实现
 #: 搬回所属项目）。与 docs/ 排除同理——禁的是"库/通用判据写死项目值"，不是
 #: "项目自己的接线判据引用项目值"。豁免是显式白名单，新增文件不会静默获免。
+#:
+#: ⭐ 2026-10 阶段② 新增一份豁免：面板那份**夹具**
+#: （`mecha/dsh-panel/panel/real-panel-services.json`）。它的**职责恰恰是装着三家的真值**
+#: —— 它是"框架生成的参数"与"三家真声明"之间的**对拍基准**（红线的由来：夹具与真形状
+#: 不一致 ⇒ 判据全绿而真项目一炸）。⚠ 所以它不是"库里写死了项目值"，而是**相反**：
+#: `checks/phase13_panel_decl_selfcheck.py` **要求它等于**三家的真声明，改任一边就红。
+#: ⚠ 豁免只给这一个文件；同目录的 `.ts` 一律仍被扫（实测抓过两处：用例里写了项目路由）。
 EXEMPT_FILES = frozenset({
     "phase5_el_selfcheck.py",
     "phase5_hub_selfcheck.py",
     "phase5_bridge_selfcheck.py",
+    "real-panel-services.json",
 })
 
 

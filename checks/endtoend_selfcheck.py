@@ -276,8 +276,16 @@ def check_merge_dsh_by_contract() -> None:
     child, merged = merge_dsh([_site("s1", Path("/x"), id_dsh),
                                _site("s2", Path("/y"), other)])
     arts = {Path(p).name for p in merged.plugin_artifacts}
+    #: ⭐ 阶段② 起那**一个** dsh 上还有**框架自己的**面板插件（由框架的 patch 带上）
+    #: ⇒ 这里断言的是"两家的并集**都在**"（不是"只有那两家"），另有一条断言框架那份也在。
     _check("⑦ ⭐ 插件的**并集**：两个站点的 plugin_artifacts 都在（项目各自挂自己的面板）",
-           arts == {"a.mjs", "b.mjs"}, f"arts={arts}")
+           {"a.mjs", "b.mjs"} <= arts, f"arts={arts}")
+    from mecha.dsh_panel import framework_plugin_artifact
+    _check("⑦ ⭐ **框架自己的**面板插件也在（由框架的 patch 带上 ⇒ 新项目不挂框架插件）",
+           framework_plugin_artifact().name in arts, f"arts={arts}")
+    _check("⑦ ⭐ 框架的面板参数**进了 dsh 的环境**（声明 → 那份参数那段路）",
+           "MECHA_PANEL_SERVICES" in merged.env and "MECHA_PANEL_ROUTE" in merged.env,
+           f"env={sorted(merged.env)}")
     _check("⑦ ⭐ `env` 也是并集（两个站点各自的项目知识都带上）",
            merged.env.get("A") == "1" and merged.env.get("B") == "2", f"env={dict(merged.env)}")
     _check("⑦ `cwd` 取**第一个**声明者（站点顺序稳定 ⇒ 不随扫描漂）",

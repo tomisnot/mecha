@@ -234,7 +234,8 @@ class MonitorSpec:
             raise MechaError(
                 "MonitorSpec.port_file 不能为空",
                 kind="bad_monitor_spec",
-                hint="它是**权威实际写**的那个端口文件名（如 .ml-monitor-port）",
+                hint="它是**权威实际写**的那个端口文件名（⚠ 只放**文件名**，"
+                     "不放端口号 —— 端口由路由**现取**；框架也不持有任何项目字面量）",
             )
         #: ⚠ **端口号不许进这份参数**（三层架构 §7.3.3：它会给浏览器、也会进日志）——
         #: `port_file` 是**文件名**，写成一个 URL 就是把这个坑挖回来。

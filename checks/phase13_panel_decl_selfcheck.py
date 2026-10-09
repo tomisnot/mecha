@@ -88,15 +88,16 @@ def _expect_error(what: str, fn) -> str | None:
 def _check_shapes() -> list[str]:
     bad: list[str] = []
     # 1) title 缺省 ⇒ Service.id（§7.3.6）
-    s = _svc("ML", monitor=MonitorSpec(route_path="/ml/monitor-url", port_file=".ml-monitor-port"))
-    if s.monitor is None or s.monitor.title != "ML":
+    # ⚠ 用例里的服务名/id 一律**中性**（词表守卫扫 checks/：库里不许出现项目领域值）
+    s = _svc("AAA", monitor=MonitorSpec(route_path="/a/monitor-url", port_file=".a-monitor-port"))
+    if s.monitor is None or s.monitor.title != "AAA":
         bad.append(f"title 缺省应当补成 Service.id，实际 {s.monitor!r}")
     # 显式标题不被改写
-    s2 = _svc("EL", monitor=MonitorSpec(route_path="/el/monitor-url", port_file=".p", title="机甲"))
-    if s2.monitor is None or s2.monitor.title != "机甲":
+    s2 = _svc("BBB", monitor=MonitorSpec(route_path="/b/monitor-url", port_file=".p", title="显式标题"))
+    if s2.monitor is None or s2.monitor.title != "显式标题":
         bad.append("显式 title 被改写了")
     # 没有 monitor ⇒ None（"没监控面"在类型上可表达）
-    if _svc("GP").monitor is not None:
+    if _svc("CCC").monitor is not None:
         bad.append("没声明 monitor 的服务不该有 MonitorSpec")
 
     # 2) 写歪 ⇒ 声明期响亮失败

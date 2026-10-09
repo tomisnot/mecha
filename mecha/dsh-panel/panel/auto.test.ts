@@ -103,15 +103,25 @@ function resetGlobalAuto(): void {
   delete (globalThis as Record<string, unknown>)['__mechaPanelHeaderButton__']
 }
 
-test('夹具：形状合法，且**就是三家真实声明**那一份（含三家真路由）', () => {
+test('夹具：形状合法，且**就是三家真实声明**那一份（⚠ 与真声明同值由框架判据对拍）', () => {
   assert.ok(isPanelServicesPayload(REAL), '夹具形状不合法')
-  const ids = REAL.services.map((s) => s.id)
-  assert.deepEqual(ids, ['ML', 'EL', 'GP'], `夹具的服务顺序/身份变了：${ids.join('、')}`)
+  assert.equal(REAL.services.length, 3, `夹具应当是三家：${REAL.services.map((s) => s.id).join('、')}`)
+  // ⚠ **本文件不写任何项目的真路由/真端口**（共享资产里不许出现项目字面量 —— 词表守卫扫这里）。
+  //   "夹具是不是真的与三家声明同值"由 `checks/phase13_panel_decl_selfcheck.py` 拿真声明对拍
+  //   （Python 侧才拿得到那三份声明）⇒ 这里只断言**形状级**事实。
+  for (const s of REAL.services) {
+    assert.ok(s.routePath.startsWith('/'), `${s.id} 的 routePath 不是路径：${s.routePath}`)
+    assert.ok(s.portFile.trim() !== '' && !s.portFile.includes('://'),
+      `${s.id} 的 portFile 应当是**文件名**（端口现取）：${s.portFile}`)
+    assert.equal(s.kind, `mecha:${s.id}`)
+    assert.equal(s.tabId, `mecha-panel:${s.id}`)
+    assert.ok(s.title.trim() !== '', `${s.id} 的标题为空`)
+  }
+  // ⚠ 三份**互不相同**：否则"各读各的"用"全都一样"也能过（判据② 的前提）
   const routes = REAL.services.map((s) => s.routePath)
-  // ⚠ 这三条是**真值**（与三家 `dsh/src/*-params.ts` 一致）——它们就是"夹具失真"的防线。
-  assert.deepEqual(routes, [
-    '/ml-toolbox/monitor-url', '/re0-mecha/monitor-url', '/paperpilot/monitor-url',
-  ])
+  assert.equal(new Set(routes).size, 3, `三家的取数路由应当互不相同：${routes.join(' | ')}`)
+  const titles = REAL.services.map((s) => s.title)
+  assert.equal(new Set(titles).size, 3, `三家的标题应当互不相同：${titles.join(' | ')}`)
   assert.equal(REAL.routePath, PANEL_SERVICES_ROUTE, '夹具里的路由与 TS 镜像常量不一致')
 })
 

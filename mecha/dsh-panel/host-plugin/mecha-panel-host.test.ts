@@ -1,4 +1,4 @@
-﻿/**
+/**
  * `mecha-panel-host.mjs`（框架自己的 dsh host 插件）的**行为判据**。
  *
  * ⚠ 为什么这份判据是必需的：那一件是**手写 JS、零 import**（dsh 的 patch 只能指 node 能
@@ -25,17 +25,20 @@ function envOf(services: unknown[] = [], route = '/mecha/panels') {
   }
 }
 
+/** ⚠ 用例里的服务名/路由/端口文件名一律**中性**（词表守卫扫本目录：
+ *  共享资产里不许出现任何项目字面量）。"那份参数与真声明同形"那条由
+ *  `checks/phase13_panel_decl_selfcheck.py` 拿三家真声明对拍（不在这里）。 */
 const ONE_SVC = [{
-  id: 'ML', kind: 'mecha:ML', tabId: 'mecha-panel:ML',
-  routePath: '/ml-toolbox/monitor-url', portFile: '.ml-monitor-port',
-  title: 'ML 监控', extraPages: [],
+  id: 'AAA', kind: 'mecha:AAA', tabId: 'mecha-panel:AAA',
+  routePath: '/svc-a/monitor-url', portFile: '.svc-a-monitor-port',
+  title: '甲监控', extraPages: [],
 }]
 
 test('读参数：形状对 ⇒ 原样给出（数量 + 路由）', () => {
   const p = readPanelPayload(envOf(ONE_SVC))
   assert.equal(p.routePath, '/mecha/panels')
   assert.equal(p.services.length, 1)
-  assert.equal((p.services[0] as { tabId: string }).tabId, 'mecha-panel:ML')
+  assert.equal((p.services[0] as { tabId: string }).tabId, 'mecha-panel:AAA')
 })
 
 test('⭐ 参数缺失 ⇒ **响亮失败**（不许静默起一个没有面板的 dsh）', () => {
