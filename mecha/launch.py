@@ -318,6 +318,24 @@ def _detect_stale(sites: Sequence[Site],
                 kind="port_file", target=str(pf), path=pf,
                 why=f"端口文件在、但 {port} 上没人在听 ⇒ 陈旧残留"
                     f"（不清理会让'存在且非空'被误判成就绪）"))
+    #: ⭐ **控制端点的端口文件也要探/清**（原来只管就绪用的 `.mcp-port`）：
+    #: 陈旧的 `.control-port` 会留到下次启动，而**面板按它定位控制端点** ⇒
+    #: 若那个端口被别的东西占用，面板会读到**假值**。⚠ 实测：EL/GP 仓根残留的
+    #: `.control-port` 甚至让它们在各自工作树里显示成**未跟踪文件**。
+    from .portfile import read_port
+    from .software_control import control_port_path
+    for svc in flat_services(sites):
+        if svc.data_root is None:
+            continue
+        cpf = control_port_path(svc.data_root)
+        if not cpf.exists():
+            continue
+        cport = read_port(cpf)
+        if not (cport and _listening(cport)):
+            stale.append(StaleItem(
+                kind="port_file", target=str(cpf), path=cpf,
+                why="控制端点的端口文件在、但没人在听 ⇒ 陈旧残留"
+                    "（⚠ 面板按它定位控制端点 ⇒ 不清理可能让它读到**假值**）"))
     return tuple(stale)
 
 
@@ -375,7 +393,10 @@ def acquire_singleton(runtime: Path) -> int:
             raise MechaError(
                 f"已经有一个 supervisor 在跑（pid={old}）",
                 kind="supervisor_already_running",
-                hint="同一份 runtime 只允许一个 supervisor；先收尾那个，或换 --root",
+                hint="同一份 runtime 只允许一个 supervisor。要停它："
+                     "① 双击入口旁的 stop_mecha.pyw；② python -m mecha --stop；"
+                     "③ 面板底部的「收尾退出」。"
+                     "⚠ 别用任务管理器强杀（会跳过收尾）。换一份 runtime 用 --root",
             )
         # 陈旧 pid 文件（进程已死）⇒ 接管，不静默留下"永远锁着"的假象
     pf.write_text(str(os.getpid()), encoding="utf-8")
