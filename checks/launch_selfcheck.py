@@ -825,6 +825,167 @@ def check_startup_env_roundtrip() -> None:
            any("mecha" in c for c in fake.chunks), f"输出={fake.chunks!r}")
 
 
+def check_console_free_entry() -> None:
+    """⭐ 判据 ⑯：**无黑框入口**（`start_mecha.pyw`）—— 它必须真能起、且坏得看得见。
+
+    ## 为什么是 `.pyw`（实测的关联，不是偏好）
+
+    `.bat` 双击**必然开一个控制台窗口**（哪怕里面只写 `start`）—— 与需求"**0 黑框**"冲突。
+    本机实测：``assoc .pyw`` ⇒ ``Python.NoConFile`` ⇒ ``ftype`` 指向 ``pyw.exe``（= `pythonw`）。
+    ⚠ 所以**入口的形态本身是判据的一部分**：本仓根**不许**再出现 `.bat` 入口。
+
+    ## 这条判据真跑入口（不是读源码猜）
+
+    ⚠ 本工程最贵的教训就是"**判据只调零件、而真路没走过**"（29 项全绿而 web 面板起不来）。
+    ⇒ 这里用 `runpy` **真执行 `start_mecha.pyw`**（带 `--dry-run` ⇒ 它会在起页面之前返回，
+    不 spawn 任何进程），然后断言**三件只有真跑才看得见的事**：
+
+    1. ⭐ **输出真的落进了文件**（`_mecha_runtime/launcher.log` 非空）——
+       没有控制台时**不留日志 = 坏了什么都看不到**；
+    2. ⭐ **`sys.stdout` 真的被换成了文件对象**（证明它不靠控制台）；且
+       ⚠ **绝不 `DEVNULL`**（铁律 1）——源码里出现 `DEVNULL`/`os.devnull` 即红；
+    3. ⭐ **根清单真的被读并注入** `MECHA_SITE_ROOTS`（`mecha_roots.txt` 在 cwd 时）。
+    """
+    import runpy
+
+    entry = ROOT / "start_mecha.pyw"
+    _check("⑯ ⭐ 入口是 `.pyw`（无黑框载体；⚠ `.bat` 双击必然开控制台）",
+           entry.is_file(), f"缺 {entry}")
+    if not entry.is_file():
+        return
+    #: ⚠⚠ **必须 `utf-8-sig` 读**：Windows 的编辑器 / `Set-Content -Encoding UTF8` 会给
+    #: 文件**加 BOM**。⚠ 而 `.pyw` 带 BOM 是**合法**的（CPython 读源码时自己吃掉它），
+    #: 但**留在字符串里的 `\ufeff` 会让 `ast.parse` 抛**
+    #: `SyntaxError: invalid non-printable character U+FEFF` ⇒ **判据崩掉**而不是干净地红。
+    #: （实测：我自己做红证时就这么撞的 —— ⚠ **本工程今天在 BOM 上栽了两次**：
+    #:   入口读根清单一次、这里一次。⇒ 记规矩：**读"用户/工具产生的文本"一律 `utf-8-sig`**。）
+    src = entry.read_text(encoding="utf-8-sig")
+    #: ⚠ **只看代码，不看散文**：本判据第一版用 `"DEVNULL" not in src` ⇒ 被**文档串**撞红
+    #: （那份入口的 docstring 里正写着"绝不 DEVNULL"）—— 判据把"**声明**"当成了"**违规**"。
+    #: ⇒ 用 `ast` 找**真正的使用**（属性 `DEVNULL` / 名字 `devnull` / 打开 `nul`）。
+    import ast as _ast
+
+    def _devnull_in_code(source: str) -> list[str]:
+        hits: list[str] = []
+        for node in _ast.walk(_ast.parse(source)):
+            if isinstance(node, _ast.Attribute) and node.attr == "DEVNULL":
+                hits.append("subprocess.DEVNULL")
+            elif isinstance(node, _ast.Name) and node.id == "devnull":
+                hits.append("devnull")
+            elif (isinstance(node, _ast.Constant) and isinstance(node.value, str)
+                    and node.value.lower() in ("nul", "/dev/null")):
+                hits.append(repr(node.value))
+        return hits
+
+    #: ⚠ **解析失败必须转成判据失败**（纪律 5：崩溃不许冒充失败）。
+    try:
+        bad = _devnull_in_code(src)
+    except SyntaxError as exc:
+        _check("⑯ 入口源码必须能被 `ast` 解析（否则本组判据等于没测）",
+               False, f"{type(exc).__name__}: {exc}")
+        bad = []
+    _check("⑯ ⭐ 入口源码里**不许真用** `DEVNULL`/`devnull`/`nul`（铁律 1：日志必须留）",
+           not bad, f"命中 {bad}")
+    _check("⑯ ⭐ 本仓根**不许**有 `.bat` 入口（那会开黑框）",
+           not list(ROOT.glob("*.bat")), f"发现 {[p.name for p in ROOT.glob('*.bat')]}")
+
+    td = Path(tempfile.mkdtemp(prefix="mecha-entry-"))
+    old_cwd, old_roots = Path.cwd(), os.environ.get("MECHA_SITE_ROOTS")
+    old_argv, old_stdout = list(sys.argv), sys.stdout
+    try:
+        #: 一个临时站点（入口只需要"能找到声明"就能走到起页面之前返回）
+        site = td / "site"
+        site.mkdir()
+        (site / "mecha_site.py").write_text(
+            "from mecha.site import ReadySpec, Service, Site\n"
+            f"SITE = Site(name='EntryProbe', services=(Service(id='EP', brief='x',"
+            f" argv=('x',), cwd={str(site)!r}, ready=ReadySpec(port_file='.p'),"
+            f" data_root=None),))\n", encoding="utf-8")
+        (td / "mecha_roots.txt").write_text(
+            #: ⚠ **故意带 BOM**：Windows 上记事本/PowerShell 的 `Out-File -Encoding UTF8`
+            #: 都会写 BOM，而 `'\ufeff'.strip()` **不会**去掉它 ⇒ 那一行会变成"一个不存在的根"，
+            #: 报错还是"站点搜索根不存在：<看不见的字符>"（实测踩过，人看不懂）。
+            #: ⇒ 入口必须用 `utf-8-sig` 读；本判据就按**真机会写的形状**来喂。
+            f"# 入口判据\n{site}\n", encoding="utf-8-sig")
+        os.environ.pop("MECHA_SITE_ROOTS", None)          # 让入口去读根清单
+        os.chdir(td)
+        sys.argv = ["start_mecha.pyw", "--dry-run"]
+        code = 0
+        #: ⚠⚠ **入口的职责就是换掉 `sys.stdout`**（输出落日志）—— 而这里是**进程内**跑它
+        #: ⇒ 若不在这里就还原，**判据自己的断言会写进入口的日志**，随后被 `rmtree` 删掉
+        #: （实测：那几条"真跑"断言**像消失了一样**，输出里一条都看不到）。
+        #: ⇒ 断言一律放到**还原之后**（下面 `finally` 里已把 stdout/stderr 还回）。
+        guard_out, guard_err = sys.stdout, sys.stderr
+        ran_stdout_was_file = False
+        try:
+            runpy.run_path(str(entry), run_name="__main__")
+        except SystemExit as exc:
+            code = int(exc.code or 0)
+        except BaseException as exc:                      # noqa: BLE001 - 入口不许崩
+            _check("⑯ ⭐ 真跑入口不许抛未捕获异常", False, f"{type(exc).__name__}: {exc}")
+            return
+        finally:
+            #: ⚠ `is not` 要在**还原之前**判（这就是"它真的不靠控制台"的证据）。
+            ran_stdout_was_file = sys.stdout is not guard_out
+            sys.stdout, sys.stderr = guard_out, guard_err
+        log = td / "_mecha_runtime" / "launcher.log"
+        text = log.read_text(encoding="utf-8", errors="replace") if log.is_file() else ""
+        _check("⑯ ⭐ 真跑：输出**落进了 `_mecha_runtime/launcher.log`**（没控制台也留证据）",
+               log.is_file() and len(text.strip()) > 20, f"日志={text[-200:]!r}")
+        _check("⑯ ⭐ 真跑：`sys.stdout` **被换成了文件对象**（不靠控制台）",
+               ran_stdout_was_file, "stdout 没被重定向")
+        _check("⑯ ⭐ 真跑：根清单被读并注入 `MECHA_SITE_ROOTS`",
+               str(site) in os.environ.get("MECHA_SITE_ROOTS", ""),
+               f"MECHA_SITE_ROOTS={os.environ.get('MECHA_SITE_ROOTS')!r}")
+        _check("⑯ 真跑：`--dry-run` 下正常返回（0）", code == 0,
+               f"exit={code}；日志尾部={text[-300:]!r}")
+    finally:
+        os.chdir(old_cwd)
+        sys.argv = old_argv
+        sys.stdout = old_stdout
+        if old_roots is None:
+            os.environ.pop("MECHA_SITE_ROOTS", None)
+        else:
+            os.environ["MECHA_SITE_ROOTS"] = old_roots
+        shutil.rmtree(td, ignore_errors=True)
+
+
+def check_service_paths_are_coerced() -> None:
+    """⭐ 判据 ⑰：声明里的**路径字段**要在**入口处**归一 —— 别让类型错飘到几百行外才炸。
+
+    ## 实测（我这次撞到的）
+
+    项目手写 ``mecha_site.py`` 时很容易写成 ``cwd="C:\\\\..."``（字符串，尤其**从配置里抄来的**），
+    而框架深处（`_port_file_of`）会抛::
+
+        TypeError: unsupported operand type(s) for /: 'str' and 'str'
+
+    ⚠ **报错完全看不出是哪份声明、哪个字段**。⇒ 在 `Service.__post_init__` 里归一：
+    `str`/`os.PathLike` ⇒ `Path`；⚠ **别的类型仍然响亮失败**（不猜、不吞）。
+
+    ⚠ 为什么这条属于"框架的职责"（M1）：**声明是数据**，项目只交数据；
+    "数据像不像路径"这种解释工作不该让每个项目自己防。
+    """
+    from mecha.errors import MechaError
+    from mecha.site import ReadySpec as _RS2, Service as _S2
+
+    s = _S2(id="PC", brief="x", argv=("x",), cwd=str(Path.cwd()),
+            ready=_RS2(port_file=".p"), data_root=str(Path.cwd() / "sub"))
+    _check("⑰ ⭐ 字符串 `cwd` 被归一成 `Path`（项目从配置里抄字符串是常事）",
+           isinstance(s.cwd, Path), f"type={type(s.cwd).__name__}")
+    _check("⑰ ⭐ 字符串 `data_root` 同样归一",
+           isinstance(s.data_root, Path), f"type={type(s.data_root).__name__}")
+    _check("⑰ ⭐ 归一后**真的能用**（不会再飘到几百行外抛 TypeError）",
+           str(s.cwd / ".p").endswith(".p"), f"{s.cwd / '.p'}")
+    try:
+        _S2(id="PC2", brief="x", argv=("x",), cwd=12345,
+            ready=_RS2(port_file=".p"), data_root=None)
+        _check("⑰ ⚠ 解释不了的路径类型必须**响亮失败**（不猜、不吞）", False, "竟然没报错")
+    except MechaError as exc:
+        _check("⑰ ⚠ 解释不了的路径类型必须**响亮失败**（不猜、不吞）",
+               exc.kind == "bad_service_field", f"kind={exc.kind}")
+
+
 def check_status_page_console() -> None:
     """⑪ **常驻控制台**（一页）+ 三个控件分工 + 四条布局要求。
 
@@ -970,6 +1131,8 @@ def main() -> int:
     check_dry_run_has_no_side_effects()
     check_declared_env_is_injected_with_values()
     check_startup_env_roundtrip()
+    check_console_free_entry()
+    check_service_paths_are_coerced()
     check_status_page_console()
     if FAILS:
         print(f"launch_selfcheck: FAIL（{len(FAILS)} 条）：{FAILS}")

@@ -166,6 +166,29 @@ class Service:
         # ⚠ 这里原本用 None 再补默认值（避免把 LOCKED 抄第二遍）；但 dataclass 的默认值
         #   直接写 ``Mode.LOCKED`` 更好：它就是 ``authority.DEFAULT_MODE`` 的值，
         #   而"默认写权是 LOCKED"这条纪律由 ``authority`` 拥有 —— 这里只消费它。
+        #
+        # ⭐ **路径字段归一成 `Path`**（实测踩到的真坑）：项目手写 ``mecha_site.py`` 时
+        #   很容易写成 ``cwd="C:\\..."``（字符串，尤其从配置里抄来的），而框架深处会抛
+        #   ``TypeError: unsupported operand type(s) for /: 'str' and 'str'``
+        #   —— ⚠ **报错完全看不出是哪份声明、哪个字段**（我这次就是这么撞上的）。
+        #   ⇒ 声明是**数据**（M1：项目只交数据）⇒ 在**入口处**把"像路径的东西"归一，
+        #     别让类型错误飘到几百行之外才炸。
+        #   ⚠ **只归一 `str`/`os.PathLike`**；别的类型**仍然响亮失败**（不猜、不吞）——
+        #     "能解释的输入就解释、解释不了就当场说清楚"。
+        for field_name in ("cwd", "data_root"):
+            value = getattr(self, field_name)
+            if value is None or isinstance(value, Path):
+                continue
+            if isinstance(value, (str, os.PathLike)):
+                object.__setattr__(self, field_name, Path(value))
+            else:
+                raise MechaError(
+                    f"Service({self.id!r}).{field_name} 要是**路径**，给的是 "
+                    f"{type(value).__name__}（{value!r}）",
+                    kind="bad_service_field",
+                    hint=f"写 `Path(...)` 或一个字符串；⚠ 声明里只放**数据**，"
+                         f"放不了会被框架解释的东西就别放",
+                )
         return None
 
     def child(self) -> ChildSpec:

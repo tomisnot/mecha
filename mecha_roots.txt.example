@@ -1,0 +1,11 @@
+﻿# ⭐ 入口（`start_mecha.pyw`）用的**本机**站点根清单 —— 复制成 `mecha_roots.txt` 再改。
+#
+# 一行一个仓路径；`#` 起注释；两端空白/引号会被去掉。
+# ⚠ **为什么要这个文件**：`MECHA_SITE_ROOTS` 能列多个根，而**一个根找不到三家**
+#   —— 本机上 GP 与另两仓**不在同一棵树里**。
+# ⚠ 环境变量 `MECHA_SITE_ROOTS` **优先**于本文件（临时试某个根时用它）。
+#
+# 例子（把路径换成你自己的）：
+#   D:\code-nosync\Mechine learning
+#   D:\code-nosync\energy-level
+#   D:\somewhere-else\Get Paper
