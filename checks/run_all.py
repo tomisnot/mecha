@@ -98,6 +98,10 @@ CHECKS = [
     # ⭐ 判据 ㉒：**共用档**（`Mode.OPEN`＝AI 与人共用）在框架里被当"**没有写权切换需求**"
     #   （2026-10-10 用户裁决）+ 启动控制台**标题不许取某一个站点的名字**。
     "checks/authority_shared_mode_selfcheck.py",
+    # ⭐ 判据 ㉓：**端口生命周期**（`mecha/portfile.py`）——清陈旧/公布/发现/使用那套规则。
+    #   ⚠ 这个模块原先**一条判据都没有**，而它偏偏是"带安全论证"的那种（清陈旧时机、
+    #   收尾只删自己写的那个、**只在真的在听之后才公布**）。
+    "checks/portfile_selfcheck.py",
     "checks/phase5_el_selfcheck.py",
     "checks/phase5_hub_selfcheck.py",
     "checks/phase5_bridge_selfcheck.py",

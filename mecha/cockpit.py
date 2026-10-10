@@ -86,7 +86,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from .errors import MechaError, ToolFailure
 from .monitor import Claim
-from .portfile import clear_port_file, write_port_file
+from .portfile import PortBinding
 from .roles import Disposer
 
 __all__ = [
@@ -509,6 +509,10 @@ class MonitorEndpoint:
         self._host = str(host)
         self._want_port = int(port)
         self._port_file = Path(port_file) if port_file is not None else None
+        #: ⭐ 端口的**全生命周期**归 `portfile.PortBinding`（清陈旧 → 回读 → 公布 →
+        #: 收尾按内容清）：本类原先自己写了那三连，而 `providers/mcp.py` 里还有**同一份**
+        #: ⇒ 两处可以各自漂移（2026-10-10 收成单一实现）。
+        self._binding = PortBinding(port_file=self._port_file, host=self._host)
         self._runtime_writer = runtime_writer
         self._log = log or (lambda _m: None)
         self._routes: dict[str, Callable] = {}
@@ -641,16 +645,15 @@ class MonitorEndpoint:
                 kind="monitor_already_started",
                 hint="一个 MonitorEndpoint 只 start 一次；要重起先 stop()",
             )
-        clear_port_file(self._port_file)
+        self._binding.clear_stale()
         handler = type("_BoundMonitorHandler", (_Handler,), {"endpoint": self})
         server = http.server.ThreadingHTTPServer((self._host, self._want_port),
                                                  handler)
-        self._port = int(server.server_address[1])
+        self._port = self._binding.adopt(int(server.server_address[1]))
         self._server = server
         self._thread = threading.Thread(target=server.serve_forever, daemon=True,
                                         name="mecha-cockpit")
         self._thread.start()
-        write_port_file(self._port_file, self._port)
         if self._runtime_writer is not None:
             self._runtime_writer(monitor_port=self._port)
         self._log("[mecha-cockpit] %s（只读：%s）"
@@ -676,7 +679,8 @@ class MonitorEndpoint:
         thread, self._thread = self._thread, None
         if thread is not None:
             thread.join(max(0.1, float(timeout)))
-        clear_port_file(self._port_file, self._port)
+        #: ⭐ 收尾按内容清（且"从没公布过 ⇒ 什么都不做"）—— 见 `PortBinding.clear`。
+        self._binding.clear()
         if self._runtime_writer is not None:
             self._runtime_writer(monitor_port=None)
         self._port = None

@@ -99,7 +99,7 @@ from mcp.server.mcpserver import Context, MCPServer
 from mcp.types import CallToolResult, TextContent
 
 from ..errors import MechaError, ToolFailure
-from ..portfile import clear_port_file, write_port_file
+from ..portfile import PortBinding
 from ..toolhost import LocalToolHost, ToolHost
 from ..tools import CURRENT_CALL_ID, ToolDefinition, ToolRegistry
 
@@ -727,6 +727,10 @@ class McpEndpoint:
         self._host = str(host)
         self._want_port = int(port)
         self._port_file = Path(port_file) if port_file is not None else None
+        #: ⭐ 端口的**全生命周期**归 `portfile.PortBinding`（清陈旧 → 回读 → 公布 →
+        #: 收尾按内容清）：本类与 `cockpit.MonitorEndpoint` 原先各写一份**同形三连**
+        #: ⇒ 两处可以各自漂移（2026-10-10 收成单一实现）。
+        self._binding = PortBinding(port_file=self._port_file, host=self._host)
         self._log = log or (lambda _m: None)
         self._server: MCPServer | None = None
         self._uvicorn = None
@@ -892,7 +896,7 @@ class McpEndpoint:
             )
         import uvicorn                                  # 惰性：纯构造不需要 ASGI 栈
 
-        clear_port_file(self._port_file)
+        self._binding.clear_stale()
         server = self.build_server()
         app = server.streamable_http_app(streamable_http_path=MCP_PATH,
                                         host=self._host)
@@ -902,8 +906,7 @@ class McpEndpoint:
         self._thread = threading.Thread(target=self._uvicorn.run, daemon=True,
                                         name="mecha-mcp")
         self._thread.start()
-        self._port = self._await_ready(timeout)
-        write_port_file(self._port_file, self._port)
+        self._port = self._binding.adopt(self._await_ready(timeout))
         self._log("[mecha-mcp] %s（工具面 %s）"
                   % (self.url, " ".join(s["name"] for s in self._registry.schemas())))
         return self._port
@@ -945,7 +948,8 @@ class McpEndpoint:
         thread, self._thread = self._thread, None
         if thread is not None:
             thread.join(max(0.1, float(timeout)))
-        clear_port_file(self._port_file, self._port)
+        #: ⭐ 收尾按内容清（且"从没公布过 ⇒ 什么都不做"）—— 见 `PortBinding.clear`。
+        self._binding.clear()
         self._port = None
 
     def __enter__(self) -> "McpEndpoint":
