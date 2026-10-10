@@ -385,7 +385,15 @@ class AggregateRuntime:
             # 有回执但**没有 mode** ⇒ 不是真值（防"看着像事实、其实全是空"）
             return {"unreadable": "回执里没有 mode（对端可能还没实现这个读操作）"}
         # 软件侧回执形状就是 `authority_view` 那几个字段（+ `ok`）⇒ 原样透出
-        row = {k: out.get(k) for k in ("ok", "mode", "ai_can_write", "human_holds")}
+        #: ⭐ 白名单**必须带 `shared`**（2026-10-10）：AI 面据此能一眼看出"这家是共用档"
+        #: （`Mode.OPEN` 下 `ai_can_write` 与 `human_holds` **同时为真**，单看任何一个
+        #: 都会误读）。⚠ 实测踩到：这里漏了它 ⇒ **AI 面那份自省静默少一格**，
+        #: 而启动控制台那份（另一处白名单）有它 ⇒ **两处口径分叉**（同一个事实两种形状）。
+        row = {k: out.get(k) for k in ("ok", "mode", "ai_can_write", "human_holds", "shared")}
+        #: ⭐ **每个软件带自己那句"怎么切"**：`how_to_open` 是**项目知识**（哪个页面/哪个开关），
+        #: 而聚合面顶层那一句只取到**其中一个**项目的原话（`sorted()` 里的第一个非空）。
+        #: ⇒ 逐条带上它，AI 才不会拿甲家的入口去指乙家。
+        row["how_to_open"] = str(getattr(spec, "how_to_open", "") or "")
         return row
 
     # ---- dsh overlay ----

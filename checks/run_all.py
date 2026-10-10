@@ -95,6 +95,9 @@ CHECKS = [
     #   + **经聚合端点真调一个工具**（2026-10-10：原先连元工具都调不动）。
     #   ⚠ 起一个真 HTTP 端点（uvicorn）+ 真 MCP 客户端；不碰 dsh、不碰真软件。
     "checks/aggregate_tools_hot_sync_selfcheck.py",
+    # ⭐ 判据 ㉒：**共用档**（`Mode.OPEN`＝AI 与人共用）在框架里被当"**没有写权切换需求**"
+    #   （2026-10-10 用户裁决）+ 启动控制台**标题不许取某一个站点的名字**。
+    "checks/authority_shared_mode_selfcheck.py",
     "checks/phase5_el_selfcheck.py",
     "checks/phase5_hub_selfcheck.py",
     "checks/phase5_bridge_selfcheck.py",

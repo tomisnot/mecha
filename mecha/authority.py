@@ -107,6 +107,13 @@ def authority_view(authority: "Authority", *, how_to_open: str = "") -> dict:
         "mode": authority.mode.value,
         "ai_can_write": ai_ok,
         "human_holds": human_ok,
+        #: ⭐ **共用档**（`Mode.OPEN`：两侧都能写）—— 2026-10-10 用户裁决：
+        #: **"如果有 AI 与人共用的模式，说明该项目没有写权切换的需求"**。
+        #: ⇒ 消费方（启动面板 / 监控面板）据此**不再提供切换按钮**、也不许把共用
+        #: 报成"人工持有"（那两种写法的差别是"读到的就是真的"：`ai_can_write` 与
+        #: `human_holds` 在共用档**同时为真**，单看任何一个都会误报）。
+        #: ⚠ 这一格是 `mode` 的**投影**（不是另立一条规则）：`mode` 才是真值。
+        "shared": authority.mode is Mode.OPEN,
         "how_to_open": how_to_open or "在启动面板上把写权切到人工",
     }
 

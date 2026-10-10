@@ -184,10 +184,18 @@ def _mode_cell(svc: object, ctl_state: dict | None) -> str:
     |---|---|---|
     | `true` | 「**切到手动**」 | 切写权 **+ 开窗**（两步分开报告） |
     | `false` | 「**收回写权（冻结）**」 | ⭐ **只**切写权 ⇒ `locked`（⚠ 不调开窗 —— 它没有面，调了只会响亮失败） |
+    | ⭐ **共用档**（`action="none"`） | **不画按钮** | ⭐ 本项目**没有写权切换需求**（见下） |
 
     ⚠ **为什么不给 `human`**：`HUMAN` 的语义是"人侧通道可写"，
     而**没有手动面的软件里人没有可写通道** ⇒ 那是**骗人的标签**；
     人的真实意图是"先把写权收回" ⇒ `locked`（谁都不能写）**才是老实的那个**。
+
+    ⭐⭐ **共用档为什么连按钮都不画**（2026-10-10 用户裁决：
+    **"如果有 AI 与人共用的模式，说明该项目没有写权切换的需求"**）：
+    `Mode.OPEN` 下**两侧都能写** ⇒ 「切到手动 / 交还给 AI」这两个标签**描述不了任何真实差别**
+    （按下去也不改变谁能写）⇒ 画出来就是**假按钮**。这类项目的入口在**它自己**
+    （`how_to_open` 那句原话），不在这里。⚠ 也不许把共用报成"人工持有"：
+    共用档 `human_holds` 与 `ai_can_write` **同时为真**，单看任何一个都会误报。
 
     形态（**不许出现别的**）：
 
@@ -195,6 +203,7 @@ def _mode_cell(svc: object, ctl_state: dict | None) -> str:
     |---|---|---|
     | 能点 | 控制端点可用 + 真值说**人工持有** | 「交还给 AI」 |
     | 能点 | 控制端点可用 + 真值说**AI 持有** | `has_gui` ⇒ 「切到手动」；否则 ⇒ 「收回写权（冻结）」 |
+    | ⭐ **无按钮** | 声明为**共用档**（`action="none"`） | 真值徽标 + 一行"无切换需求"（**不画按钮**） |
     | 读不到 | 控制端点可用但**读操作失败**（如项目还没实现它） | 「读不到」+ 原因（**不显示旧值/不显示 0**） |
     | 不可用 | **软件没起来** | 灰按钮 + 为什么（不是点了才报错） |
 
@@ -204,21 +213,30 @@ def _mode_cell(svc: object, ctl_state: dict | None) -> str:
     st = ctl_state or {}
     read = st.get("read") or None
     has_gui = bool(getattr(svc, "has_gui", False))
-    #: ⭐ 归人那个动作**由控制器给**（`human` / `freeze`）—— 面板**不自己判** `has_gui`
+    #: ⭐ 归人那个动作**由控制器给**（`human` / `freeze` / `none`）—— 面板**不自己判** `has_gui`
     #: （判两遍 = 两份真值；而"该给哪个动作"是控制器的事实）。
     #: ⚠ 控制器返回的**就是动作名**（能直接发给 `POST /mode`），面板只负责**贴标签**。
+    #: ⭐ `"none"` = 共用档：**没有可切的档** ⇒ 不画按钮（2026-10-10 用户裁决）。
     act = str(st.get("action") or ("human" if has_gui else "freeze"))
+    shared = bool((read or {}).get("shared"))
     label = {"human": "切到手动", "freeze": "收回写权（冻结）"}.get(act, act)
     # ⭐ 真值那一栏：**读得到就报真值；读不到就如实说读不到**（铁律 8）
     if read:
         mode = html.escape(str(read.get("mode", "?")))
-        who = "人工持有" if read.get("human_holds") else ("AI 持有" if read.get("ai_can_write")
-                                                        else "无人可写（locked）")
+        if shared:
+            who = "AI 与人共用"                 # ⚠ 不许报成"人工持有"（两者同时为真）
+        else:
+            who = "人工持有" if read.get("human_holds") else ("AI 持有" if read.get("ai_can_write")
+                                                            else "无人可写（locked）")
         truth = f'<span class="badge">写权 {mode} · {who}</span>'
     elif st.get("ok") or st.get("read_error"):
         truth = '<span class="pending">写权：读不到（不是"没有"）</span>'
     else:
         truth = '<span class="pending">写权：—</span>'
+    #: ⭐ 共用档：按钮是**假按钮**（两侧都能写，按下去不改变任何事）⇒ 只留真值 + 一句说明。
+    if shared or act == "none":
+        return (truth + '<span class="muted"> 本项目声明为**共用档**：AI 与人共用写权，'
+                        '没有切换需求（要动请走它自己的入口）</span>')
 
     if not st.get("ok"):
         why = html.escape(str(st.get("why") or "控制端点不可用"))
@@ -496,9 +514,13 @@ class StatusPage:
         #: 而 `render_page` 读的是 `state()["sites"]`、**不碰 `sites`** ⇒ 这一行从未被执行过。
         #: 判据的替身还把 `sites` 写成了方法（与页面同错、与真实现不同）⇒ 全绿。
         #: ⇒ 现在有一条**真起 `StatusPage`** 的判据钉住（见 `checks/launch_selfcheck.py`）。
-        site = self.controller.sites[0]
-        global _TITLE
-        _TITLE = f"mecha · {site.name}"
+        #: ⭐ **标题是框架那一层的**：这张控制台管的是**启动器**（它下面才是各家软件）。
+        #: ⚠ 旧实现取 `self.controller.sites[0].name` ⇒ 三个站点一起起时标题写成
+        #: **"mecha · ML Toolbox · 控制台"**（第一个站点的名字，纯属加载顺序的偶然）——
+        #: 用户实测抓到："ML Toolbox 不该在这个层次"。
+        #: ⇒ 标题只写 `mecha`（模块常量），**站点名由表头那串** `state()["sites"]` **承担**
+        #: （那里本来就列全了，两处并列反而让人以为是"这个站点专属的控制台"）。
+        #: ⚠ 也**不再写模块全局**：那是"两个实例互相改标题"的写法（本该是实例的事）。
         handler = type("_Bound", (_Handler,), {"controller": self.controller, "page": self})
         self._httpd = ThreadingHTTPServer((self.opts.host, self.opts.port), handler)
         port = int(self._httpd.server_address[1])          # ⭐ 回读实际端口

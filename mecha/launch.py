@@ -685,6 +685,7 @@ class LaunchController:
         |---|---|---|
         | `"human"` | 「切到手动」 | 切写权(=human) **+ 开窗**（两步） |
         | `"freeze"` | 「收回写权（冻结）」 | **只**切写权 ⇒ `locked` |
+        | ⭐ `"none"` | **不画按钮** | ⭐ **共用档**（`Mode.OPEN`）：本项目**没有写权切换需求** |
 
         ⚠ **返回值必须是 `control_write_authority` 认的动作名**（`human`/`freeze`），
         **不是**按钮的显示文字 —— ⚠ 我第一版在这里返回 `"manual"`，
@@ -696,7 +697,17 @@ class LaunchController:
         `Mode.HUMAN` 的语义是"**人侧通道可写**"，而**没有手动面的软件里人没有可写通道**
         ⇒ 给 `HUMAN` 等于**贴一个"写权归人"的标签、实际谁都不能写** —— **骗人的标签**。
         人的真实意图是"**先把写权收回**" ⇒ `locked`（谁都不能写）**才是老实的那一个**。
+
+        ⭐⭐ **为什么共用档没有按钮**（2026-10-10 用户裁决，`"none"` 这一档：
+        **"如果有 AI 与人共用的模式，说明该项目没有写权切换的需求"**）：
+        `Mode.OPEN` 下**两侧都能写** ⇒ "切到手动/交还给 AI"这两个标签**描述不了任何真实差别**
+        （按下去也不改变谁能写）⇒ 画出来就是**假按钮**。这类项目（如 GP：设计上只有一种模式）
+        的切换入口在**它自己**（`how_to_open` 那句话），不在启动控制台。
+        ⚠ 判据 `checks/authority_shared_mode_selfcheck.py` 钉住"共用档不画按钮"，
+        并留红证（同一个夹具换成 `ai` 档 ⇒ 按钮**必须**回来）。
         """
+        if getattr(svc.initial_mode, "value", svc.initial_mode) == Mode.OPEN.value:
+            return "none"                   # ⭐ 共用档：无切换需求（声明层面的事实）
         return "human" if bool(svc.has_gui) else "freeze"
 
     @staticmethod
@@ -715,7 +726,11 @@ class LaunchController:
             return None
         if not isinstance(out, dict) or not out.get("mode"):
             return None
-        return {k: out.get(k) for k in ("ok", "mode", "ai_can_write", "human_holds")}
+        #: ⭐ 白名单**必须带上 `shared`**（2026-10-10）：控制台按它判"共用档"。
+        #: ⚠ 实测踩到：漏了它 ⇒ 页面那条 `shared` 分支**永远为假**，
+        #: 只能靠"声明是 open"那条兜底（两处判据只对了一半），而**聚合面**那份自省
+        #: （给 AI 看的）会**静默少一格** —— 消费方各自补默认值 = 第二个真值。
+        return {k: out.get(k) for k in ("ok", "mode", "ai_can_write", "human_holds", "shared")}
 
     def control_write_authority(self, svc_id: str, action: str) -> dict:
         """面板的写权按钮。⭐ **三种动作**（面板按 `write_authority_state()['action']` 选）。

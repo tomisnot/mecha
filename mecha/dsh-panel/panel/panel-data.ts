@@ -130,8 +130,12 @@ export function stateBadge(state: PanelState | null): { cls: string; text: strin
       const mode = modeOf(state)
       return {
         cls: mode === 'ai' ? 'ai' : mode === 'locked' ? 'warn' : 'ok',
+        //: ⭐ 四档都要认（2026-10-10）：`open` = **AI 与人共用**（两侧都能写）——
+        //: ⚠ 旧写法漏了这一档，共用档会**掉进"连接中…"**（明明连上了、数据也有，
+        //: 却报"连接中"，正是本工程最忌的"看着像坏了"）。判据钉住这四档两两不同。
         text: mode === 'ai' ? '写权 AI' : mode === 'locked' ? '全员禁写'
-          : mode === 'human' ? '写权在人' : '连接中…',
+          : mode === 'human' ? '写权在人' : mode === 'open' ? '写权共用'
+          : '连接中…',
       }
     }
     case 'address':

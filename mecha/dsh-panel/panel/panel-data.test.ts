@@ -82,6 +82,19 @@ test('stateBadge：首拍连接中；ok 档按写权模式；非 ok 档按档位
   const human = panelState({ base: OK_BASE, basic: {
     '/history': okData({ events: [{ seq: 1 }], mode: 'human' }), '/config': okData({ groups: {} }) } })
   assert.equal(stateBadge(human).text, '写权在人')
+  //: ⭐ 四档都要认（2026-10-10 用户裁决：**共用档 = AI 与人共用**）。
+  //: ⛔ 红证：`open` 若掉进兜底 ⇒ 文案会是"连接中…"（连上了却报连接中 = 看着像坏了）。
+  const shared = panelState({ base: OK_BASE, basic: {
+    '/history': okData({ events: [{ seq: 1 }], mode: 'open' }), '/config': okData({ groups: {} }) } })
+  assert.equal(stateBadge(shared).text, '写权共用')
+  assert.notEqual(stateBadge(shared).text, '连接中…')
+  const locked = panelState({ base: OK_BASE, basic: {
+    '/history': okData({ events: [{ seq: 1 }], mode: 'locked' }), '/config': okData({ groups: {} }) } })
+  assert.equal(stateBadge(locked).text, '全员禁写')
+  assert.equal(new Set(['ai', 'human', 'open', 'locked'].map((m) => stateBadge(panelState({
+    base: OK_BASE, basic: { '/history': okData({ events: [{ seq: 1 }], mode: m }),
+                            '/config': okData({ groups: {} }) } })).text)).size, 4,
+    '四档必须给出四个不同文案（任何两档撞文案 = 人分不出当前写权）')
   assert.equal(stateBadge(panelState({ base: fail('address') })).text, '权威离线')
   assert.equal(stateBadge(panelState({ base: fail('address') })).cls, 'error')
   const route = panelState({ base: OK_BASE, basic: { '/history': okData({ events: [{ seq: 1 }] }) },
