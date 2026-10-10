@@ -18,7 +18,7 @@ import { mountClientPanel, GUIDE_KIND, HEADER_ACTIONS_SLOT } from './mount-clien
 
 /** 记一笔的假 ctx：只实现本助手用到的那几片（**结构化**，与真 ctx 同形）。 */
 function fakeCtx() {
-  const calls: { slot: string; def: Record<string, unknown> }[] = []
+  const calls: { slot: string; def: Record<string, unknown>; comp?: unknown }[] = []
   const opened: string[] = []
   const openedTabs: string[] = []
   const tabs: {
@@ -40,8 +40,8 @@ function fakeCtx() {
       },
     },
     slots: {
-      register: (def: Record<string, unknown>) => {
-        calls.push({ slot: String(def.name), def })
+      register: (def: Record<string, unknown>, comp?: unknown) => {
+        calls.push({ slot: String(def.name), def, comp })
         return () => {}
       },
       inject: (name: string, fn: () => () => void) => fn(),
@@ -53,11 +53,16 @@ function fakeCtx() {
   return { ctx, calls, opened, openedTabs, tabs }
 }
 
+/** ⭐ 头部按钮的**壳**（判据用替身；生产由入口 `auto.ts` 装资产自己那份）。
+ *  ⚠ **必须给**：那个槽位是 `kind:'list'`，只注册 def ⇒ 按钮**根本不显示**（实测）。 */
+const FAKE_BUTTON = { name: 'FakeHeaderButton' }
+
 const OPTS = (svc: string, title: string, route: string) => ({
   panelConfig: { routePath: route, portFile: `${svc}.port`, title },
   kind: `mecha:${svc}`,
   id: `mecha-panel:${svc}`,
   body: { name: 'Body' },
+  headerButton: FAKE_BUTTON,
 })
 
 test('⭐ 两份注册并存：标题各读各的（不落到"最后注册那一份"）', () => {
@@ -119,6 +124,19 @@ test('⭐ 每个监控 tab 都往右栏 guide 页**投一个入口**（那才是
   assert.equal(gb!.title(), label(b.tabs[0]!))
 })
 
+test('⛔ 没有头部按钮的**壳** ⇒ 响亮失败（"只注册 def"的后果是按钮**不显示**，而那静默）', () => {
+  const a = fakeCtx()
+  //: ⚠ 不传 `headerButton`、也没 `setDefaultHeaderButton(...)`（本分支没装默认）
+  assert.throws(
+    () => mountClientPanel(a.ctx, {
+      panelConfig: { routePath: '/a', portFile: 'p', title: 't' },
+      kind: 'mecha:AAA', id: 'mecha-panel:AAA', body: { name: 'Body' },
+    }),
+    /需要头部按钮的\*\*壳\*\*|headerButton/,
+    '没壳时必须抛（否则用户看到的是"按钮没显示"，而没人知道为什么）',
+  )
+})
+
 test('⭐ 兜底：宿主没有 `sidebarRight.openTab` ⇒ 退回 `openRightbar`（不静默什么都不做）', () => {
   const a = fakeCtx()
   delete (a.ctx as { sidebarRight?: unknown }).sidebarRight
@@ -149,6 +167,9 @@ test('⭐ 头部按钮恒为**一个**（后注册的不再注册第二个）', 
   //   ⚠ 本判据**改过**（2026-10-09）：原先是"调 `layout.openRightbar(true)`"，而用户实测
   //   **点了什么都没开** —— 因为 `openRightbar` 只开栏、**不选 tab** ⇒ 用户看到**空栏**。
   const header = a.calls.find((x) => x.slot === HEADER_ACTIONS_SLOT)!
+  // ⭐ 而且**必须带壳**：那个槽位是 `kind:'list'`，没组件就**不渲染**
+  //   （用户报"「◈ 监控」按钮没显示"的真因；同排 GP 那个给了组件 ⇒ 只有它显示）。
+  assert.equal(header.comp, FAKE_BUTTON, '按钮注册必须把**壳**一起交上去（否则不显示）')
   const inj = header.def.inject as () => { openCockpit: () => void }
   inj().openCockpit()
   assert.deepEqual(a.openedTabs, [GUIDE_KIND], '按钮应当打开内置的 guide 页（那一页列出所有监控面板）')

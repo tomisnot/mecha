@@ -878,15 +878,17 @@ def build_aggregate_wiring(*, sites: Sequence[Site], supervisor: Supervisor):
        不引入新机制（只要 ``schemas()``，与 ``build_mcp_server`` 的用法一致），
        却让"开关软件"立刻反映到服务端。
     """
-    from .aggregate import Aggregator
+    from .aggregate import AGGREGATE_SERVER_NAME, Aggregator
     from .aggregate_runtime import AggregateRuntime, make_prepare_hook
     from .providers.mcp import McpEndpoint
     from .providers.mcp_client import Backend
 
-    #: 聚合端点/``mcp__<serverName>__`` 前缀用的名字。
-    #: ⚠ **多站点下取第一个站点名**：站点顺序是**稳定**的（§1.1 规则 4）⇒ 名字稳定。
-    #: ⚠ 它**必须在使用之前**定义（这行被误放到函数中部 ⇒ 实测 `UnboundLocalError`）。
-    name_of_site = sites[0].name if sites else "mecha"
+    #: ⭐ 聚合端点/``mcp__<serverName>__`` 前缀用的名字 = **框架自己的**（§7.2）：
+    #: ⚠ **不是**"第一个站点的名字"（原实现取 `sites[0].name`）—— 那是**位置**的偶然产物：
+    #: 实测用户只勾了 GP，dsh 里那个 MCP 客户端却叫 `ML Toolbox`（因为 ML 在
+    #: `MECHA_SITE_ROOTS` 里排第一）⇒ 现场就是"**只选了 GP，载入的却是 ML 的 mcp**"。
+    #: 这个端点是**框架的**聚合面、同时代表所有站点 ⇒ 名字由框架给，与站点顺序无关。
+    name_of_site = AGGREGATE_SERVER_NAME
     agg = Aggregator(server_name=name_of_site)
 
     class _LiveRegistry:

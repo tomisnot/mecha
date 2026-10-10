@@ -40,8 +40,10 @@ error: too many arguments. Expected 0 arguments but got 1: <最后一个 --patch
   弹窗那一步是 dsh 自己的 `openBrowser`（默认 true，受 `--no-open` 与"SSH 启动"抑制），
   ⚠ **观察它需要真开一个浏览器标签**（会打断人）⇒ 这里只到"就绪"为止，
   "窗口真弹了"留给**用户点一次面板**（本判据的验收口径，已如实登记）。
-- **③ 的等待是固定 15 秒**（不做"等它就绪"的轮询）：dsh 是别人的进程，本判据不做它的
-  就绪协议客户端；15 秒是实测余量（冷启动 + 挂载 + 打 URL 行）。
+- **③ 的等待是"有界轮询"（上限 120 秒），不是等它的就绪协议**：dsh 是别人的进程，本判据不做
+  它的就绪客户端，只在日志里等 `dsh web: http://` 那一行。⚠ **实测（2026-10-09）**：冷启动
+  （刚重建过三份 client bundle，dsh 要为每份现算 `rev` 哈希）要 **~50 秒**，第二次启动
+  **<10 秒** —— 所以「固定睡 15 秒」会**假红**（本判据自己栽过这一次，已改成轮询 + 上界）。
 - **不测 dsh 的退出码语义**：只判"15 秒后还活着"；`--port 0` 起的实例由 `taskkill /T /F`
   收尾（与 supervisor 同一套杀树）。
 - ⚠ **不覆盖"多站点 dsh 身份合并"**（那是 `endtoend_selfcheck` ⑦ 的事）。
@@ -64,8 +66,8 @@ from mecha.aggregate_runtime import with_overlay_patch  # noqa: E402
 from mecha.supervise import ChildSpec  # noqa: E402
 
 FAILS: list[str] = []
-#: ③ 的等待秒数（够 dsh 完成 CLI 解析 + 挂载 + 打出 URL 行；实测 15s 有余）。
-BOOT_WAIT_S = 15.0
+#: ③ 的**等待上界**（有界轮询；见那一侧的注释：冷启动实测要 ~50s，第二次启动 <10s）。
+BOOT_TIMEOUT_S = 120.0
 
 
 def _check(name: str, cond: bool, extra: object = "") -> bool:
@@ -195,10 +197,19 @@ def main() -> int:
                                 stderr=subprocess.STDOUT,
                                 env={**os.environ, "PYTHONIOENCODING": "utf-8"})
     try:
-        time.sleep(BOOT_WAIT_S)
-        alive = proc.poll() is None
-        text = log.read_text(encoding="utf-8", errors="replace")
-        _check(f"③ 真 dsh 按这个 argv 起得来（{BOOT_WAIT_S:.0f}s 后仍活着）", alive,
+        #: ⚠ **有界轮询**，不是"固定睡 N 秒"（2026-10-09 改成这样，因为实测抓到自己这条判据的**假红**）：
+        #: dsh 的**冷启动**要为每份 client bundle 现算 `rev` 哈希 ⇒ **实测 50 秒**才打出 URL 行
+        #: （重建过 bundle 之后尤其如此），而第二次启动有缓存 ⇒ **10 秒内**就好。
+        #: 「固定 15 秒」会因此假红 ⇒ 判据必须**等它就绪**，但同时**有上界**（超时即红，不无限等）。
+        deadline = time.monotonic() + BOOT_TIMEOUT_S
+        alive, text = True, ""
+        while time.monotonic() < deadline:
+            text = log.read_text(encoding="utf-8", errors="replace")
+            alive = proc.poll() is None
+            if not alive or "dsh web: http://" in text:
+                break
+            time.sleep(0.5)
+        _check(f"③ 真 dsh 按这个 argv 起得来（{BOOT_TIMEOUT_S:.0f}s 上限内仍活着）", alive,
                f"exit={proc.poll()}；日志尾部={text[-300:]!r}")
         _check("③ 且它打出了 `dsh web: http://…` 那行（= 就绪，且它会自己开窗）",
                "dsh web: http://" in text, text[-300:])

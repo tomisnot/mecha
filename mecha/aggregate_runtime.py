@@ -55,7 +55,7 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Protocol
 
-from .aggregate import META_CLOSE, META_OPEN, Aggregator
+from .aggregate import AGGREGATE_SERVER_NAME, META_CLOSE, META_OPEN, Aggregator
 from .errors import MechaError
 from .providers.mcp_client import Backend
 from .site import DSH_CHILD_ID, Service, Site
@@ -115,20 +115,14 @@ def write_dsh_overlay(runtime_root: Path, *, mcp_port: int, server_name: str,
     return p
 
 
-def stable_server_name(site: Site) -> str:
-    """由站点名算一个**稳定**的 ``serverName``（进工具名前缀 ⇒ 不许随运行期变）。
-
-    ⚠ 它必须**只依赖声明**（站点名），不依赖端口/时间/pid —— 否则每次启动都改名，
-    而 dsh 侧的历史对话里记的是旧名字。
-    """
-    cleaned = re.sub(r"[^A-Za-z0-9_-]+", "-", site.name.strip()).strip("-")
-    if not cleaned:
-        raise MechaError(
-            f"站点名算不出可用的 serverName：{site.name!r}",
-            kind="bad_server_name",
-            hint="站点名至少要含一个字母/数字（serverName 进工具名前缀，必须稳定）",
-        )
-    return cleaned
+#: ⛔ **删掉的机制（R13）：`stable_server_name(site)`** —— 它由**站点名**算聚合端点的
+#: ``serverName``。实测抓到的真 bug：用户**只勾了 GP**，dsh 里那个 MCP 客户端却叫
+#: **`ML Toolbox`**（`MECHA_SITE_ROOTS` 里 ML 排第一）⇒ 现场就是
+#: "**只选了 GP，载入的却是 ML 的 mcp**"。
+#: ⭐ 那个端点是**框架的**聚合面（同时代表**所有**站点）⇒ 名字由框架给、**与站点顺序无关**
+#: （唯一家：:data:`mecha.aggregate.AGGREGATE_SERVER_NAME`）。
+#: ⚠ **反向判断**（不许它复活）：`checks/aggregate_runtime_selfcheck.py` 里的
+#: 「**名字与站点顺序无关**」那条 —— 把 `prepare_dsh` 改回按站点名 ⇒ 当场红。
 
 
 def with_overlay_patch(child: ChildSpec, overlay: Path) -> ChildSpec:
@@ -316,9 +310,14 @@ class AggregateRuntime:
 
     # ---- dsh overlay ----
     def prepare_dsh(self, site: Site, mcp_port: int) -> Path:
-        """生成指向聚合端点的 overlay（**每次启动按实际端口重写**）。"""
+        """生成指向聚合端点的 overlay（**每次启动按实际端口重写**）。
+
+        ⚠ 名字用**框架自己的**（:data:`~mecha.aggregate.AGGREGATE_SERVER_NAME`），
+        **不是**站点名 —— 后者是"位置"的偶然产物（实测：只开 GP 却叫 `ML Toolbox`）。
+        ⚠ `site` 参数保留：overlay 的落点仍按**站点运行期根**算（`site_runtime`）。
+        """
         return write_dsh_overlay(site_runtime(site), mcp_port=mcp_port,
-                                server_name=stable_server_name(site),
+                                server_name=AGGREGATE_SERVER_NAME,
                                 timeout_ms=self.timeout_ms)
 
 

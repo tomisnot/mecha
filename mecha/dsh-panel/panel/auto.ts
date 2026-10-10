@@ -21,11 +21,13 @@
  * （`MonitorTabBody.tsx`；`.tsx` 不在 node 的类型剥离范围内 ⇒ 壳**不进**门禁的执行面，
  * 这是资产既有口径，见 `MonitorTabBody.tsx` 的 docstring）。
  */
+import { MonitorHeaderButton } from './MonitorHeaderButton.tsx'
 import { MonitorTabBody } from './MonitorTabBody.tsx'
 import {
   PLUGIN_INJECT,
   PLUGIN_NAME,
   applyMechaPanels,
+  setDefaultHeaderButton,
   setDefaultPanelBody,
   type AutoContext,
 } from './panels.ts'
@@ -35,6 +37,10 @@ import {
  *  ⇒ 自定义入口（如 GP 那样自带按钮的项目）**不必再 import 壳**，直接调
  *  `applyMechaPanels(ctx)` 即可。 */
 setDefaultPanelBody(MonitorTabBody)
+
+/** ⭐ 同理装上**头部按钮的壳**：⚠ 那个槽位是 `kind: 'list'`，**条目要组件才渲染得出来**
+ *  ⇒ 只注册 def 的后果是**按钮根本不显示**（2026-10-09 实测的"「◈ 监控」按钮没显示"）。 */
+setDefaultHeaderButton(MonitorHeaderButton)
 
 /** cordis 插件名（诊断用）。 */
 export const name = PLUGIN_NAME
@@ -62,6 +68,7 @@ export {
   PLUGIN_NAME,
   TITLE_PREFIX,
   applyMechaPanels,
+  setDefaultHeaderButton,
   setDefaultPanelBody,
 } from './panels.ts'
 export type { ApplyOptions, AutoContext } from './panels.ts'

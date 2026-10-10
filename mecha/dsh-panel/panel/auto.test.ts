@@ -30,7 +30,7 @@ import {
   type DeclaredPanelService,
   type PanelServicesPayload,
 } from './services.ts'
-import { applyMechaPanels, loadPanelServices } from './panels.ts'
+import { applyMechaPanels, loadPanelServices, setDefaultHeaderButton } from './panels.ts'
 
 /**
  * ⚠ 正文组件用**替身**：真正的壳是 `.tsx`（react），**`node --test` 加载不了** ——
@@ -39,6 +39,14 @@ import { applyMechaPanels, loadPanelServices } from './panels.ts'
  * ⭐ 被验的**形状**（`panelConfig`/`kind`/`id`/`extraPages`）全都是真的；只有那个组件是替身。
  */
 const STUB_BODY = { stub: 'MonitorTabBody' }
+
+/**
+ * ⭐ **头部按钮的壳**：也必须是**替身**（真壳是 `.tsx`）。⚠ 而且它**是必须的**：
+ * 那个槽位是 `kind: 'list'`，**只注册 def 不给组件 ⇒ 按钮根本不显示**（2026-10-09 实测）。
+ * ⚠ 装在这里 = 与生产同构（入口 `auto.ts` 就是 `setDefaultHeaderButton(资产自己的按钮)`）。
+ */
+const STUB_BUTTON = { stub: 'MonitorHeaderButton' }
+setDefaultHeaderButton(STUB_BUTTON)
 
 /** 真夹具（⚠ 与三家真 `mecha_site.py` 对拍，见文件头）。 */
 const REAL: PanelServicesPayload =

@@ -98,6 +98,20 @@ def _compose(svc_id: str, tool: str) -> str:
     return f"{svc_id.lower()}_{tool}"
 
 
+#: ⭐ **聚合端点自己的名字**（进 dsh 的 ``mcp__<serverName>__<tool>`` 前缀）。
+#:
+#: ## 为什么是**框架的**名字，而不是"某个站点的名字"（2026-10-09 实测更正）
+#:
+#: 原实现取 ``sites[0].name``（**第一个站点**）⇒ 用户只勾了 **GP** 启动，
+#: 而 dsh 里那个 MCP 客户端却叫 **`ML Toolbox`**（因为 `MECHA_SITE_ROOTS` 里 ML 排第一）
+#: ⇒ 现场看起来就是"**只选了 GP，载入的却是 ML 的 mcp**"。
+#: ⚠ 那个名字是**位置**的偶然产物（站点顺序），而这个端点是**框架的**聚合面：
+#: 它同时代表**所有**站点 ⇒ 名字必须由**框架**给，且**与站点顺序无关**。
+#: ⚠ 代价（一次性）：工具前缀从 `mcp__ML-Toolbox__*` 变成 `mcp__mecha__*` ——
+#: 现在改**比发布后改**便宜（dsh 侧历史对话里记的是旧名字）。
+AGGREGATE_SERVER_NAME = "mecha"
+
+
 class Aggregator:
     """把多个后端合成一个 MCP 服务端（工具表可随 attach/detach 变）。
 
@@ -107,7 +121,7 @@ class Aggregator:
     误报成"进程活着"）。
     """
 
-    def __init__(self, *, server_name: str = "mecha",
+    def __init__(self, *, server_name: str = AGGREGATE_SERVER_NAME,
                  state_fn: Callable[[], Mapping[str, object]] | None = None,
                  open_fn: Callable[[str], object] | None = None,
                  close_fn: Callable[[str], object] | None = None) -> None:

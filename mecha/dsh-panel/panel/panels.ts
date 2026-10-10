@@ -52,6 +52,10 @@
  */
 
 import { mountClientPanel } from './mount-client-plugin.ts'
+
+//: ⭐ 头部按钮的壳的**装法**与正文壳同源（都在 `mount-client-plugin.ts` 里注册）
+//: ⇒ 从这里**转出去**，让入口 `auto.ts` 只需记一个 import 路径。
+export { setDefaultHeaderButton } from './mount-client-plugin.ts'
 import {
   PANEL_SERVICES_ROUTE,
   extraPageSpecsFrom,
@@ -103,6 +107,10 @@ export interface ApplyOptions {
   /** 正文组件。⚠ 不传 ⇒ 用 :func:`setDefaultPanelBody` 装的那一份（入口 `auto.ts` 装的是
    *  资产自己的壳）；两处都没有 ⇒ **响亮失败**（不静默挂一个没有正文的 tab）。 */
   body?: unknown
+  /** ⭐ **头部按钮的壳**。⚠ 与 `body` 同一条纪律：那个槽位要**组件**才渲染得出来
+   *  （只注册 def ⇒ 按钮**不显示**，实测栽过）⇒ 不传就用 `setDefaultHeaderButton` 装的那一份，
+   *  两处都没有 ⇒ 由 `mountClientPanel` **响亮失败**。 */
+  headerButton?: unknown
   fetchImpl?: typeof fetch
   /** 取参数的路由（缺省 = :data:`PANEL_SERVICES_ROUTE`）。 */
   route?: string
@@ -191,6 +199,8 @@ export async function applyMechaPanels(ctx: AutoContext, opts: ApplyOptions = {}
       titlePrefix: TITLE_PREFIX,
       //: ⭐ 右栏「guide」页里的排位 = **声明顺序**（不是"谁先注册谁在前"）
       guideOrder: order,
+      //: ⭐ 头部按钮的壳：那个槽位要组件才渲染得出来（只注册 def ⇒ 按钮不显示，实测栽过）
+      headerButton: opts.headerButton,
     })
     order += 1
     st.mounted[svc.tabId] = dispose

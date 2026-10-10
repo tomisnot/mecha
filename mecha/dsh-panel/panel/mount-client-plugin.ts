@@ -99,6 +99,9 @@ export interface MountClientPanelOptions {
   titleComponent?: unknown
   /** 标题前缀（如「◈ 监控 · ML」）；缺省只用 `panelConfig.title`。 */
   titlePrefix?: string
+  /** ⭐ **头部按钮的壳**（缺省 = `setDefaultHeaderButton` 装的那一份；两者都没有 ⇒ **抛**）。
+   *  ⚠ 必须给：那个槽位是 `kind:'list'`，**只注册 def 不给组件 ⇒ 按钮不显示**（实测）。 */
+  headerButton?: unknown
   /** ⭐ 这一份在**右栏 guide 页**里的排位（升序；缺省 `0`）。
    *  ⚠ 由调用方按**声明顺序**给（`panels.ts` 把那份参数的 index 传进来）⇒
    *  一览里的顺序与声明顺序一致，而不是"谁先注册谁在前"（后者会随 bundle 加载顺序漂）。 */
@@ -118,6 +121,23 @@ export const PANE_TAB_SLOT = 'sidebar.right.pane.tab'
 export const PANE_TAB_TITLE_SLOT = 'sidebar.right.pane.tab.title'
 /** 会话头部动作槽位。 */
 export const HEADER_ACTIONS_SLOT = 'conversation.session.header.actions'
+
+/**
+ * 头部按钮的**壳**（默认那个的家，**只有一处**：入口 `auto.ts` 装资产自己的按钮）。
+ *
+ * ⚠ 为什么是"装"而不是静态 import：那个槽位是 **`kind: 'list'`**，**条目要渲染就得有组件**
+ * （dsh 官方给该槽位的例子与产品内真实用法**全都传组件**）；而组件是 `.tsx`
+ * ⇒ 不能进 `node:test`，与本模块"行为可判"的定位冲突 ⇒ 按 `setDefaultPanelBody`
+ * 的**同一套办法**解耦。
+ * ⛔ 教训（2026-10-09 实测）：我们曾经**只注册 def、不给组件** ⇒ **按钮根本不显示**
+ * （用户报"「◈ 监控」按钮没显示"，而同一排 GP 自带那个**给了组件** ⇒ 只有它显示）。
+ */
+let defaultHeaderButton: unknown
+
+/** 装头部按钮的壳（入口调；**再调一次覆盖**，便于 HMR/判据）。 */
+export function setDefaultHeaderButton(button: unknown): void {
+  defaultHeaderButton = button
+}
 
 /** ⭐ dsh 右栏那个**内置**的「guide」页的 kind（`sidebarRight` 的 `GUIDE_KIND`）。
  *  ⚠ 它**不是**我们能改的东西（宿主内置）⇒ 这里只把那个字面量收成**一处**，
@@ -198,6 +218,17 @@ export function mountClientPanel(
   if (opts.withHeaderButton !== false) {
     const flags = opts.buttonFlags ?? globalFlags()
     if (!flags[HEADER_BUTTON_ID]) {
+      // ⛔ 没有壳 ⇒ **响亮失败**：那个槽位要组件才渲染得出来，
+      //    "只注册 def"的后果是**按钮根本不出现**（而那是静默的）—— 实测栽过。
+      const button = opts.headerButton ?? defaultHeaderButton
+      if (button === undefined) {
+        throw new Error(
+          'mountClientPanel 需要头部按钮的**壳**：既没传 opts.headerButton，'
+          + '也没有 setDefaultHeaderButton(...)。'
+          + '⚠ 生产路径用入口 `@mecha/dsh-panel/panel/auto.ts`（它装的是资产自己的按钮）；'
+          + '⚠ 那个槽位是 kind:\'list\'，**只注册 def 不给组件 ⇒ 按钮不显示**（实测）。',
+        )
+      }
       const btn = ctx.slots?.inject?.(HEADER_ACTIONS_SLOT, () =>
         ctx.slots!.register!({
           name: HEADER_ACTIONS_SLOT,
@@ -210,7 +241,7 @@ export function mountClientPanel(
           inject: () => ({
             openCockpit: () => { openMonitorGuide(ctx) },
           }),
-        }))
+        }, button))              // ⭐ 第二个参数 = **壳**（缺它就不渲染）
       if (btn) {
         flags[HEADER_BUTTON_ID] = true
         disposers.push(() => {

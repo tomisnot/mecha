@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import importlib
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -41,14 +42,26 @@ sys.path.insert(0, str(ROOT))
 
 import yaml  # noqa: E402
 
-from mecha.aggregate import Aggregator  # noqa: E402
+from mecha.aggregate import AGGREGATE_SERVER_NAME, Aggregator  # noqa: E402
 from mecha.aggregate_runtime import (DEFAULT_TOOL_CALL_TIMEOUT_MS,  # noqa: E402
                                     AggregateRuntime, make_prepare_hook,
-                                    overlay_text, stable_server_name, with_overlay_patch)
+                                    overlay_text, with_overlay_patch)
 from mecha.errors import MechaError  # noqa: E402
 from mecha.launch import LaunchController  # noqa: E402
 from mecha.site import DSHSpec, ReadySpec, Service, Site  # noqa: E402
 from mecha.tools import ToolRegistry, define_tool  # noqa: E402
+
+#: 聚合端点**应当**叫这个名字（唯一家：`mecha.aggregate.AGGREGATE_SERVER_NAME`）。
+_AGG = AGGREGATE_SERVER_NAME
+
+
+def _same_shape_other_site(site: Site) -> Site:
+    """造一个**形状相同、名字不同**的站点（用来验"聚合端点的名字与站点无关"）。
+
+    ⚠ 只换名字：其余字段照抄 ⇒ 差异只有名字，判据才判得准。
+    """
+    import dataclasses
+    return dataclasses.replace(site, name="另一个站点名")
 
 
 def _load_supervise():
@@ -355,9 +368,27 @@ def check_overlay_keeps_timeout() -> None:
         p = rig.rt.prepare_dsh(rig.site, 12345)
         _check("④ overlay 落在项目根 `runtime/`（生成物、不入库）",
                p.parent.name == "_mecha_runtime" and p.name.endswith(".patch.yml"), f"p={p}")
-        n1 = stable_server_name(rig.site)
-        n2 = stable_server_name(rig.site)
-        _check("④ `serverName` **稳定**（只依赖声明，不依赖端口/时间/pid）", n1 == n2, f"{n1}")
+
+        #: ⭐⭐ **名字与站点顺序无关**（2026-10-09 实测抓到的真 bug）：
+        #:   原实现取 `sites[0].name`（**第一个站点**）⇒ 用户只勾 **GP** 启动，
+        #:   而 dsh 里那个 MCP 客户端叫 **`ML Toolbox`**（ML 在 `MECHA_SITE_ROOTS` 里排第一）
+        #:   ⇒ 现场就是"**只选了 GP，载入的却是 ML 的 mcp**"。
+        #:   ⇒ 判据：换一个**站点**去 prepare，写出来的 overlay **必须一模一样**。
+        other = _same_shape_other_site(rig.site)
+        p2 = rig.rt.prepare_dsh(other, 12345)
+        first = yaml.safe_load(p.read_text(encoding="utf-8"))
+        second = yaml.safe_load(p2.read_text(encoding="utf-8"))
+        n1 = first[0]["insert"][0]["config"]["serverName"]
+        n2 = second[0]["insert"][0]["config"]["serverName"]
+        _check("④ ⭐ `serverName` **与站点无关**（换站点 ⇒ 名字不许变）",
+               n1 == n2 == _AGG, f"{n1!r} vs {n2!r}（应当都是 {_AGG!r}）")
+        _check("④ ⭐ 名字也不许是**站点名**（「只开 GP 却叫 ML」就是它）",
+               n1 not in (rig.site.name, other.name) and "ML" not in n1,
+               f"{n1!r}；站点名={rig.site.name!r}/{other.name!r}")
+        #: ⛔ **红证**：按老口径（站点名）算一次 ⇒ 必须**不相等**（否则本判据是哑的）
+        old = re.sub(r"[^A-Za-z0-9_-]+", "-", rig.site.name.strip()).strip("-")
+        _check("④ ⛔ 红证：站点名算出来的名字**确实不同**（判据不是空转）",
+               old != n1, f"old={old!r} new={n1!r}")
     finally:
         rig.close()
 
@@ -468,11 +499,14 @@ def check_end_to_end_real_mcp_backend() -> None:
 
 
 def _write_tmp_overlay(port: int, site: Site) -> Path:
-    """端到端用：把 overlay 写进临时目录（不污染仓）。"""
+    """端到端用：把 overlay 写进临时目录（不污染仓）。
+
+    ⚠ 名字用**框架常量**（与 `prepare_dsh` 同源）：这里若自己编一个名字，
+    端到端那条判据就会验到一个**生产不会产生的** overlay。
+    """
     import tempfile
     p = Path(tempfile.mkdtemp(prefix="2b-overlay-")) / "dsh-aggregate.patch.yml"
-    p.write_text(overlay_text(mcp_port=port, server_name=stable_server_name(site)),
-                 encoding="utf-8")
+    p.write_text(overlay_text(mcp_port=port, server_name=_AGG), encoding="utf-8")
     return p
 
 
