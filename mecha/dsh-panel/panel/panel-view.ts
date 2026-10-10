@@ -233,7 +233,8 @@ export function extraPageHtml(spec: ExtraPageSpec, result: FetchResult<unknown>)
 
 /** 面板样式（**布局本体**；中性前缀，随资产发货）。 */
 export const TAB_CSS = `
-.mecha-tab-native{height:100%;overflow:auto;background:#f6f8fa;color:#1f2328;font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.mecha-tab-root{display:flex;flex-direction:column;flex:1 1 auto;min-height:0}
+.mecha-tab-native{flex:1 1 auto;min-height:0;overflow:auto;background:#f6f8fa;color:#1f2328;font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
 .mecha-tab-native .mecha-tabs{position:sticky;top:0;display:flex;gap:4px;align-items:center;padding:6px 8px;background:#f6f8fa;border-bottom:1px solid #d0d7de;z-index:2}
 .mecha-tab-native .mecha-tabs button{cursor:pointer;border:1px solid #d0d7de;background:#fff;border-radius:6px;padding:3px 10px;font:inherit;color:#57606a}
 .mecha-tab-native .mecha-tabs button.on{background:#0969da;border-color:#0969da;color:#fff}

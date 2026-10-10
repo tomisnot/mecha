@@ -182,7 +182,13 @@ export function MonitorTabBody({ extraPages = [], useProjection, config }: {
   }
 
   return (
-    <div ref={ref} onClick={onClick}
+    //: ⚠⭐ **这个 div 必须带上 `mecha-tab-root`**（2026-10-10 实测：侧边栏**没有滚动条**）：
+    //: dsh 的右栏正文容器（`.tabBody`）是 `display:flex;flex-direction:column;overflow:hidden`
+    //: ⇒ 若本层不参与 flex（无类名 = `height:auto`），里面的
+    //: `.mecha-tab-native{height:100%}` 就**没有可依据的高度**，内容一路长出去被
+    //: `.tabBody` 的 `overflow:hidden` **裁掉** ⇒ 既滚不动、也看不见下半截。
+    //: 类名由 `panel-view.ts` 给出（`flex:1 1 auto;min-height:0;display:flex`）。
+    <div ref={ref} className="mecha-tab-root" onClick={onClick}
       dangerouslySetInnerHTML={{ __html: `<div class="mecha-tab-native">${head}${body}</div>` }} />
   )
 }

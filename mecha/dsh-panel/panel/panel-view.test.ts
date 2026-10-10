@@ -8,6 +8,7 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import {
   badgeHtml,
   cfgPageHtml,
@@ -101,6 +102,31 @@ test('TAB_CSS：只用**中性前缀**（共享资产里不许有项目前缀）
   for (const prefix of ['.mltb', '.re0']) {   // 这两个前缀只作为**反面语料**出现
     assert.ok(!TAB_CSS.includes(prefix), `CSS 里混进了项目前缀 ${prefix}`)
   }
+})
+
+test('⭐ 高度链闭合：右栏**能滚**（2026-10-10 实测：滑动条不生效）', () => {
+  // 现场：dsh 的右栏正文容器 `.tabBody` 是 `display:flex;flex-direction:column;overflow:hidden`
+  // ⇒ 面板正文最外层若不参与 flex（无类名 ⇒ height:auto），里面 `height:100%` 就没有
+  //   可依据的高度，内容一路长出去被 `overflow:hidden` **裁掉**（既滚不动也看不见）。
+  // ⇒ 这条判据钉住"外层带 mecha-tab-root + 两层都用 flex/min-height:0 而不是百分比高度"。
+  const root = TAB_CSS.match(/\.mecha-tab-root\{([^}]*)\}/)
+  assert.ok(root, 'TAB_CSS 里没有 .mecha-tab-root 规则（外层 div 会退回 height:auto）')
+  const rootDecls = root[1] ?? ''
+  for (const decl of ['display:flex', 'flex-direction:column', 'flex:1 1 auto', 'min-height:0']) {
+    assert.ok(rootDecls.includes(decl), `.mecha-tab-root 缺 ${decl}`)
+  }
+  const native = TAB_CSS.match(/\.mecha-tab-native\{([^}]*)\}/)
+  assert.ok(native, 'TAB_CSS 里没有 .mecha-tab-native 规则')
+  const nativeDecls = native[1] ?? ''
+  for (const decl of ['flex:1 1 auto', 'min-height:0', 'overflow:auto']) {
+    assert.ok(nativeDecls.includes(decl), `.mecha-tab-native 缺 ${decl}`)
+  }
+  assert.ok(!nativeDecls.includes('height:100%'),
+    '.mecha-tab-native 又用百分比高度了——父层高度是 auto 时它等于没有（滑动条会再失效）')
+
+  // ⛔ 红证：正文那道 <div> 必须真的挂上这个类（CSS 对了、类名没挂 ⇒ 一样滚不动）
+  const body = readFileSync(new URL('./MonitorTabBody.tsx', import.meta.url), 'utf8')
+  assert.match(body, /className="mecha-tab-root"/, 'MonitorTabBody 的最外层 div 没挂 mecha-tab-root')
 })
 
 // ---------------------------------------------------------------- 项目附加页
