@@ -91,6 +91,10 @@ CHECKS = [
     #   ⚠ 要三家仓在位（MECHA_SITE_ROOTS 或 MECHA_ML_ROOT/MECHA_EL_ROOT/MECHA_GP_ROOT），
     #   缺 ⇒ SKIP，严格模式变 FAIL。②③（含红证）零外部依赖。
     "checks/panel_one_leg_selfcheck.py",
+    # ⭐ 判据 ㉑：**工具表热同步**（服务端三件事：声明能力 / 活表会变 / 主动广播）
+    #   + **经聚合端点真调一个工具**（2026-10-10：原先连元工具都调不动）。
+    #   ⚠ 起一个真 HTTP 端点（uvicorn）+ 真 MCP 客户端；不碰 dsh、不碰真软件。
+    "checks/aggregate_tools_hot_sync_selfcheck.py",
     "checks/phase5_el_selfcheck.py",
     "checks/phase5_hub_selfcheck.py",
     "checks/phase5_bridge_selfcheck.py",

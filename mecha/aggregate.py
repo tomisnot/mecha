@@ -33,18 +33,20 @@ dsh 只挂**一个** MCP 端点（见设计文档 §7.2）。而每个软件各�
 
 ## Known Limitations and Deferred Work
 
-- ⚠ **发不出 ``notifications/tools/list_changed``**（**实测证据**，mcp 2.2.0）：
-  - 本框架用的是 ``mcp.server.mcpserver.server.MCPServer``，
-    它**只有** ``add_tool`` / ``remove_tool`` / ``list_tools`` / ``call_tool`` / ``tool``
-    ——**没有任何服务端主动发通知的公开面**；
-  - ``mcp.server.lowlevel.Server`` 上 ``send*`` / ``changed*`` 成员为**空**
-    （只有 ``add_notification_handler`` 那种"**收进来**"的方向）。
-  ⇒ **不是"名字没找对"**，是这版 SDK 没给这个面。本轮的**主路径是元工具** ``query_software``
-  （AI 自己看当前有哪些软件）；**通知如实登记为"想发但发不出"，不假装发了**。
-  **2b 再谈**要不要绕到 lowlevel 自己发（那是另一套会话/传输管理，不在本轮）。
-  **重新考虑条件**：dsh 确实监听该通知（``mcp-client/src/connection.ts:263-268`` 的
-  ``listChanged.tools.onChanged → refreshTools()``）⇒ 一旦这版 SDK 给出服务端通知面，
-  就该接上。
+- ⭐ **工具表热同步已接上**（2026-10-10，用户裁决的方案 B）——原先这里是"**发不出
+  ``notifications/tools/list_changed``**"（那版结论只对了一半：SDK 的高层 ``MCPServer``
+  确实没有服务端通知面，但 ``Connection.send_tool_list_changed()`` 是有的）。现在三件事都做了：
+  ① **表真的会变**（``McpEndpoint.publish_tools`` 对账）② **声明能力**
+  （``declare_tools_list_changed``）③ **服务端主动广播**（``notify_tools_changed``，
+  给每个活连接发，**不在任何工具调用里顺手发**）。
+  ⚠ 代价与守卫见 ``providers/mcp.py`` 的 Known Limitations 与判据
+  ``checks/aggregate_tools_hot_sync_selfcheck.py``（SDK 一改形状就红）。
+  ⚠ 仍是 **best-effort**：没有独立 SSE 通道的连接（2026-era 单请求信封/无状态）
+  **天生收不到推送**；那一档我们**INFO 记一笔**，不假装发了。
+- ⚠ **"要不要重新挂"必须读 :meth:`states`，不许读 :meth:`attached`**（真机实测抓到的真 bug）：
+  ``attached`` 按墓碑设计**含已关闭的后端** ⇒ 拿它判就会"软件重启后工具永远回不到可用"
+  （现象：进程 ready、工具全是墓碑）。⇒ ``AggregateRuntime.sync_backends`` 用 ``states()``；
+  判据 ``checks/aggregate_tools_hot_sync_selfcheck.py`` ⑥ 钉住这条反向判断。
 - ⭐ **``MCPServer`` 有 ``add_tool`` / ``remove_tool``（能在活着的服务端上增减工具）**：
   这是设计文档 §6.1「**不需要 ProxyMCP 那类兜底工具**」的**实现层依据**——
   架构当初就是按"**工具表能动态改**"设计的。⚠ 但本轮 ``build_server`` 走的是

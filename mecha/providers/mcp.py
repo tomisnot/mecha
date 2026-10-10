@@ -71,12 +71,21 @@ output schema——声明"这个工具返回 ``{result: string}``"，而工具**
   比响亮失败更坏。要测 handler 就按 ``phase12`` 的做法从注册表取 handler 本体直接调。
 - ``_override_declared_schema`` 依赖 mcp 2.2 的 ``MCPServer._tool_manager`` 与
   ``Tool.parameters``；SDK 升级破坏时只改那一个函数，不改调用方。
+- ⭐ **工具表热同步包了 SDK 的两个公开类方法**（2026-10-10，用户裁决的方案 B）：
+  ``declare_tools_list_changed`` 读一次 ``MCPServer._lowlevel_server`` 并给它的
+  ``create_initialization_options`` 包一层（SDK 没给"声明能力"的构造参数）；
+  ``install_connection_tracking`` 给 ``Connection.for_loop`` / ``.from_envelope``
+  各包一层（SDK 没有"连接建立"的公开回调 ⇒ 这是拿活连接唯一不重写传输层的办法）。
+  ⚠ **代价**：SDK 升级可能让包装失效（现象：AI 工具表又停在连接那一刻）。
+  ⇒ 判据 ``checks/aggregate_tools_hot_sync_selfcheck.py`` 钉住"包装在位 + 真收到通知"，
+  SDK 一改就红；替换点写在这两个函数头上（SDK 若开放官方回调就换掉）。
 - 本模块顶层 import ``mcp`` ⇒ ``import mecha.providers.mcp`` 需要装 extra
   （``pip install mecha[mcp]``）；``import mecha`` 与核心模块**不**碰它。
 """
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
 import threading
@@ -85,6 +94,7 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
+from mcp.server.lowlevel.server import NotificationOptions
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.types import CallToolResult, TextContent
 
@@ -444,9 +454,17 @@ def _make_handler(toolhost: ToolHost, tool_name: str,
 
 
 def _register_tool(server: MCPServer, registry: ToolRegistry,
-                   schema: Mapping[str, object], *, toolhost: ToolHost,
+                   schema: Mapping[str, object], *, toolhost: ToolHost | None = None,
                    required_source: RequiredSource | None = None) -> None:
-    """把一条 ``schemas()`` 投影注册成 MCP 工具（三步：合成 → 注册 → 覆写）。"""
+    """把一条 ``schemas()`` 投影注册成 MCP 工具（三步：合成 → 注册 → 覆写）。
+
+    ⚠ ``toolhost=None`` ⇒ **现场建一个** ``LocalToolHost(registry)``（与
+    :func:`build_mcp_server` 同一条规则）。⭐ 2026-10-10 实测踩到的真 bug：热同步的对账
+    路径把 ``self._toolhost``（聚合端点上是 ``None``）直接传了进来 ⇒ handler 闭包捕获
+    ``toolhost=None`` ⇒ 调它时 ``AttributeError: 'NoneType' object has no attribute 'call'``
+    ⇒ **被重新注册过的工具（含墓碑）全废**，而且现象是 SDK 那句通用
+    ``Error executing tool X``（墓碑该有的"怎么重开"全丢）。
+    """
     name = str(schema["name"])
     tool = registry.get(name)
     if tool is None:
@@ -455,10 +473,11 @@ def _register_tool(server: MCPServer, registry: ToolRegistry,
             kind="tool_declaration_drift",
             hint="schemas() 与 get() 必须来自同一张注册表（不允许第二张工具表）",
         )
+    host = toolhost if toolhost is not None else LocalToolHost(registry)
     required = resolve_required(name, tool, required_source)
     input_schema, defaulted = tool_input_schema(
         name, schema, execute=tool.execute, declared_required=required)
-    handler = _make_handler(toolhost, name, defaulted)
+    handler = _make_handler(host, name, defaulted)
     handler.__signature__ = synthesize_signature(schema, required)  # type: ignore[attr-defined]
     server.add_tool(handler, name=name,
                     description=str(schema.get("description") or ""))
@@ -526,6 +545,162 @@ def build_mcp_server(registry: ToolRegistry, *, server_name: str,
     return server
 
 
+# ============================================================================
+# ⭐ 工具表**热同步**（2026-10-10 用户裁决："按最正规的方式来"）
+#
+# 三件事缺一不可（少一件，AI 的工具表就永远停在"连接那一刻"）：
+#   ① **表真的会变**：``MCPServer`` 支持 ``add_tool``/``remove_tool``，但**没人调它**
+#      ⇒ 端点发出去的永远是 ``start()`` 那一刻的快照（实测：``Aggregator`` 里有该软件的
+#      **全部**工具，端点却只发那几个元工具）。⇒ :meth:`McpEndpoint.publish_tools` 做
+#      **幂等对账**（多退少补、描述变了的重铺）。
+#   ② **声明能力**：客户端 SDK **只在服务端声明 ``capabilities.tools.listChanged`` 时**
+#      才挂通知处理器（SDK 原话 "silently skipped"）⇒ :func:`declare_tools_list_changed`。
+#   ③ **服务端主动发**：``Connection.send_tool_list_changed()``（best-effort；没有独立
+#      SSE 通道就**静默丢弃**）⇒ :meth:`McpEndpoint.notify_tools_changed`。
+#
+# ⚠ **为什么不"在工具调用里顺手发"**（用户明确禁止）：发送只发生在
+#   ``AggregateRuntime.sync_backends()``（软件就绪/退出那一刻），不在任何请求里。
+# ============================================================================
+
+
+def _on_this_loop(loop: Any) -> bool:
+    """当前线程是不是就跑在 ``loop`` 上（决定是"直接跑"还是"投过去"）。"""
+    try:
+        return asyncio.get_running_loop() is loop
+    except RuntimeError:
+        return False
+
+
+def _schema_digest(schema: Mapping[str, object]) -> str:
+    """一条工具投影的指纹（描述变了 ⇒ 要重注册：墓碑语义就靠它）。"""
+    return json.dumps(schema, sort_keys=True, default=str)
+
+
+def declare_tools_list_changed(server: MCPServer) -> None:
+    """⭐ ② 让端点在 ``initialize`` 里**声明** ``capabilities.tools.listChanged = true``。
+
+    ## 为什么非声明不可（实测抓到的真因）
+
+    dsh 用的 TS 客户端 SDK 里，**只有服务端声明了这条能力**，客户端才去挂
+    ``notifications/tools/list_changed`` 的处理器——SDK 源码原话：
+    *"servers are silently skipped if the server doesn't advertise the corresponding
+    listChanged capability"*。⇒ 不声明，我们发出去的通知会被**静默忽略**
+    （现象会像"发了没用"，比不发更难查）。
+
+    ⚠ 实测本模块原先声明的是 ``tools = list_changed=False``：因为
+    ``MCPServer(name=…, instructions=…)`` 没传 ``NotificationOptions``，而
+    ``streamable_http_app()`` 的签名里**也没有**这个参数 ⇒ 只能在这里注入。
+
+    ## 注入点为什么是这一处
+
+    SDK 的 ``ServerRunner`` 在 initialize 时调
+    ``server.create_initialization_options()``（``mcp/server/runner.py:431``，
+    且 streamable 路径**不传** ``init_options``：``streamable_http_manager.py:245``）
+    ⇒ 把那个**公开方法**在**这一个实例**上包一层即可。
+    ⚠ ``server._lowlevel_server`` 是 SDK 未提供公开访问口的属性（本仓唯一的私有读，
+    见 Known Limitations）。
+
+    ## ⚠ 能力声明必须与"真会发"成对
+
+    只有**聚合端点**装它。控制端点（``software_control``）**不发**通知 ⇒ 不许声明，
+    否则是对客户端的**假声明**。
+    """
+    low = server._lowlevel_server                      # noqa: SLF001 - 见 docstring
+    original = low.create_initialization_options
+
+    def with_tools_changed(notification_options: NotificationOptions | None = None,
+                           experimental_capabilities: dict | None = None,
+                           extensions: dict | None = None):
+        base = notification_options or NotificationOptions()
+        merged = NotificationOptions(prompts_changed=base.prompts_changed,
+                                     resources_changed=base.resources_changed,
+                                     tools_changed=True)
+        return original(notification_options=merged,
+                        experimental_capabilities=experimental_capabilities,
+                        extensions=extensions)
+
+    low.create_initialization_options = with_tools_changed      # type: ignore[method-assign]
+
+
+class ConnectionTracker:
+    """⭐ ③ 的"活连接"登记表（**只服务聚合端点**；launcher 里只有一个端点 ⇒ 单例）。
+
+    ## 为什么要包 SDK 的工厂（方案 B，用户裁决）
+
+    MCP Python SDK 在 streamable-HTTP 这条路上**没有**"连接建立/关闭"的公开回调：
+
+    - ``ServerRequestContext.session`` 只在**请求处理期**可达，而且**每请求新建**
+      （实测：4 次请求 = 4 个会话对象）；
+    - ``Connection`` 由 SDK 在 ``serve_loop`` 内部创建，**不挂在任何我们拿得到的地方**
+      （``StreamableHTTPServerTransport`` 上没有 session/connection 属性）；
+    - streamable 路径的 lifespan 是**管理器级一次**，不是每会话。
+
+    ⇒ 想拿"活连接"，只能包它的**两个公开工厂**：
+    ``for_loop``（loop 模式，**有**独立 SSE back-channel）与
+    ``from_envelope``（2026-era 单请求信封 / 无状态，**没有** back-channel ⇒ 登记了也发不出，
+    发送那一步会按 ``has_standalone_channel()`` 跳过并留日志）。
+
+    ⚠ **这是有意的代价**：SDK 升级可能让包装失效 ⇒ 判据
+    ``checks/aggregate_tools_hot_sync_selfcheck.py`` 钉住"包装在位 + 真收到通知"。
+
+    ⚠ 存的是 ``(conn, loop)``：**改表与发通知都要在端点自己的事件循环上做**，
+    否则会和并发的 ``tools/list`` 抢工具表；跨线程则走
+    ``asyncio.run_coroutine_threadsafe``。
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._conns: dict[int, tuple[Any, Any]] = {}
+
+    def register(self, conn: Any, loop: Any) -> None:
+        """登记一条连接（按对象身份去重 ⇒ **一连接一条**，不会随请求数膨胀）。"""
+        with self._lock:
+            self._conns[id(conn)] = (conn, loop)
+
+    def snapshot(self) -> list[tuple[int, Any, Any]]:
+        with self._lock:
+            return [(key, conn, loop) for key, (conn, loop) in self._conns.items()]
+
+    def drop(self, key: int) -> None:
+        with self._lock:
+            self._conns.pop(key, None)
+
+    def count(self) -> int:
+        with self._lock:
+            return len(self._conns)
+
+
+#: 进程内**唯一**那份登记表（launcher 单实例锁保证只有一个聚合端点）。
+_TRACKER: ConnectionTracker | None = None
+
+
+def install_connection_tracking() -> ConnectionTracker:
+    """装（或复用）活连接登记表：把 ``Connection`` 的两个公开工厂包一层。幂等。"""
+    global _TRACKER
+    if _TRACKER is not None:
+        return _TRACKER
+    from mcp.server.connection import Connection
+
+    tracker = ConnectionTracker()
+    original_for_loop = Connection.for_loop.__func__            # type: ignore[attr-defined]
+    original_from_envelope = Connection.from_envelope.__func__   # type: ignore[attr-defined]
+
+    def _wrap(original) -> classmethod:
+        def call(cls, *args, **kwargs):
+            conn = original(cls, *args, **kwargs)
+            try:
+                tracker.register(conn, asyncio.get_running_loop())
+            except RuntimeError:
+                pass          # 不在事件循环里（正常路径不会走到）
+            return conn
+        return classmethod(call)
+
+    Connection.for_loop = _wrap(original_for_loop)               # type: ignore[assignment]
+    Connection.from_envelope = _wrap(original_from_envelope)     # type: ignore[assignment]
+    _TRACKER = tracker
+    return tracker
+
+
 class McpEndpoint:
     """在**权威进程后台线程**里跑 MCP 服务；起完把实际端口写进端口文件。
 
@@ -541,7 +716,8 @@ class McpEndpoint:
                  host: str = "127.0.0.1", port: int = 0,
                  port_file: str | Path | None = None,
                  required_source: RequiredSource | None = None,
-                 log: Callable[[str], None] | None = None) -> None:
+                 log: Callable[[str], None] | None = None,
+                 track_connections: bool = False) -> None:
         check_instructions(instructions)
         self._registry = registry
         self._server_name = server_name
@@ -556,6 +732,14 @@ class McpEndpoint:
         self._uvicorn = None
         self._thread: threading.Thread | None = None
         self._port: int | None = None
+        #: ⭐ 活表对账用：**我们注册过什么**（name → 投影指纹）。⚠ 它不是第二份真值：
+        #: 真值永远是喂进来的那个 ``ToolRegistry``，这里只记"上一次铺成什么样"，
+        #: 判据 ``aggregate_tools_hot_sync_selfcheck`` 还钉着"名字集合恒等于 registry"。
+        self._declared: dict[str, str] = {}
+        #: ⭐ 只在**聚合端点**上开：登记活连接 + 声明 ``tools.listChanged``。
+        self._track = bool(track_connections)
+        self._tracker: ConnectionTracker | None = None
+        self._publish_lock = threading.Lock()
 
     # ---- 事实面 ----
 
@@ -577,13 +761,122 @@ class McpEndpoint:
     # ---- 构造与生命周期 ----
 
     def build_server(self) -> MCPServer:
-        """纯构造（幂等）：不起线程、不碰端口、不写发现文件。"""
+        """纯构造（幂等）：不起线程、不碰端口、不写发现文件。
+
+        ⭐ 2026-10-10：构造时同时做两件与"热同步"有关的事（**只在聚合端点上**）：
+        ① 记下"这次铺了哪些工具"（``_declared``，供后续对账）；
+        ② 装活连接登记表 + **声明** ``tools.listChanged``（否则客户端不挂通知处理器）。
+        """
         if self._server is None:
             self._server = build_mcp_server(
                 self._registry, server_name=self._server_name,
                 instructions=self._instructions, toolhost=self._toolhost,
                 required_source=self._required_source)
+            self._declared = {str(s["name"]): _schema_digest(s)
+                              for s in self._registry.schemas()}
+            if self._track:
+                self._tracker = install_connection_tracking()
+                declare_tools_list_changed(self._server)
         return self._server
+
+    # ---- ⭐ 工具表热同步（① 对账 + ③ 广播）----
+
+    def publish_tools(self, registry: ToolRegistry) -> bool:
+        """① 把**活工具表**对账到 ``registry``；有变化则 ③ 广播。返回"是否变了"。
+
+        ⚠ **顺序不能反**：先改表、再通知——客户端收到通知会**立刻** ``tools/list``，
+        那时必须已经能看到新表。
+
+        ⚠ **在哪跑**：有活连接时，改表也投到**端点自己的事件循环**上跑（``tools/list``
+        在同一个循环里 ⇒ 不会一边遍历一边被改）；一条连接都没有时直接在调用线程改
+        （没有客户端就**没有并发读**）。
+        """
+        self.build_server()
+        loop = None
+        if self._tracker is not None:
+            snap = self._tracker.snapshot()
+            loop = snap[0][2] if snap else None
+        with self._publish_lock:
+            if loop is not None and not _on_this_loop(loop):
+                changed = asyncio.run_coroutine_threadsafe(
+                    self._reconcile(registry), loop).result(10.0)
+            else:
+                #: ⚠ 这里**不能**调 `_reconcile`（它是协程）：没有活连接时直接在
+                #: 当前线程改表，走同一个同步实现。
+                changed = self._reconcile_now(registry)
+        if changed:
+            self.notify_tools_changed()
+        return changed
+
+    async def _reconcile(self, registry: ToolRegistry) -> bool:
+        """``_reconcile_now`` 的协程外壳（投到端点自己的事件循环上跑）。"""
+        return self._reconcile_now(registry)
+
+    def _reconcile_now(self, registry: ToolRegistry) -> bool:
+        """同步对账：多退少补、描述变了的重铺（墓碑靠这个）。"""
+        server = self.build_server()
+        want = {str(s["name"]): s for s in registry.schemas()}
+        changed = False
+        for name in sorted(set(self._declared) - set(want)):
+            server.remove_tool(name)
+            self._declared.pop(name, None)
+            changed = True
+        for name, schema in sorted(want.items()):
+            digest = _schema_digest(schema)
+            if self._declared.get(name) == digest:
+                continue
+            if name in self._declared:
+                server.remove_tool(name)              # 同名替换：描述可能变了（墓碑）
+            #: ⚠ `toolhost=self._toolhost` 可能是 None（聚合端点就是）——那一条由
+            #: `_register_tool` 现场补 `LocalToolHost(registry)`，**不许把 None 传进去**
+            #: （传了 ⇒ handler 一调就 AttributeError，见该函数的 docstring）。
+            _register_tool(server, registry, schema, toolhost=self._toolhost,
+                           required_source=self._required_source)
+            self._declared[name] = digest
+            changed = True
+        if changed:
+            self._log("[mecha-mcp] 工具表已更新：%d 个" % len(self._declared))
+        return changed
+
+    def notify_tools_changed(self) -> int:
+        """③ 给**每个活连接**发一次 ``tools/list_changed``（服务端主动，不在请求里）。
+
+        ⚠ ``Connection.notify`` 是 **best-effort**：没有独立 SSE 通道时它会**静默丢弃**
+        ⇒ 这里先问 ``has_standalone_channel()``，不可发就**我们自己 INFO 记一笔**
+        （不让"没发出去"变成看不见的事）。发送抛错 ⇒ 剔除该连接并留日志。
+        """
+        if self._tracker is None:
+            return 0
+        sent = 0
+        for key, conn, loop in self._tracker.snapshot():
+            try:
+                #: ⚠ 实测踩到：``has_standalone_channel`` 在本版 SDK 里是 **property**
+                #: （不是方法）——当函数调会抛 ``TypeError: 'bool' object is not callable``，
+                #: 而它被下面的 except 收成"发送失败 ⇒ 剔除连接" ⇒ **把活连接误删**。
+                #: ⇒ 两种形状都接（属性优先，可调用则调）。
+                has_channel = conn.has_standalone_channel
+                if callable(has_channel):
+                    has_channel = has_channel()
+                if not has_channel:
+                    self._log("[mecha-mcp] 跳过通知：该连接没有独立 SSE 通道"
+                              "（2026-era 单请求信封/无状态那条路天生收不到推送）")
+                    continue
+                coro = conn.send_tool_list_changed()
+                if _on_this_loop(loop):
+                    loop.create_task(coro)            # 已在循环上 ⇒ 不可阻塞等待
+                else:
+                    asyncio.run_coroutine_threadsafe(coro, loop).result(5.0)
+                sent += 1
+            except Exception as exc:                  # noqa: BLE001 - 一条连接坏了不拖垮别的
+                self._log(f"[mecha-mcp] 通知发送失败（剔除该连接）：{type(exc).__name__}: {exc}")
+                self._tracker.drop(key)
+        if sent:
+            self._log(f"[mecha-mcp] 已通知 {sent} 个连接：工具表变了")
+        return sent
+
+    def connection_count(self) -> int:
+        """活连接条数（判据用：钉住"一连接一条、不随请求数膨胀"）。"""
+        return 0 if self._tracker is None else self._tracker.count()
 
     def start(self, timeout: float = 30.0) -> int:
         """起服务并返回**实际**端口；失败抛错（不静默留一个连不上的端点）。

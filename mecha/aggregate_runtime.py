@@ -51,6 +51,7 @@
 from __future__ import annotations
 
 import re
+import threading
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Protocol
@@ -66,6 +67,9 @@ from .supervise import ChildSpec, Supervisor
 DEFAULT_TOOL_CALL_TIMEOUT_MS = 600_000
 #: 生成的 overlay 文件名（放项目根 ``runtime/`` 下，不入库）。
 DSH_OVERLAY_FILENAME = "dsh-aggregate.patch.yml"
+#: ``unreachable`` 后端的有界重试（次数 / 间隔秒）——见 ``_retry_unreachable``。
+UNREACHABLE_RETRIES = 5
+RETRY_DELAY_S = 6.0
 
 
 class BackendFactory(Protocol):
@@ -179,12 +183,21 @@ class AggregateRuntime:
 
     def __init__(self, *, supervisor: Supervisor, services: Sequence[Service],
                  aggregator: Aggregator, backend_factory: BackendFactory,
+                 endpoint: object | None = None,
                  timeout_ms: int = DEFAULT_TOOL_CALL_TIMEOUT_MS) -> None:
         self.super = supervisor
         self._services = {s.id: s for s in services}
         self.agg = aggregator
         self._factory = backend_factory
         self.timeout_ms = timeout_ms
+        #: ⭐ **活工具表那一侧**（``McpEndpoint``）：``sync_backends`` 每次对齐完就让它
+        #: "对账 + 广播"（见 :meth:`publish_tools`）。⚠ 不注入它就退回"表不会变"的旧行为
+        #: （判据 ``aggregate_tools_hot_sync_selfcheck`` 钉住注入 + 通知真到）。
+        self._endpoint = endpoint
+        #: 上一次同步工具表的失败（**不吞**：那是"AI 看不到工具"那一类故障）。
+        self.last_publish_error: str | None = None
+        #: `unreachable` 后端的有界重试计数（见 :meth:`_retry_unreachable`）。
+        self._retry_count = 0
         #: ⭐ **把三个回调接上** —— 本类就是"聚合端点 ↔ supervisor"的那根线。
         #: ⚠ 不做这一步，元工具 ``query_software`` 的 ``process`` 栏永远是 ``None``
         #: ⇒ "跑着的软件被报成没有进程事实"，**违反铁律 7**（元工具必须经
@@ -245,17 +258,84 @@ class AggregateRuntime:
         - 没跑 ⇒ detach（**保留工具名做墓碑**，见 ``Aggregator.registry``）。
         """
         rows = {r["id"]: r for r in self.super.state()["children"]}
+        #: ⚠⚠ **不能用 `agg.attached()` 判"要不要重新挂"**（2026-10-10 真机抓到的真 bug）：
+        #: 它按墓碑设计**含已关闭的后端**（`aggregate.attached()` 的 docstring 自己就写着
+        #: "想判它活着吗**不要**用这个方法，用 `states()`"）⇒ 一旦 detach 过，
+        #: `svc_id not in attached()` **永远为假** ⇒ **软件重启后工具永远回不到可用**
+        #: （真机现象：进程已 ready、它的工具**全是墓碑**）。
+        #: ⇒ 判据是"**聚合端点这边的状态不是 up** 就（重新）挂一次"。
+        states = self.agg.states()
         for svc_id, svc in self._services.items():
             row = rows.get(svc.child().id)
             running = bool(row and row.get("state") in ("ready", "running"))
             if running and self._url_for(svc, row) is not None:
-                if svc_id not in self.agg.attached():
+                if states.get(svc_id) != "up":
                     url = self._url_for(svc, row)
                     assert url is not None
                     backend = self._factory(url, server_name=svc_id)
                     self.agg.attach(svc_id, backend)      # type: ignore[arg-type]
             else:
                 self._detach_if_attached(svc_id)
+        #: ⭐ **对账 + 广播**（2026-10-10）：attach/detach 改的是 ``Aggregator`` 的
+        #: registry，而**端点发出去的**是另一张表（``MCPServer`` 里那张）——
+        #: ⚠ 不接这一步，AI 的工具表就永远停在"端点启动那一刻"（实测：registry 里
+        #: 全部工具，端点只发那几个元工具）。顺序**先改表、后通知**（客户端收到通知会立刻
+        #: ``tools/list``，那时必须已经能看到新表）。
+        self.publish_tools()
+        self._retry_unreachable()
+
+    def _retry_unreachable(self) -> None:
+        """⭐ 有界重试：后端标了 ``unreachable`` 就隔几秒再同步一次。
+
+        ⚠ 为什么需要（真机实测抓到的形态）：软件**刚 ready** 那一刻它的 MCP 端点可能还没
+        吃下我们这个客户端（``Backend.connect`` 失败 ⇒ 后端标 ``unreachable``，工具表里
+        它是墓碑）；而 attach 只在"**有事件**"（就绪/退出/滑块）时才跑 ⇒ 没有重试的话
+        那一整轮里 AI 就一直看到墓碑（现象："软件明明在跑，AI 却调不动它的工具"）。
+        ⚠ 有界：最多 :data:`UNREACHABLE_RETRIES` 次、每次隔 :data:`RETRY_DELAY_S` 秒；
+        全部 up 时计数归零（下次事件重新开始）。
+        """
+        states = self.agg.states()
+        broken = [s for s in self._services if states.get(s) == "unreachable"]
+        if not broken:
+            self._retry_count = 0
+            return
+        if self._retry_count >= UNREACHABLE_RETRIES:
+            print(f"[aggregate] ⚠ 后端仍是 unreachable（重试 {self._retry_count} 次后放弃）："
+                  f"{sorted(broken)}；下次软件启停会再试")
+            return
+        self._retry_count += 1
+        timer = threading.Timer(RETRY_DELAY_S, self._retry_tick, args=(self._retry_count,))
+        timer.daemon = True
+        timer.start()
+
+    def _retry_tick(self, count: int) -> None:
+        """到点重同步一次（⚠ 只在计数没被"全部 up"重置时跑）。"""
+        if count != self._retry_count:
+            return
+        try:
+            self.sync_backends()
+        except Exception as exc:                      # noqa: BLE001 - 后台重试不许炸线程
+            print(f"[aggregate] ⚠ 重试同步失败：{type(exc).__name__}: {exc}")
+
+    def publish_tools(self) -> None:
+        """把活工具表对齐到 ``Aggregator`` 的当前 registry，并在变化时广播。
+
+        ⚠ 失败**不吞**（记进 ``last_publish_error`` 并打到日志）：工具表没对齐 =
+        "AI 看不到软件工具"那一类故障，静默会让人以为一切正常。
+        """
+        endpoint = self._endpoint
+        if endpoint is None:
+            return
+        try:
+            changed = endpoint.publish_tools(self.agg.registry())
+            self.last_publish_error = None
+            if changed:
+                #: ⚠ 走 supervisor 那张"给人看的清单"（状态页读得到），别自己另开一本账。
+                self.super.cleaned.append(
+                    f"工具表已更新（后端：{sorted(self.agg.attached())}）")
+        except Exception as exc:                      # noqa: BLE001 - 记下来，别中断启停
+            self.last_publish_error = f"{type(exc).__name__}: {exc}"
+            print(f"[aggregate] ⚠ 工具表同步失败：{self.last_publish_error}")
 
     def _url_for(self, svc: Service, row: Mapping[str, object]) -> str | None:
         """后端 URL：端口一律**回读**（``state()["port"]``），不猜、不用预选值。"""

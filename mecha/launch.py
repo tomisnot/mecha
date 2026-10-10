@@ -908,9 +908,24 @@ def build_aggregate_wiring(*, sites: Sequence[Site], supervisor: Supervisor):
         def get(self, name: str):
             return agg.registry().get(name)
 
+        def execute(self, name: str, args: Mapping[str, object]) -> dict:
+            """⭐ **真调**这一口：``LocalToolHost`` 调的就是它（``toolhost.py:199``）。
+
+            ⚠ 2026-10-10 实测抓到的真缺陷：本门面原先只实现了 ``schemas()``/``get()``
+            ⇒ 端点**列得出**工具、**一个都调不动**：
+            ``AttributeError: '_LiveRegistry' object has no attribute 'execute'``
+            （连 ``query_software`` 这种框架自己的元工具都一起废）。
+            ⚠ 为什么判据没抓到：既有判据只验"门面列得出元工具"，**从不经端点真调一个工具**。
+            ⇒ 现在``checks/aggregate_tools_hot_sync_selfcheck.py`` 钉住"经端点真调"。
+            """
+            return agg.registry().execute(name, dict(args or {}))
+
     registry = _LiveRegistry()
     endpoint = McpEndpoint(registry, server_name=name_of_site,
-                           instructions=f"{name_of_site} 的聚合端点（各软件一条脊椎合在这里）")
+                           instructions=f"{name_of_site} 的聚合端点（各软件一条脊椎合在这里）",
+                           #: ⭐ 聚合端点专属：登记活连接 + **声明** ``tools.listChanged``
+                           #: （控制端点**不**开它：它不发通知 ⇒ 声明了就是假声明）。
+                           track_connections=True)
     endpoint.start()                       # ⚠ 起在任何 child 之前；端口**回读**
     mcp_port = endpoint.port
     if mcp_port is None:
@@ -930,7 +945,9 @@ def build_aggregate_wiring(*, sites: Sequence[Site], supervisor: Supervisor):
     all_svcs = flat_services(sites)
     runtime = AggregateRuntime(supervisor=supervisor,
                                services=all_svcs,
-                               aggregator=agg, backend_factory=backend_factory)
+                               aggregator=agg, backend_factory=backend_factory,
+                               #: ⭐ 活工具表那一侧：每次 sync_backends 后"对账 + 广播"
+                               endpoint=endpoint)
     # ⭐ 铁律 7：进程事实**只有一个来源**（supervisor）；``known`` 交出**声明里全部** id
     #   （否则"存在但没跑"会被误报成"压根没有这个软件"）。
     agg.wire(state_fn=supervisor.state,
@@ -946,6 +963,13 @@ def build_aggregate_wiring(*, sites: Sequence[Site], supervisor: Supervisor):
     #   （`make_prepare_hook` 的 `site` 参数正是为这个用途）。
     supervisor.add_prepare_hook(make_prepare_hook(
         runtime, sites[0] if sites else None, lambda: mcp_port))
+    #: ⭐⭐ **"软件起来了/没了" ⇒ 工具表跟着变**（2026-10-10）：
+    #: ⚠ 不接这两条钩子，就**只有人手动动一下滑块**才会 attach（实测踩到 D3）——
+    #: 现象是"软件明明在跑，AI 手里却一个它的工具都没有"。
+    #: ⚠ 顺序：ready 时 attach（表里多出它的工具）→ 广播；gone 时 detach（表里变**墓碑**）
+    #: → 广播。两者都经 `sync_backends`，幂等（没变就不发通知）。
+    supervisor.add_ready_hook(lambda spec, child: runtime.sync_backends())
+    supervisor.add_gone_hook(lambda spec, child: runtime.sync_backends())
     return endpoint, runtime, registry
 
 

@@ -475,26 +475,40 @@ class _Child:
         if proc is None:
             return
         code = proc.wait()
+        #: ⭐ 退出后要不要报"它没了"（= 让聚合端点把它的工具变成墓碑）：
+        #: **any 退出**都要报（人为停、崩了、重启超限），只有"马上要重启"那一档不报
+        #: （重启成功后 ``wait_ready`` 会报 ready，表自然对齐）。
+        #: ⚠ 钩子必须在**锁外**跑：它会去问 ``supervisor.state()``（要同一把锁）。
+        restart = False
+        gone = False
         with self._lock:
             self.exit_code = code
             self.port = None
             if self._stopping:
                 self.state = "exited"
-                return
-            if self.state != "unhealthy":
-                self.state = "exited"
-            self.last_error = self.last_error or f"进程退出（exit={code}）"
-            if not self._should_restart(code):
-                return
-            if not self._within_budget():
-                self.state = "unhealthy"
-                self.last_error = (f"重启超限（{self.current.restart}，"
-                                   f"{len(self._restart_times)} 次 / "
-                                   f"{self.sup.max_restart_period_s:.0f}s）⇒ 停止重试")
-                self.sup._write_state()                # 上报给状态页
-                return
-            self.restarts += 1
-            self._restart_times.append(_now())
+                gone = True
+            else:
+                if self.state != "unhealthy":
+                    self.state = "exited"
+                self.last_error = self.last_error or f"进程退出（exit={code}）"
+                if not self._should_restart(code):
+                    gone = True
+                elif not self._within_budget():
+                    self.state = "unhealthy"
+                    self.last_error = (f"重启超限（{self.current.restart}，"
+                                       f"{len(self._restart_times)} 次 / "
+                                       f"{self.sup.max_restart_period_s:.0f}s）⇒ 停止重试")
+                    gone = True
+                    self.sup._write_state()            # 上报给状态页
+                else:
+                    self.restarts += 1
+                    self._restart_times.append(_now())
+                    restart = True
+        if gone:
+            self._fire_hooks("gone")                   # ⚠ 锁外：钩子要读 state()
+            return
+        if not restart:
+            return
         # 锁外做重活（spawn + 等就绪），避免长时间持锁
         try:
             self.spawn()
@@ -502,6 +516,7 @@ class _Child:
             self.state = "unhealthy"
             self.last_error = str(exc)
             self.sup._write_state()
+            self._fire_hooks("gone")
             return
         self.wait_ready()
         self.sup._write_state()
@@ -571,8 +586,11 @@ class _Child:
         return self.state == "ready" and bool(self.ready_evidence.strip())
 
     def _fire_hooks(self, point: str) -> None:
-        """就绪后/启动前的外部钩子（步骤 2 用它把端口接给聚合端点）。"""
-        for fn in (self.sup._prepare_hooks if point == "prepare" else self.sup._ready_hooks):
+        """就绪后/启动前/退出后 的外部钩子（步骤 2 用它把端口接给聚合端点）。"""
+        hooks = {"prepare": self.sup._prepare_hooks,
+                 "ready": self.sup._ready_hooks,
+                 "gone": self.sup._gone_hooks}.get(point, ())
+        for fn in hooks:
             try:
                 fn(self.spec, self)
             except Exception as exc:                   # noqa: BLE001 - 钩子不许拖垮进程管理
@@ -745,13 +763,17 @@ class Supervisor:
 
     def __init__(self, *, log_dir: Path, state_path: Path | None = None,
                  max_restarts: int = 5, max_restart_period_s: float = 60.0,
-                 prepare_hooks: Sequence = (), ready_hooks: Sequence = ()) -> None:
+                 prepare_hooks: Sequence = (), ready_hooks: Sequence = (),
+                 gone_hooks: Sequence = ()) -> None:
         self.log_dir = Path(log_dir)
         self.state_path = Path(state_path) if state_path is not None else None
         self.max_restarts = int(max_restarts)
         self.max_restart_period_s = float(max_restart_period_s)
         self._prepare_hooks = tuple(prepare_hooks)
         self._ready_hooks = tuple(ready_hooks)
+        #: ⭐ ``gone``：进程**不再在跑**（崩了/退了/被停）之后调 —— 聚合端点用它把
+        #: 退出的软件在工具表里变成**墓碑**（否则 AI 手里的旧名字只会得到"未知工具"）。
+        self._gone_hooks = tuple(gone_hooks)
         self._children: dict[str, _Child] = {}
         self._order: list[str] = []
         self._lock = threading.Lock()
@@ -773,6 +795,27 @@ class Supervisor:
         ⚠ 后加的钩子**跑在**构造时给的那些**之后**（顺序即调用顺序）。
         """
         self._prepare_hooks = (*self._prepare_hooks, hook)
+
+    def add_ready_hook(self, hook) -> None:
+        """**追加**一个 ``ready`` 钩子（就绪之后调 ``fn(spec, child)``）。
+
+        ⭐ 2026-10-10：聚合端点用它把"**软件起来了**"这件事接到工具表上
+        （``AggregateRuntime.sync_backends``）—— 否则软件起来了但没有**任何东西**去
+        同步 ⇒ 必须有人**手动动一下滑块**才会 attach（实测踩到）。
+        ⚠ 与 :meth:`add_prepare_hook` 同一条纪律：给显式口子，别让调用方改私有属性。
+        """
+        self._ready_hooks = (*self._ready_hooks, hook)
+
+    def add_gone_hook(self, hook) -> None:
+        """**追加**一个 ``gone`` 钩子（进程**不再在跑**之后调 ``fn(spec, child)``）。
+
+        ⚠ 为什么光有 ``ready`` 不够：软件**崩了/退出了**也要把工具表变成**墓碑**
+        （否则 AI 手里留着它的工具名，调用只会得到"未知工具"，看不出"它关了"）。
+        触发点：``_watch`` 里确认进程退出、且**不打算重启**（或重启超限）那一档。
+        ⚠ **人为停**（面板滑块 / ``stop``）也走这里 —— 那条路 ``close_service`` 已经
+        显式同步过一次，多跑一次是幂等的（表没变就不发通知）。
+        """
+        self._gone_hooks = (*self._gone_hooks, hook)
 
     # ---- 清理陈旧残留（修正 2）----
     def clean_stale(self, stale: Sequence[StaleItem]) -> list[str]:
