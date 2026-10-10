@@ -54,6 +54,11 @@ SELF = Path(__file__).name
 #: 按文件名豁免（不做脆弱的跨文件引号配对——那会把真违例误吞成假绿）。
 RULE_ADRS = frozenset({"2026-09-23-文档手写计数.md"})
 
+#: ⭐ **归档区不判**（2026-10-10）：`notes/archived/` 是**冻结的历史**（过期文档，只为留存），
+#: 不维护、也不该被"改名字清单/指向来源"这类**面向维护**的纪律要求 ——
+#: 拿今天的规则去要求一份"当时的口径"只会逼人改历史，或者把规则改成不管归档件。
+ARCHIVED_DIR = "archived"
+
 
 def _scan_text(text: str) -> list[str]:
     hits: list[str] = []
@@ -69,6 +74,8 @@ def check_tree(root: Path) -> list[str]:
     for glob in SCAN_GLOBS:
         for path in sorted(root.glob(glob)):
             if not path.is_file() or path.name in (SELF, *RULE_ADRS):
+                continue
+            if ARCHIVED_DIR in path.parts:                 # 归档件不判（见常量说明）
                 continue
             try:
                 text = path.read_text(encoding="utf-8")
