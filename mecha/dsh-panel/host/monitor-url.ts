@@ -1,6 +1,19 @@
 /**
  * 监控端点**地址**：dsh **同源只读路由**（host 半）。**参考实现**，不是框架能力。
  *
+ * ## ⭐ 2026-10-10：本文件是 `host/` 面**唯一**的件（桥那一整套已删）
+ *
+ * 用户裁决（方案 A）：**工具面只有一条腿 = 框架的聚合端点** ⇒ 项目侧的自愈 MCP 桥
+ * （`mcp-bridge.ts` / `host/mount-host-plugin.ts` / `register-tools.ts` /
+ * `mcp-session-http.ts` / `config.ts` / SDK 垫片）**整块删除**，项目 host 半退成**空载体**。
+ * ⇒ 本模块留着有两个消费者，都不是"项目自己注册路由"：
+ * 1. ⭐ **框架自己的 host 插件**（`host-plugin/mecha-panel-host.mjs`）——⚠ 它是 `.mjs`（dsh 加载），
+ *    **import 不了 `.ts`** ⇒ 同一套逻辑在那边有一份**手写照抄**，而
+ *    `host-plugin/mecha-panel-host.test.ts` 拿**本文件**当**对拍基准**
+ *    （两边的成功/失败输出必须逐字节等价）⇒ 本文件是那份判据的**参照实现**；
+ * 2. 本目录 `monitor-url.test.ts`（它自己的判据）。
+ * ⚠ 所以**不要**因为"没有项目 import 它了"就删——那会让第 1 条的等价判据失去参照。
+ *
  * ## ⚠ 本模块是 **node-only**（host 半）：client 半**不许** import 它
  *
  * 它顶层要 `node:fs` / `node:path`（读端口文件、拼路径）。而 **client 半是浏览器 bundle**

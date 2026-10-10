@@ -1,24 +1,20 @@
 {
   "name": "@mecha/dsh-panel",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
-  "description": "mecha 的 dsh 集成标准件。单一副本，供项目以 file: 依赖 junction 引用；按入口分开：panel（浏览器安全）/ host（node-only）。",
+  "description": "mecha 的 dsh 集成标准件。单一副本，供项目以 file: 依赖 junction 引用。⭐ 2026-10-10 起只剩**面板这一半**（panel 浏览器安全 + host/monitor-url 的地址路由 handler）；项目侧的 host 半 = **空载体**（工具面归框架的聚合端点，见 docs/v2/软件-交互-写权-三层架构.md §7.2）。",
   "license": "MIT",
   "exports": {
     "./package.json": "./package.json",
     "./panel": "./panel/index.ts",
     "./panel/*": "./panel/*",
-    "./host": "./host/index.ts",
-    "./host/*": "./host/*",
-    "./*.ts": "./*.ts"
+    "./host/*": "./host/*"
   },
   "peerDependencies": {
-    "@modelcontextprotocol/sdk": ">=1.0.0 <3",
     "react": ">=18"
   },
   "peerDependenciesMeta": {
-    "@modelcontextprotocol/sdk": { "optional": true },
     "react": { "optional": true }
   },
   "dependencies": {},

@@ -1,5 +1,26 @@
 # dsh 集成**标准件**（共享资产）
 
+> ## ⛔ 2026-10-10：**桥那一整套已删除**（用户裁决 = 方案 A）—— 读本文前先看这条
+>
+> **工具面只有一条腿**：**框架的聚合端点**（`mecha/aggregate.py` + `aggregate_runtime.py`，
+> dsh 侧由 overlay 插入 `@deepseek-ai/dsh-mcp-client`）。⇒ 下列文件**已从本资产删除**：
+>
+> | 已删 | 原职责 |
+> |---|---|
+> | `mcp-bridge.ts`（+ 其判据） | 自愈 MCP 桥（重连 / 工具表两阶段 swap） |
+> | `host/mount-host-plugin.ts`（+ 其判据） | 项目 host 半骨架（建桥 + 参数装配） |
+> | `host/register-tools.ts` | `mcp__<serverName>__<tool>` 工具注册 |
+> | `host/mcp-session-http.ts` | SDK 会话工厂（**唯一** import `@modelcontextprotocol/sdk` 的地方） |
+> | `host/config.ts` | 端点解析（`hubUrl` / `.mcp-port`）与远程鉴权头 |
+> | `host/mcp-sdk-shims.d.ts` / `host/index.ts` | SDK 类型垫片 / host 面入口 barrel |
+>
+> ⚠ **本文中凡提到上述文件的段落都已失效**（下文原样保留，作为"曾经怎么设计"的记录，
+> 不再描述现状）。⭐ **现状**：项目侧 dsh 半 = **空载体**（host）+ **一行 bootstrap**（client）；
+> 代价（用户已认）：**不经 mecha 单独跑 dsh 时，不再出现任何软件工具**。
+> ⚠ 反向判断（不许桥复活）：`checks/panel_one_leg_selfcheck.py`。
+> ⚠ 那台"面板"的机器**没变**：`panel/*` 与 `host/monitor-url.ts`（框架 host 插件那份
+> 手写照抄的**参照实现**，见其文件头）都还在。
+>
 > ## ⚠ 先读这三句
 >
 > 1. **这不是框架能力。** 它是**宿主（dsh）侧的共享资产**——一份可被项目**逐字复制**的
@@ -43,14 +64,18 @@ client 半 fetch 同源路由拿到地址。本目录就是这一层 + 取数骨
 
 | 类 | 件 | 谁用 |
 |---|---|---|
-| **默认件**（面板 + 地址路由） | `panel/panel-config.ts`（**注入点**）/ `panel/routes.ts` / `panel/panel-view.ts` / `panel/panel-data.ts` / `panel/MonitorTabBody.tsx` / `panel/monitor-client.ts` / **`host/monitor-url.ts`**（地址路由的 handler **住 host 面**，因为它 node-only；但**每个**要用面板的项目都要它）+ 各 `.test.ts` | **所有要"人看监控面"的项目**——这是"面板进 dsh"的最小闭环 |
-| **opt-in 件**（自愈桥 + 工具注册 + **host 半骨架**） | `mcp-bridge.ts`（根）/ `host/mcp-session-http.ts` / `host/config.ts` / `host/register-tools.ts` / `host/mount-host-plugin.ts` / `host/mcp-sdk-shims.d.ts` | **要让 dsh 里的 AI 原生调自家工具**的项目；**不调就不用**（装了包也不进 bundle） |
+| **默认件**（面板 + 地址路由） | `panel/panel-config.ts`（**注入点**）/ `panel/routes.ts` / `panel/panel-view.ts` / `panel/panel-data.ts` / `panel/MonitorTabBody.tsx` / `panel/MonitorHeaderButton.tsx`（会话头部那个**唯一**按钮的壳）/ `panel/monitor-client.ts` / **`host/monitor-url.ts`**（地址路由的 handler **住 host 面**，因为它 node-only；⚠ 现在它同时是**框架 host 插件那份手写照抄的参照实现**）+ 各 `.test.ts` | **所有要"人看监控面"的项目**——这是"面板进 dsh"的最小闭环 |
+| ~~**opt-in 件**（自愈桥 + 工具注册 + host 半骨架）~~ | ⛔ **2026-10-10 整块已删**（见文件头横幅）：`mcp-bridge.ts` / `host/mcp-session-http.ts` / `host/config.ts` / `host/register-tools.ts` / `host/mount-host-plugin.ts` / `host/mcp-sdk-shims.d.ts` | **不再有这一类**：工具面**只有一条腿** = 框架的聚合端点（项目不再自己接 MCP） |
 
 ⚠ **按总纲 §5.3「nothing ships enabled」：桥不许默认带。** 实测已有一家明确**不**用它
 （ML 的 `dsh/src/index.ts:29-31` 自述）。⇒ 判定标准是"这个项目**用不用**"，
 不是"资产里有没有"——**装进来但没被 import 的文件不进 bundle**（实测过）。
 
-## ⭐ host 半骨架：`mountHostPlugin(...)`（2026-10-01 上提）
+## ~~⭐ host 半骨架：`mountHostPlugin(...)`（2026-10-01 上提）~~ ⛔ **2026-10-10 已删**
+
+> ⛔ **本节描述的东西不存在了**（方案 A：工具面只有一条腿 = 框架聚合端点）：
+> `host/mount-host-plugin.ts` 及其配套已从本资产删除，项目 host 半退成**空载体**。
+> ⇒ 下文与本节之后的 host 面段落**只作历史记录**。判据见 `checks/panel_one_leg_selfcheck.py`。
 
 **为什么有它**：资产做成依赖包后 `client 半` 已共用，但每个项目的 `src/index.ts`（host 半）
 **仍各手写一遍同一套骨架**——建桥、`onTools → syncTools` 两阶段 swap、logger 转发、

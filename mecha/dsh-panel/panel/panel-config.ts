@@ -71,10 +71,12 @@ export interface ResolvedPanelConfig {
  * `routePath`/`portFile`/`title` ⇒ 现象是"三个面板都列同一个项目的账"，**且不报任何错**
  * （最坏的一类）。
  *
- * ⇒ 改法：**参数跟着"那一次注册"走**。`mountHostPlugin` 每次注册都
+ * ⇒ 改法：**参数跟着"那一次注册"走**。每个调用方（曾经的 host 半骨架 `mountHostPlugin`、
+ * 现在**只有**框架自己的 client 助手 `mountClientPanel`）每次注册都
  * :func:`openPanelConfig` 推一份、并在自己的收尾里弹掉；注册期间发生的所有读取
  * （路由注册、页面组件取 `routePath`/`tabs`）都在**它自己的那一层**上。
  * ⚠ 项目侧**零改动**——它们本来就把参数交进来了。
+ * ⚠ **2026-10-10**：那段里提到的 `mountHostPlugin`（资产 host 半骨架）**已删**（方案 A）。
  */
 const stack: ResolvedPanelConfig[] = []
 

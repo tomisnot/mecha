@@ -86,6 +86,11 @@ CHECKS = [
     #   ⚠ 真机那一档要 **dsh 在 PATH** + **MECHA_SITE_ROOTS**（必须用真声明：`--port 0`
     #   靠项目隔离层才生效）⇒ 缺则 SKIP，严格模式变 FAIL。①② 零外部依赖。
     "checks/dsh_argv_selfcheck.py",
+    # ⭐ 判据 ⑳：**工具面只有一条腿** —— 三家项目的 dsh 半必须同形（空载体 + 一行 bootstrap），
+    #   资产里的自愈 MCP 桥**不许回来**（2026-10-10 用户裁决 = 方案 A；R13 的反向判断）。
+    #   ⚠ 要三家仓在位（MECHA_SITE_ROOTS 或 MECHA_ML_ROOT/MECHA_EL_ROOT/MECHA_GP_ROOT），
+    #   缺 ⇒ SKIP，严格模式变 FAIL。②③（含红证）零外部依赖。
+    "checks/panel_one_leg_selfcheck.py",
     "checks/phase5_el_selfcheck.py",
     "checks/phase5_hub_selfcheck.py",
     "checks/phase5_bridge_selfcheck.py",
