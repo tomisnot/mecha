@@ -30,6 +30,13 @@ from ..write_lease import WriteLease
 #: 归档目录名：全库唯一定义点（消 D-9 的"三处分散"）。
 ARCHIVE_DIR_NAME = "archive"
 
+#: ⭐ **磁盘上保留多少条账**（2026-10-10 用户裁决："磁盘只存储最近一千条，旧的全删"）。
+#: ⚠ 这是**保留策略**，不是"只留能显示的"：面板只显示最近 100 条（见 `cockpit.HISTORY_LIMIT`），
+#: 盘上留 1000 条是为了"最近发生的事还能查"。
+JOURNAL_KEEP = 1000
+#: 何时真裁剪：超过 `KEEP * SLACK` 才一次裁回 `KEEP`（⚠ 逐条裁剪 = 每次 append 重写整个文件）。
+JOURNAL_TRIM_SLACK = 1.2
+
 
 class JsonlLogSink:
     """history.LogSink 的 local 实现。
@@ -63,6 +70,46 @@ class JsonlLogSink:
             f.flush()
         if self._records is not None:
             self._records.append(record)
+        self._trim_if_needed()
+
+    def _trim_if_needed(self) -> None:
+        """⭐ **保留策略：盘上只留最近 `JOURNAL_KEEP` 条**（超出就裁，旧的真删）。
+
+        ## 为什么这么做（2026-10-10 用户裁决 + 代价如实记）
+
+        用户要求："磁盘只存储最近一千条，旧的全删"。
+        ⚠ **代价**：`history.py` 的地基是"append-only：只追加、**永不改写**"，而裁剪必然改写
+        ⇒ 这里是**明写的例外**，只做一件事：**只删最旧的那些行、保留其余逐字不变**
+        （重写用**临时文件 + 原子替换**，崩溃点看见的是"旧的完整"或"新的完整"，不会是半截）。
+        ⚠ 它**不动 seq**：`seq` 仍单调递增（裁掉旧行不重新编号，`last_seq()` 从盘上残余推）。
+        ⚠ **不静默**：真裁了就记一行（谁都能在日志里看到"账被裁过"）。
+
+        批量触发（超 `KEEP*SLACK` 才裁回 `KEEP`）⇒ 摊销成本可接受；
+        ⚠ 逐条裁剪会在**每次 append** 重写整个文件，那是不能接受的。
+        """
+        keep = int(JOURNAL_KEEP)
+        if keep <= 0:
+            return
+        try:
+            lines = self._path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return
+        if len(lines) <= int(keep * JOURNAL_TRIM_SLACK):
+            return
+        tail = lines[-keep:]
+        tmp = self._path.with_suffix(self._path.suffix + ".trim")
+        try:
+            tmp.write_text("\n".join(tail) + "\n", encoding="utf-8")
+            tmp.replace(self._path)                      # 原子替换（Windows 上 replace 可覆盖）
+        except OSError:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+            return
+        self._records = None                             # 缓存作废（下次 _load 重读）
+        print(f"[log] 账已裁剪：只留最近 {keep} 条（删掉 {len(lines) - keep} 条旧的）",
+              flush=True)
 
     def precheck(self, record: dict) -> None:
         """**落地之前**的预检：值与 ``append`` 走**同一条编码路径**（格式知识只有一份）。

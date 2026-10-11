@@ -35,6 +35,7 @@ import { panelConfig } from './panel-config.ts'
 // ⇒ 这正是"资产发布了框架无法类型检查的代码、第一个消费者付账"那个缺口；
 // 现在由 `checks/dsh_panel_selfcheck.py` 的**类型检查守卫**兜住（缺 tsc 即红）。
 import type { ConfigWire, Ev } from './panel-view.ts'
+import { HISTORY_LIMIT } from './panel-view.ts'
 
 /**
  * 路由与请求路径。
@@ -52,8 +53,14 @@ export type PanelTabOverridesLike = { rec?: string; cfg?: string; dash?: string 
 
 export const HISTORY_ROUTE = '/history'
 export const CONFIG_ROUTE = '/config'
-/** 实际请求路径：全量尾（`since_seq=0`），键仍用 `HISTORY_ROUTE`。 */
-export const HISTORY_PATH = '/history?since_seq=0'
+/** 实际请求路径：**最近一百条**（`since_seq=0` 取尾 + `limit` 上限），键仍用 `HISTORY_ROUTE`。
+ *
+ * ⚠ **统一约束**（2026-10-10 用户裁决）：web **只载入、只显示最近 100 条**，新增的往下顶；
+ * 盘上保留最近 1000 条（`mecha/providers/log_local.py::JOURNAL_KEEP`）。
+ * ⇒ 面板**必须**带 `limit`（服务端也会自己封顶，这里带上是"意图写在明面上"）。
+ * ⚠ `HISTORY_LIMIT` 的定义在 `panel-view.ts`（一处定义，两处用）。
+ */
+export const HISTORY_PATH = `/history?since_seq=0&limit=${HISTORY_LIMIT}`
 export const CONFIG_PATH = CONFIG_ROUTE
 
 /** 标准页的 id（项目的附加页用它们自己的 id，见 `ExtraPageSpec`）。 */

@@ -110,6 +110,15 @@ CORE_ROUTES = ("/status", "/activity", "/history", "/config")
 #: 事件投影必须提供 `since_seq` 时的列名。
 _SINCE_KEY = "since_seq"
 
+#: ⭐ **网上只载入最近多少条**（2026-10-10 用户裁决："web 只载入、显示最近一百条，
+#: 新增的就往下顶"）。⚠ 这是**传输/显示**的上限，不是保留策略：盘上留的是
+#: `log_local.JOURNAL_KEEP`（1000）条。
+#: ⚠ 服务端**倒序取尾**（最新在前）——"往下顶"的语义由**渲染**负责（新的在上/往下推旧），
+#: 传输只负责"别把整本账倒给浏览器"。
+HISTORY_LIMIT = 100
+#: 请求里那条显式上限（面板会带上它；缺省 ⇒ :data:`HISTORY_LIMIT`）。
+_LIMIT_KEY = "limit"
+
 #: 附加路由默认拒绝的路径特征（一切写入口都不存在）。
 _JSON_CONTENT_TYPE = "application/json"
 
@@ -128,6 +137,17 @@ def _since_seq(query: Mapping[str, list[str]]) -> int:
     """取 ``since_seq``：缺失 / 非纯数字 ⇒ ``0``（不报错、不猜）。"""
     raw = (query.get(_SINCE_KEY) or ["0"])[0]
     return int(raw) if raw.isdigit() else 0
+
+
+def _limit_of(query: Mapping[str, list[str]]) -> int:
+    """取 ``limit``：缺失 / 非纯数字 ⇒ :data:`HISTORY_LIMIT`；``0`` 或负数 ⇒ 也用缺省。
+
+    ⚠ **上限就是 `HISTORY_LIMIT`**：请求要更多也只给这么多（"web 只载入最近一百条"是
+    **约束**，不是礼貌建议——不然一个 `limit=100000` 就能把整本账倒进浏览器）。
+    """
+    raw = (query.get(_LIMIT_KEY) or [""])[0]
+    want = int(raw) if raw.isdigit() else HISTORY_LIMIT
+    return min(want, HISTORY_LIMIT) if want > 0 else HISTORY_LIMIT
 
 
 def _row_name(row: object) -> str:
@@ -594,12 +614,22 @@ class MonitorEndpoint:
         if path == "/status":
             return self._status(), 200
         if path == "/activity":
+            #: ⭐ 与 `/history` **同一条约束**（最近 `HISTORY_LIMIT` 条）：面板的"活动"页
+            #: 也是同一本账的投影，不能一个封顶、一个敞着。
+            #: ⚠ **不往 wire 上加新键**（`total`/`limit` 之类）：面板没消费它，
+            #: 而 wire 形状是既有契约（加键要动所有消费方与判据）。约束体现在**条数**上。
+            rows = activity_records(self._source, _since_seq(query))
+            limit = _limit_of(query)
             return {"ok": True,
-                    "events": activity_records(self._source, _since_seq(query)),
+                    "events": rows[-limit:] if limit and len(rows) > limit else rows,
                     "mode": _mode_token(self._source.mode())}, 200
         if path == "/history":
+            #: ⭐ **只给最近 `HISTORY_LIMIT` 条**（"web 只载入、显示最近一百条"）：
+            #: 取全量后**切尾**（最新那一段）。⚠ **不往 wire 上加新键**（既有契约）。
+            rows = history_records(self._source, _since_seq(query))
+            limit = _limit_of(query)
             return {"ok": True,
-                    "events": history_records(self._source, _since_seq(query)),
+                    "events": rows[-limit:] if limit and len(rows) > limit else rows,
                     "mode": _mode_token(self._source.mode())}, 200
         if path == "/config":
             return {"ok": True, **config_tree(self._source)}, 200

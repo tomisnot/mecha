@@ -95,11 +95,20 @@ export function badgeHtml(cls: string, text: string): string {
  *
  * 空表时**返回可读文案**（不是空串）——"面板不空白"在这一层就要成立。
  */
+/** ⭐ **监控面板的统一约束**（2026-10-10 用户裁决）：web **只载入、只显示最近 100 条**，
+ * 新增的往下顶；盘上保留最近 1000 条（`mecha/providers/log_local.py::JOURNAL_KEEP`）。
+ * ⚠ 常量住在这里（视图是最低层），`panel-data.ts` 从这里 import —— 一处定义，两处用。
+ */
+export const HISTORY_LIMIT = 100
+
 export function recPageHtml(evs: Ev[], isOpen: IsOpen): string {
   if (!evs.length) {
     return '<div class="mecha-msg muted">暂无写事件——AI/人每改一个键都会出现在这里</div>'
   }
-  const rows = evs.slice(-60).reverse().map((e) => {
+  //: ⭐ **只显示最近一百条**（统一约束；服务端也只给这么多）。取尾再倒序 = **新的在最上面**，
+  //: 新增的"往下顶"旧的那条。⚠ 这里再切一次是**防御**：万一服务端给了更多（老版本/别的消费方），
+  //: 面板也不把整本账铺出来。
+  const rows = evs.slice(-HISTORY_LIMIT).reverse().map((e) => {
     const k = 'ev:' + e.seq
     const open = isOpen(k) ? ' open' : ''
     return `<details class="mecha-ev" data-key="${esc(k)}"${open}><summary>` +
