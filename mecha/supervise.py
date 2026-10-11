@@ -846,6 +846,46 @@ class Supervisor:
         self._write_state()
         return done
 
+    def sweep_leftovers(self) -> list[str]:
+        """把 **state.json 里记过、现在还活着**的 child 杀掉（返回人话清单，并记进账）。
+
+        ## ⭐ 为什么必须有它（2026-10-10 用户实测："MCP 端口好像会变、极大影响使用"）
+
+        根因不是"端口会变"（那没关系：dsh 与聚合端点**同起**、读的是当次 overlay），
+        而是 **"旧世界还活着"**：`--stop` 走的是"读 `.page-port` 打一次 `POST /shutdown`"，
+        ⚠ 而 **launcher 崩了/被强杀/上次请求没打通**时它只打印一句提示就返回
+        —— **孩子们（dsh + 各软件）继续跑**。于是浏览器里那个 dsh 还开着，
+        而它指向的聚合端口已经不存在 ⇒ 现象正是"AI 用不了工具、MCP 端口像变了"；
+        又因为旧 dsh 占着首选的 3081，新实例会起在 3082/3083… ⇒ **人在看的是旧世界**。
+
+        ⇒ 收尾失败时**兜底扫一遍**：只杀"我们自己记过的 pid"（不误杀别的进程），
+        并把清掉了谁**如实报出来**（清掉了什么必须可查——与 :meth:`clean_stale` 同一条纪律）。
+        """
+        import json
+
+        st = self.state_path
+        if st is None or not Path(st).is_file():
+            return []
+        try:
+            data = json.loads(Path(st).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return []
+        alive: list[tuple[str, int]] = []
+        for row in (data.get("children") or []):
+            cid, pid = str(row.get("id") or "?"), row.get("pid")
+            if isinstance(pid, int) and pid > 0 and pid_alive(pid):
+                alive.append((cid, pid))
+        done: list[str] = []
+        for cid, pid in alive:
+            self._kill_pid_tree(pid)
+            still = pid_alive(pid)
+            done.append(f"扫掉残留 {cid} pid={pid}"
+                        + ("" if not still else " ⚠ 仍在（杀不掉，需人工）"))
+        if done:
+            self.cleaned.extend(done)
+            self._write_state()
+        return done
+
     @staticmethod
     def _kill_pid_tree(pid: int) -> None:
         """按 pid 杀**整棵树**（我们没有它的 Popen 句柄时的路径）。"""

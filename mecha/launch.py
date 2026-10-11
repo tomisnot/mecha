@@ -373,6 +373,10 @@ def plan_startup(sites: Sequence[Site], enabled: Sequence[str],
 #: ⭐ **面板端口文件**：无黑框入口下 stdout 没人看 ⇒ 端口必须落文件，
 #: 否则 `--stop` / `stop_mecha.pyw` **没有确定的找法**（与 `.mcp-port` 同族）。
 PAGE_PORT_FILE = ".page-port"
+#: ⭐ **聚合端点（AI 那条腿）的端口文件**：`<runtime>/.aggregate-port`。
+#: 存在的意义：别的入口（人、脚本、面板）能在**启动时**重新解析"当前 AI 面在哪"——
+#: 与监控面那套端口文件**同一套发现手法**（⚠ 具体文件名归项目声明，框架不写死）。
+AGGREGATE_PORT_FILE = ".aggregate-port"
 
 
 def _pid_file(runtime: Path) -> Path:
@@ -472,6 +476,17 @@ class LaunchController:
         st["last_error"] = self._last_error
         #: 启动**之前**的勾选意图（面板在未启动时也要能表达"我打算开哪几个"）。
         st["intent"] = self.intent()
+        #: ⭐ **AI 那条腿的两个地址**（T4，2026-10-10）：给人核对"当前世界"用 ——
+        #: 聚合端点按**端口文件现取**（每次启动会变，所以不能写死在页面里）；
+        #: dsh 用声明的首选端口。⚠ 这两个地址**只给人看**，不进 AI 面（控制信息不上 AI 腿）。
+        from .portfile import read_port
+        agg_port = read_port(self.super.log_dir.parent / AGGREGATE_PORT_FILE)
+        spec = self.dsh_spec()
+        st["ai_face"] = {
+            "aggregate_url": f"http://127.0.0.1:{agg_port}/mcp" if agg_port else "",
+            "dsh_url": (f"http://127.0.0.1:{int(spec.port_preference)}/"
+                        if spec is not None else ""),
+        }
         return st
 
     def dsh_spec(self) -> "DSHSpec | None":
@@ -868,7 +883,8 @@ class LaunchController:
 # --------------------------------------------------------------------------- CLI
 
 
-def build_aggregate_wiring(*, sites: Sequence[Site], supervisor: Supervisor):
+def build_aggregate_wiring(*, sites: Sequence[Site], supervisor: Supervisor,
+                           aggregate_port: int = 0):
     """把**聚合端点**接起来，返回 ``(endpoint, runtime, registry_facade)``。
 
     ⚠ **多站点（§1.1 规则 5）**：收**全部站点的全部服务**（平铺后的全集）——
@@ -936,8 +952,18 @@ def build_aggregate_wiring(*, sites: Sequence[Site], supervisor: Supervisor):
             return agg.registry().execute(name, dict(args or {}))
 
     registry = _LiveRegistry()
+    #: ⭐ **端口 = 启动者给的**（默认 `0`）：固定值先 `ensure_free` ⇒ 被占**响亮失败**，
+    #: 绝不偷偷换（换端口 = "AI 工具突然没了"的根源）。⚠ 库内仍然零端口字面量。
+    run_root = supervisor.log_dir.parent          # `<runtime>/logs` ⇒ `<runtime>`
+    if aggregate_port:
+        from .portfile import ensure_free
+        ensure_free("127.0.0.1", int(aggregate_port), label="聚合端点（--aggregate-port）")
     endpoint = McpEndpoint(registry, server_name=name_of_site,
                            instructions=f"{name_of_site} 的聚合端点（各软件一条脊椎合在这里）",
+                           port=int(aggregate_port),
+                           #: ⭐ **公布端口文件**（`.aggregate-port`）：别的东西（人、脚本、
+                           #: 面板）能在**启动时**重新解析当前地址 —— 与监控面那套同一手法。
+                           port_file=run_root / AGGREGATE_PORT_FILE,
                            #: ⭐ 聚合端点专属：登记活连接 + **声明** ``tools.listChanged``
                            #: （控制端点**不**开它：它不发通知 ⇒ 声明了就是假声明）。
                            track_connections=True)
@@ -988,6 +1014,34 @@ def build_aggregate_wiring(*, sites: Sequence[Site], supervisor: Supervisor):
     return endpoint, runtime, registry
 
 
+def _warn_if_dsh_port_taken(sites: Sequence[Site]) -> None:
+    """dsh 的首选端口已经被占时**响亮报告**（T3：不许"悄悄漂到别的端口"）。
+
+    ## 为什么要这条（2026-10-10 用户实测："极大影响使用"）
+
+    框架把**固定**的首选端口传给 dsh（`DSHSpec.argv()` 的 `--port`）。但上一次没收干净时，
+    **旧 dsh 还占着那个端口** ⇒ 新实例只能起在 3082/3083…，而人浏览器里那个 tab/书签
+    还是旧实例 ⇒ **"我在看哪一个？"**（旧的那个指向已经消失的聚合端点 ⇒ AI 工具没了）。
+    ⇒ 起之前先探一下并**说清楚**：谁占着、本次会漂到哪、怎么清（`python -m mecha --stop`
+    现在会扫残留 ✅）。⚠ 只报告、不阻塞（阻塞会把"能起来的世界"也拦住）。
+    """
+    seen: set[int] = set()
+    for site in sites:
+        spec = getattr(site, "dsh", None)
+        if spec is None:
+            continue
+        port = int(getattr(spec, "port_preference", 0) or 0)
+        if not port or port in seen:
+            continue
+        seen.add(port)
+        if _listening(port):
+            print(f"⚠ dsh 的首选端口 {port} 上**已经有人在听**（不是本次要起的那个）："
+                  f"浏览器里那个 dsh 可能是**上一轮留下的**。\n"
+                  f"  ⇒ 本次 dsh 会起在别的端口（别在旧 tab 里找 AI 面）。\n"
+                  f"  ⇒ 要清干净：`python -m mecha --stop`（它会扫残留）或关掉那一轮。",
+                  flush=True)
+
+
 def _request_stop(runtime: Path) -> int:
     """⭐ 请那个**常驻 launcher** 收尾退出（读 ``.page-port`` 打一次 ``POST /shutdown``）。
 
@@ -1021,7 +1075,22 @@ def _request_stop(runtime: Path) -> int:
         with urllib.request.urlopen(req, timeout=20) as resp:
             resp.read()
     except (urllib.error.URLError, OSError) as exc:
-        print(f"请求收尾失败（{exc}）：那个 launcher 可能已经没了 ⇒ 可删掉 {pf} 再试")
+        #: ⭐ **兜底：launcher 已经不在 ⇒ 扫残留**（2026-10-10 用户实测"AI 工具突然没了、
+        #: MCP 端口像变了"）。原因不是端口会变，而是**孩子们（含 dsh）还在跑**：
+        #: 你浏览器里那个 dsh 指向一个**已经不存在**的聚合端点 ⇒ 掉工具；而它又占着
+        #: 首选的 3081 ⇒ 新实例漂到 3082 ⇒ 人看的是旧世界。⇒ 这里把 state.json 里记过、
+        #: **现在还活着**的 child 清掉（只清我们自己记过的 pid），并如实报清掉了谁。
+        print(f"请求收尾失败（{exc}）：那个 launcher 已经不在了 ⇒ 改为**扫残留**。")
+        from .supervise import Supervisor
+
+        sup = Supervisor(log_dir=runtime / "logs", state_path=runtime / "state.json")
+        cleaned = sup.sweep_leftovers()
+        if cleaned:
+            for line in cleaned:
+                print(f"  · {line}")
+            print(f"扫完：清了 {len(cleaned)} 个残留进程。")
+            return 0
+        print("没有残留进程（state.json 里记过的 pid 都已退出）⇒ 世界是干净的。")
         return 1
     print(f"已经请 pid 文件里的那个 launcher（面板 :{port}）收尾退出。")
     return 0
@@ -1048,6 +1117,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--root", action="append", default=None,
                     help=f"站点搜索根（可重复）；缺省 ${SITE_ROOTS_ENV} 或 CWD")
     ap.add_argument("--port", type=int, default=0, help="状态页端口（0=自动）")
+    #: ⭐ **聚合端点（AI 那条腿）的端口**：`0`＝OS 分配（默认，每次启动都变）。
+    #: 给一个固定值 ⇒ ⚠ **占用即响亮失败**（绝不偷偷换：换端口正是"AI 工具突然没了"的根源）。
+    #: 固定它的好处：任何**静态配置**的 dsh 永久有效；上一次没收干净留下的旧 dsh
+    #: 也能在重连预算内**自己接回**新端点（同一个 URL）。
+    ap.add_argument("--aggregate-port", type=int, default=0,
+                    help="聚合端点固定端口（0=自动分配；固定则被占即响亮失败）")
     ap.add_argument("--no-browser", action="store_true", help="不要自动开浏览器")
     ap.add_argument("--dry-run", action="store_true", help="只打印计划，不 spawn")
     ap.add_argument("--stop", action="store_true",
@@ -1061,6 +1136,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     roots = [Path(r) for r in args.root] if args.root else None
     sites = load_sites(roots)
+    #: ⭐ dsh 首选端口被占时**响亮报告**（T3）—— 只报告、不阻塞；放在真起之前。
+    _warn_if_dsh_port_taken(sites)
 
     if args.dry_run:
         #: ⚠ **dry-run 必须在"任何副作用"之前返回**（实测抓到的真 bug）：
@@ -1094,7 +1171,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     controller = LaunchController(sites=sites, runtime=runtime, supervisor=supervisor)
 
     # ⭐ 聚合端点：**起在任何 child 之前**（dsh 的 overlay 要指向它），收**全部站点**
-    endpoint, agg_runtime, _ = build_aggregate_wiring(sites=sites, supervisor=supervisor)
+    endpoint, agg_runtime, _ = build_aggregate_wiring(
+        sites=sites, supervisor=supervisor,
+        aggregate_port=int(getattr(args, "aggregate_port", 0) or 0))
     controller.after_start = lambda: agg_runtime.sync_backends()
     controller.agg_runtime = agg_runtime   # 面板的存活滑块走它那条正规路径（含端点同步）
 

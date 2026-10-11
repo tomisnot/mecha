@@ -380,6 +380,18 @@ def render_page(controller: Controller) -> str:
                     + (' on' if (rows.get(DSH_CHILD_ID) or {}).get("pid") else '')
                     + '>dsh</div>')
 
+    #: ⭐ **AI 那条腿的地址**（T4）：聚合端点**每次启动都变**，所以页面必须**现取**
+    #: （`state()["ai_face"]` 里是控制器按端口文件读出来的），不能写死。
+    #: ⚠ 只给人看 —— 控制信息不上 AI 那条腿。
+    _ai = st.get("ai_face") or {}
+    ai_line = ""
+    if _ai.get("aggregate_url") or _ai.get("dsh_url"):
+        ai_line = ('<div class="pending" style="padding:2px 8px">'
+                   f'AI 面：聚合端点 {html.escape(str(_ai.get("aggregate_url") or "（未知）"))}'
+                   f'　·　dsh {html.escape(str(_ai.get("dsh_url") or "（未知）"))}'
+                   '　（⚠ 聚合地址每次启动会变；要固定用 `python -m mecha --aggregate-port <端口>`）'
+                   '</div>')
+
     return (
         '<!doctype html><html lang="zh"><head><meta charset="utf-8">'
         f'<title>{html.escape(_TITLE)}</title><style>{_CSS}</style></head><body>'
@@ -387,7 +399,8 @@ def render_page(controller: Controller) -> str:
         f'<span class="muted">{html.escape(" · ".join(st.get("sites") or ["?"]))}</span>'
         '<button class="ghost" onclick="fold()">◀ 收起</button>'
         '<button class="ghost" onclick="location.reload()">刷新</button></header>'
-        f'<div id="shell"><div id="side">{"".join(side)}</div>'
+        + ai_line
+        + f'<div id="shell"><div id="side">{"".join(side)}</div>'
         f'<div id="main">{head}{"".join(items)}</div></div>'
         '<footer><button type="button" onclick="allOn(true)">全部启用</button>'
         '<button type="button" onclick="allOn(false)">全部停用</button>'
