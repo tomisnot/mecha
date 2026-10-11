@@ -152,14 +152,29 @@ class Backend:
             ) from exc
 
     async def _fetch_tools(self) -> list[dict]:
+        """⚠⚠ 取 ``inputSchema`` 时**必须两种拼法都试**（2026-10-10 真机抓到的根因）。
+
+        mcp SDK **2.2.0** 的 ``mcp.types.Tool`` 字段是 **snake_case**：
+            ``Tool.model_fields`` = [annotations, description, execution, icons,
+                                     **input_schema**, meta, name, output_schema, title]
+        而这里原来只读驼峰 ``getattr(t, "inputSchema", None)`` ⇒ **永远是 ``{}``**
+        ⇒ 后端工具一路被当成"**无参**"传上去：
+          聚合端点 ``ml_prepare_dataset.inputSchema.properties == []``，
+          调用时服务端收到空参数（``source: Field required, input_value={}``）。
+        ⚠ 它**不报错**，所以极难查；且**与聚合层无关**——取数这一步就已经丢了。
+
+        ⇒ 先 snake_case，再驼峰（兼容旧 SDK / 别的实现），最后兜底 ``{}``。
+        """
         async def go(session: Any) -> list[dict]:
             res = await session.list_tools()
             out: list[dict] = []
             for t in getattr(res, "tools", []) or []:
+                schema = (getattr(t, "input_schema", None)
+                          or getattr(t, "inputSchema", None) or {})
                 out.append({
                     "name": str(getattr(t, "name", "")),
                     "description": str(getattr(t, "description", "") or ""),
-                    "inputSchema": getattr(t, "inputSchema", None) or {},
+                    "inputSchema": schema,
                 })
             return out
         return await self._with_session(go)

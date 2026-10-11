@@ -100,6 +100,61 @@ def _compose(svc_id: str, tool: str) -> str:
     return f"{svc_id.lower()}_{tool}"
 
 
+def _as_full_schema(sch: Mapping[str, object]) -> dict:
+    """把后端工具声明的 ``inputSchema`` 规整成 ``define_tool(parameters=…)`` 要的**整份 schema**。
+
+    ⚠⚠ **这是修一个静默回归**（实测两端对照，2026-10-10）：
+    旧代码只传 ``sch["properties"]``（**裸参数表**），而 ``parameters=`` 的约定是
+    **整份 JSON schema**（见 ``ml_mecha/core_commands.py:32``）⇒ 发出时再去里面找
+    ``.properties`` 就**找不到** ⇒ 聚合端点把工具声明成"**无参**"。
+    （同一个 bug 还有第二个独立成因：``providers/mcp_client.py`` 读驼峰
+    ``inputSchema``，而 mcp SDK 2.2.0 的字段是 snake_case ``input_schema`` ⇒ 取到 ``{}``。）
+
+    ⚠ 这里**两份都收**：既有"整份 schema"（后端 SDK 客户端修好后就是这个），
+    也有"裸参数表"（旧路径/元工具那种写法）——两种都要能落到合法 schema 上。
+    **不要**反过来去猜后端用哪种；收到什么就按什么规整。
+    """
+    if not isinstance(sch, Mapping):
+        return {"type": "object", "properties": {}, "required": [],
+                "additionalProperties": True}
+    #: 已经是整份 schema（有 properties / type）⇒ 原样用
+    if "properties" in sch or "type" in sch:
+        out = dict(sch)
+    #: 裸参数表 ⇒ 补成合法 schema（不丢参数）
+    else:
+        out = {"type": "object", "properties": dict(sch)}
+    out.setdefault("type", "object")
+    out.setdefault("properties", {})
+    return out
+
+
+def _backend_params(t: Mapping[str, object]) -> dict:
+    """后端工具 → ``define_tool(parameters=…)`` 要的**裸参数表**（``{参数名: 声明}``）。
+
+    ⚠⚠ **为什么必须是"裸的"**（2026-10-10 真机追出来的第二次套娃）：
+    ``ToolDefinition.parameters`` 的契约是**裸参数表**（见 ``tools.py`` 的字段声明与
+    `ml_mecha` 里所有 ``define_tool(parameters={...})`` 的写法），而
+    ``providers/mcp.py:tool_input_schema`` 是**照这个约定**从 ``schema["parameters"]``
+    里逐个取参数名的。⇒ 若这里塞进的是**整份 schema**
+    （``{"type": "object", "properties": {...}}``），wire 上就会变成
+        ``properties = {"type": {...}, "properties": {...}}``
+    —— 参数表**整体套了一层壳**，客户端看到的参数名是 ``type`` 与 ``properties``。
+    实测（端点 58908）：``ml_prepare_dataset.inputSchema.properties`` =
+    ``{"type": {"type": "string"}, "properties": {}}``。
+
+    ⇒ 这里统一成"取 ``properties``"；拿不到就退回整份声明里像参数表的那一层。
+    """
+    raw = t.get("inputSchema") or {}
+    if not isinstance(raw, Mapping):
+        return {}
+    props = raw.get("properties")
+    if isinstance(props, Mapping):
+        return dict(props)
+    if "properties" in raw or "type" in raw:
+        return {}                      # 是 schema 但没有参数：真的是无参工具
+    return dict(raw)                   # 本来就给了裸参数表
+
+
 #: ⭐ **聚合端点自己的名字**（进 dsh 的 ``mcp__<serverName>__<tool>`` 前缀）。
 #:
 #: ## 为什么是**框架的**名字，而不是"某个站点的名字"（2026-10-09 实测更正）
@@ -265,10 +320,7 @@ class Aggregator:
         既不知道是谁关了、也不知道怎么重开，而 §需求 2 要的正是
         "**没看到**"与"**没发生**"**不能长得一样**（铁律 8 的同一条纪律）。
         """
-        props = t.get("inputSchema") or {}
-        props = dict(props) if isinstance(props, Mapping) else {}
-        params = props.get("properties")
-        params = dict(params) if isinstance(params, Mapping) else {}
+        params = _backend_params(t)
         return define_tool(
             name=_compose(svc_id, raw),
             description=f"（{svc_id} 已关闭）{t.get('description') or raw}",
@@ -280,10 +332,7 @@ class Aggregator:
 
     def _backend_tool(self, svc_id: str, raw: str, t: Mapping[str, object]):
         name = _compose(svc_id, raw)
-        props = t.get("inputSchema") or {}
-        props = dict(props) if isinstance(props, Mapping) else {}
-        params = props.get("properties")
-        params = dict(params) if isinstance(params, Mapping) else {}
+        params = _backend_params(t)
         return define_tool(
             name=name,
             description=str(t.get("description") or f"{svc_id} 的 {raw}"),
