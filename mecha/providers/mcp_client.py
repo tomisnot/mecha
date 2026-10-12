@@ -259,9 +259,18 @@ def _normalize_result(res: Any) -> dict:
 
     ⚠ 保留 ``is_error``：它是"域失败"的信号，聚合端点要**原样透传**——
     吞掉它会让 AI 以为调用成功了（静默坏事）。
+
+    ⚠⚠ **字段真名是 snake_case ``is_error``**（``isError`` 只是**序列化别名**）。
+    只读驼峰 ⇒ 该位**恒为假** ⇒ 后端的域失败在聚合面上全被读成成功
+    （R11"观测量必须能变"的教科书形态，本仓为同一个坑栽过**第三次**：
+    EL 判据、三层架构口径 3、以及这里）。⇒ **先 snake、再驼峰**兜底
+    （与 :meth:`Backend._fetch_tools` 读 ``input_schema`` 同一写法、同一理由）。
     """
     content = getattr(res, "content", None)
-    out: dict[str, Any] = {"is_error": bool(getattr(res, "isError", False))}
+    is_error = getattr(res, "is_error", None)
+    if is_error is None:                       # 别的实现/旧 SDK 可能只有驼峰
+        is_error = getattr(res, "isError", False)
+    out: dict[str, Any] = {"is_error": bool(is_error)}
     texts: list[str] = []
     if isinstance(content, list):
         for block in content:

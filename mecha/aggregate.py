@@ -63,6 +63,7 @@ dsh 只挂**一个** MCP 端点（见设计文档 §7.2）。而每个软件各�
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
@@ -353,15 +354,27 @@ class Aggregator:
         )
 
     def _backend_tool(self, svc_id: str, raw: str, t: Mapping[str, object]):
+        """把一个后端工具**投影**成聚合面的工具。
+
+        ⚠ **后端的域失败要抬成聚合面的失败**（``is_error=True``），不许当成功正文塞进
+        ``value``——理由见 :func:`_raise_backend_failure`（P0-3 的判据）。
+        """
         name = _compose(svc_id, raw)
         params = _backend_params(t)
+
+        def _exec(**kw):
+            result = self._call_backend(svc_id, raw, dict(kw))
+            if result.get("is_error"):
+                _raise_backend_failure(svc_id, raw, result)
+            return result
+
         return define_tool(
             name=name,
             description=str(t.get("description") or f"{svc_id} 的 {raw}"),
             parameters=params,
             output_schema={"type": "object", "properties": {},
                            "required": [], "additionalProperties": True},
-            execute=lambda **kw: self._call_backend(svc_id, raw, dict(kw)),
+            execute=_exec,
         )
 
     def _call_backend(self, svc_id: str, raw: str, args: dict) -> Mapping[str, object]:
@@ -585,6 +598,47 @@ def _raise_backend_down(svc_id: str, raw: str, why: str = "", *,
         f"用 {META_OPEN}('{svc_id}') 重开它。",
         kind="backend_down",
         hint=f"调 {META_LIST}() 看当前哪些软件在跑；或用 {META_OPEN}('{svc_id}') 重开",
+    )
+
+
+def _raise_backend_failure(svc_id: str, raw: str,
+                           result: Mapping[str, object]) -> "NoReturn":  # type: ignore[name-defined]
+    """后端的**域失败** ⇒ 在聚合面**响亮失败**（把教学信息原样抬到顶层）。
+
+    ⭐ 为什么必须抬上来（不许当"成功的正文"）：
+
+    1. **AI 调用体验 P0-3 的判据就是**"失败回执 ``isError=True`` 且正文可解析出
+       ``info.kind``"。后端（``providers/mcp._error_result``）已经按这条发了；聚合面若把
+       它塞进 ``value`` 里当成功返回，**AI 的宿主看到的是"成功"** ⇒ 那正是 P0-3 记的
+       最贵的一类缺陷（"差点把参数崩了当成实验结论"）。
+    2. 往返一次就够：``ToolRegistry.execute`` 会把这个 ``MechaError`` 归一化回
+       ``{is_error: True, error: {message, info}}``——**形状与后端自己发的那个一致**，
+       所以 AI 在两跳上看到的是同一套词汇。
+
+    后端的正文是 ``{"ok": false, "error": {message, info: {kind, hint, suggest}}}``
+    （见 ``providers/mcp._error_result``）。解析不出来也**照样失败**（用原文当消息），
+    ⚠ **绝不静默当成功**——"看不懂的失败"仍然是失败。
+    """
+    text = result.get("text")
+    payload: Mapping[str, object] = {}
+    if isinstance(text, str) and text.lstrip().startswith("{"):
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, Mapping):
+                payload = parsed
+        except ValueError:
+            payload = {}
+    error = payload.get("error")
+    error = error if isinstance(error, Mapping) else {}
+    info = error.get("info")
+    info = info if isinstance(info, Mapping) else {}
+    message = str(error.get("message") or (text if isinstance(text, str) else "")
+                  or "后端失败（没有给正文）")
+    raise MechaError(
+        f"软件 {svc_id} 的 {raw} 失败：{message}",
+        kind=str(info.get("kind") or "backend_tool_error"),
+        hint=str(info.get("hint") or ""),
+        suggest=str(info.get("suggest") or ""),
     )
 
 

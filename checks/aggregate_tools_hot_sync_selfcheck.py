@@ -236,6 +236,50 @@ def check_reattach_predicate() -> None:
            "not in self.agg.attached()" not in body, "sync_backends 里又出现了 attached()")
 
 
+def _failing_tool():
+    """一个**域失败**的判据工具（抛 MechaError ⇒ 框架发 `is_error=True` 的回执）。"""
+    from mecha.errors import MechaError
+
+    def _boom(**kw):
+        raise MechaError("判据用的域失败", kind="toy_rejected", hint="先读后写")
+
+    return define_tool(name="boom", description="必失败的判据工具", parameters={},
+                       output_schema={"type": "object", "required": ["ok"]},
+                       execute=_boom)
+
+
+def check_failure_reaches_client_as_failure() -> None:
+    """① 经**真链路**：后端的域失败 ⇒ 客户端拿到 `is_error=True` + 可解析的 `kind`。
+
+    ⚠ 由来（2026-10-12 实测抓到）：``mcp_client._normalize_result`` 只读驼峰 ``isError``，
+    而 mcp 2.2 的字段**真名是 snake_case ``is_error``** ⇒ 该位**恒为假** ⇒ 后端的域失败
+    在聚合面上**全被读成成功**（R11"观测量必须能变"的教科书形态；本仓为同一个坑栽第三次）。
+
+    ⚠⚠ **为什么原先漏掉**：失败透传只用**假 Backend** 测过（替身直接回 dict，**绕过**
+    ``_normalize_result`` 这一层）⇒ 真链路上那一句从没被执行到。
+    ⇒ **判据不许用替身测真路**（本工程最贵的一课）。
+    """
+    from mecha.providers.mcp_client import Backend
+    reg = ToolRegistry()
+    reg.register(_failing_tool())
+    endpoint = McpEndpoint(reg, server_name="failure-path", instructions="判据用")
+    endpoint.start()
+    try:
+        backend = asyncio.run(Backend.connect(endpoint.url, server_name="failure-path"))
+        res = asyncio.run(backend.call("boom", {}))
+        _check("① ⭐ 域失败经真链路 ⇒ 客户端看到 `is_error=True`（不是成功）",
+               res.get("is_error") is True, res)
+        try:
+            body = json.loads(str(res.get("text", "")))
+        except ValueError:
+            body = {}
+        info = ((body.get("error") or {}).get("info") or {}) if isinstance(body, dict) else {}
+        _check("① 正文可解析出 `info.kind`（AI 据此决定怎么改，而不是读散文）",
+               info.get("kind") == "toy_rejected", body)
+    finally:
+        endpoint.stop()
+
+
 def main() -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -258,11 +302,16 @@ def main() -> int:
         import traceback
         traceback.print_exc()
         _check("① 端点端到端那一档跑起来了", False, f"{type(exc).__name__}: {exc}")
+    try:
+        check_failure_reaches_client_as_failure()
+    except Exception as exc:                               # noqa: BLE001
+        _check("① 失败透传那一档跑起来了", False, f"{type(exc).__name__}: {exc}")
 
     if FAILS:
         print(f"aggregate_tools_hot_sync_selfcheck: FAIL（{len(FAILS)} 条）：{FAILS}")
         return 1
-    print("aggregate_tools_hot_sync_selfcheck: PASS（声明 + 活表 + 通知 + 真调 + 三条红证）")
+    print("aggregate_tools_hot_sync_selfcheck: PASS"
+          "（声明 + 活表 + 通知 + 真调 + 失败透传 + 三条红证）")
     return 0
 
 

@@ -48,7 +48,9 @@
 
 from __future__ import annotations
 
+import json
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -78,10 +80,12 @@ class FakeBackend:
     其它情况原样回显。
     """
 
-    def __init__(self, tools: list[dict], *, fail: str = "", echo: str = "ok") -> None:
+    def __init__(self, tools: list[dict], *, fail: str = "", echo: str = "ok",
+                 domain_failure: bool = False) -> None:
         self._tools = tools
         self.fail = fail
         self.echo = echo
+        self.domain_failure = domain_failure
         self.calls: list[tuple[str, dict]] = []
 
     async def tools(self) -> list[dict]:
@@ -97,6 +101,14 @@ class FakeBackend:
         if self.fail == "dead":
             from mecha.providers.mcp_client import BackendConnectError
             raise BackendConnectError("后端已崩（判据用的假后端）", kind="backend_unreachable")
+        # 域失败：**后端自己发的那个形状**（`providers/mcp._error_result`），
+        # ⚠ 不是异常——它是"正常的失败回执"，聚合面要把它抬成 is_error=True
+        if self.domain_failure and name == "boom":
+            return {"is_error": True, "text": json.dumps(
+                {"ok": False, "error": {"message": "参数不合格",
+                                        "info": {"kind": "toy_rejected",
+                                                 "hint": "先读后写", "suggest": ""}}},
+                ensure_ascii=False)}
         return {"is_error": False, "text": f"{self.echo}:{name}"}
 
     async def close(self) -> None:
@@ -259,6 +271,50 @@ def check_timeout_does_not_block_others() -> None:
            {x["id"]: x["aggregate"] for x in _call(agg, META_LIST)["software"]}["SLOW"] == "up")
 
 
+def check_backend_domain_failure_stays_failure() -> None:
+    """判据 6：**后端的域失败 = 聚合面的失败**（P0-3：AI 要能机器判别）。
+
+    ⚠ 由来（2026-10-12 实测）：后端的失败正文是
+    ``{"ok": false, "error": {message, info: {kind, hint}}}``，聚合面**必须**把它抬成
+    ``is_error=True``；塞进 ``value`` 里当成功返回，AI 的宿主看到的就是"调用成功"
+    ——那正是 P0-3 记的最贵一类缺陷。
+
+    **红证**：把 ``_backend_tool`` 里那段 `if result.get("is_error"): _raise_backend_failure(...)`
+    注掉 ⇒ 下面第一条立刻红（它会看到"成功 + 失败正文"）。
+    """
+    agg = Aggregator()
+    agg.attach("T", FakeBackend(_tools("boom", "boom_ok"), echo="T", domain_failure=True))
+
+    env = agg.registry().execute("t_boom", {})
+    error = env.get("error") or {}
+    info = (error.get("info") or {}) if isinstance(error, Mapping) else {}
+    _check("⑥ 后端域失败 ⇒ 聚合面 `is_error=True`（不是成功正文）",
+           env.get("is_error") is True, f"env={env}")
+    _check("⑥ 教学信息原样抬上来（kind / hint 不丢）",
+           info.get("kind") == "toy_rejected" and "先读后写" in str(info.get("hint")),
+           f"info={info}")
+    _check("⑥ 消息带上是**哪个软件的哪个工具**（AI 要能定位）",
+           "T" in str(error.get("message")) and "boom" in str(error.get("message")),
+           f"message={error.get('message')!r}")
+
+    # L7 对偶（不误报）：同一个后端**成功**时仍然是成功（不是"一律失败"）
+    _check("⑥ 对偶：同一后端成功时仍是成功",
+           _call(agg, "t_boom_ok")["text"].startswith("T"),
+           f"{_call(agg, 't_boom_ok')}")
+
+    # 红证（R7）：把"抬上来"那一步掐掉 ⇒ 上面第一条必须红（它不是恒真的）
+    import mecha.aggregate as _agg_mod
+    orig = _agg_mod._raise_backend_failure
+    _agg_mod._raise_backend_failure = lambda *a, **k: None       # noqa: E731
+    try:
+        env2 = agg.registry().execute("t_boom", {})
+    finally:
+        _agg_mod._raise_backend_failure = orig
+    _check("⑥ 红证：掐掉'抬上来' ⇒ 又变回「成功 + 失败正文」（所以第一条真的在测东西）",
+           env2.get("is_error") is not True and "toy_rejected" in json.dumps(env2, default=str),
+           f"env={env2}")
+
+
 def main() -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -268,10 +324,11 @@ def main() -> int:
     check_one_bad_backend_does_not_sink_the_rest()
     check_query_software_tracks_facts()
     check_timeout_does_not_block_others()
+    check_backend_domain_failure_stays_failure()
     if FAILS:
         print(f"aggregate_selfcheck: FAIL（{len(FAILS)} 条）：{FAILS}")
         return 1
-    print("aggregate_selfcheck: PASS（1/2/3/4/5 都钉住；每条都过了「故意退化」的对照）")
+    print("aggregate_selfcheck: PASS（1/2/3/4/5/6 都钉住；每条都过了「故意退化」的对照）")
     return 0
 
 
