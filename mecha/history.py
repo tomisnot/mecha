@@ -108,7 +108,12 @@ class LogSink(Protocol):
 
 
 def fold(events: Iterable[Event]) -> dict[str, object]:
-    """纯函数：从事件史折叠出当前快照。后写覆盖先写。"""
+    """纯函数（**出厂默认**）：从事件史折叠出当前快照。后写覆盖先写。
+
+    ⚠ 这是**默认**折叠函数；"快照怎么从账算出"是**项目的领域知识**——
+    "配置-运行"软件用它（后写覆盖），"事件即主体"的软件（蒸馏/物化）注入自己的
+    （见 History 构造参数 ``fold``；ADR 2026-10-12-History-fold注入）。
+    """
     snapshot: dict[str, object] = {}
     for e in events:
         if e.kind != "state":       # 只折域状态；审计/编排日志不是状态（本轮的 bug 就在这一行）
@@ -118,10 +123,19 @@ def fold(events: Iterable[Event]) -> dict[str, object]:
 
 
 class History:
-    """账句柄。append 是唯一写口，且只追加。"""
+    """账句柄。append 是唯一写口，且只追加。
 
-    def __init__(self, sink: LogSink | None = None) -> None:
+    ``fold``（可选注入）：从事件史算出当前快照的函数，**缺省用本模块默认**
+    （"后写覆盖"配置账）。**框架只保证三条机制**——append-only、seq 单调、快照
+    可由注入的 fold 从事件史算出；**fold 的语义是项目的领域知识**（ADR
+    2026-10-12-History-fold注入：n=2 触发——tutor 蒸馏 / PaperPilot 物化）。
+    ⚠ fold 只解决"快照怎么从账算出"，**不改变**"写必须过 Gate"（硬纪律 1）。
+    """
+
+    def __init__(self, sink: LogSink | None = None,
+                 fold: Callable[[Iterable[Event]], dict[str, object]] | None = None) -> None:
         self._sink = sink
+        self._fold = fold if fold is not None else globals()["fold"]
         self._events: list[Event] = []
         self._seq = 0
         self._subs: list[Callable[[Event], None]] = []
@@ -242,4 +256,4 @@ class History:
 
     def snapshot(self) -> dict[str, object]:
         with self._lock:
-            return fold(self._events)
+            return self._fold(self._events)
