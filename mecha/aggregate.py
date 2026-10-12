@@ -69,7 +69,8 @@ from enum import Enum
 
 from .errors import MechaError
 from .tools import ToolRegistry, define_tool
-from .providers.mcp_client import Backend, BackendError, BackendTimeoutError
+from .providers.mcp_client import (Backend, BackendConnectError, BackendError,
+                                   BackendTimeoutError)
 
 #: 元工具名（**合规名**，见模块 docstring）。
 META_LIST = "query_software"
@@ -205,7 +206,8 @@ class Aggregator:
              close_fn: Callable[[str], object],
              known: Sequence[str] = (),
              specs: Sequence[object] = (),
-             authority_probe: Callable[[object], dict | None] | None = None) -> None:
+             authority_probe: Callable[[object], dict | None] | None = None,
+             resync_fn: Callable[[], object] | None = None) -> None:
         """把回调与"已知软件清单"**接上**（可在构造后接）。
 
         ⚠ **为什么需要这个方法**（实测抓到的两个缺口）：
@@ -230,16 +232,29 @@ class Aggregator:
         # ⭐ 站点声明与写权探针（契约 §7.1.1：聚合那个 `read_write_authority` 要用）
         self._specs = {str(getattr(s, "id", "")): s for s in specs}
         self._authority_probe = authority_probe
+        #: ⭐ **重挂回调**（由 ``AggregateRuntime`` 注入 ``sync_backends``）：
+        #: 后端**会话级失败**（连不上/断了）时调一次，让它按**当前端口**重新 attach
+        #: （attach 会造新的 ``Backend`` ⇒ 新会话 + 新 ``initialize``）。
+        #: ⚠ 这正是"**要整体重建会话，而不是只重解析端口**"的落点：重建发生在 attach 层。
+        self._resync_fn = resync_fn
 
     # ---- 挂 / 摘 ----
     def attach(self, svc_id: str, backend: Backend) -> None:
-        """挂一个后端。⚠ **连不上不抛**：标 ``unreachable``，其余后端照常。"""
+        """挂一个后端。⚠ **连不上不抛**：标 ``unreachable``，其余后端照常。
+
+        ⚠⭐ **重挂失败时不许清掉旧工具表**（2026-10-10 探针抓到的真缺陷）：
+        原先失败一律 `entry.tools = []` ⇒ 若这是**重挂**（软件重启/换端口期间的 resync），
+        工具名会**凭空消失**，AI 手里的名字从"**墓碑**（带着'谁关了 + 怎么重开'）"
+        退化成通用的"**未知工具**"——正是铁律 8 要防的"没看到 ≠ 没发生"。
+        ⇒ 只在**从来没有过**工具表时才是空；有过就留着（当墓碑用）。
+        """
+        old = self._backends.get(svc_id)
         entry = _Attached(svc_id=svc_id, backend=backend)
         try:
             entry.tools = _run(backend.tools())
             entry.state = SvcState.UP
         except BackendError as exc:
-            entry.tools = []
+            entry.tools = list(old.tools) if old is not None else []
             entry.state = SvcState.UNREACHABLE
             entry.why = exc.message
         self._backends[svc_id] = entry
@@ -299,7 +314,10 @@ class Aggregator:
                 if entry.state is SvcState.UP:
                     reg.register(self._backend_tool(svc_id, raw, t))
                 else:
-                    reg.register(self._tombstone(svc_id, raw, t))
+                    #: ⭐ `unreachable`（大概在重启）与 `DOWN`（确实关了）**分开叙述**。
+                    reg.register(self._tombstone(
+                        svc_id, raw, t,
+                        unreachable=entry.state is SvcState.UNREACHABLE))
         for meta in self._meta_tools():
             reg.register(meta)
         # ⭐ 写权自省（**只读**）挂**聚合面**：契约定案"**一个聚合工具**，不是每个软件一个"
@@ -312,7 +330,8 @@ class Aggregator:
         reg.register(self._authority_tool())
         return reg
 
-    def _tombstone(self, svc_id: str, raw: str, t: Mapping[str, object]):
+    def _tombstone(self, svc_id: str, raw: str, t: Mapping[str, object], *,
+                   unreachable: bool = False):
         """掉线后端留下的**响亮墓碑**：名字还在，调它就抛（带"谁关了"+"怎么重开"）。
 
         ⚠ **为什么不留"空位"而是留"墓碑"**：AI 手里可能还拿着上一轮工具表里的旧名字。
@@ -321,13 +340,16 @@ class Aggregator:
         "**没看到**"与"**没发生**"**不能长得一样**（铁律 8 的同一条纪律）。
         """
         params = _backend_params(t)
+        #: ⚠ 描述也分两档：`unreachable` 时**不许**写"已关闭"（那是在重启）——
+        #: AI 读的就是这行描述（工具表里它最显眼）。
+        reason = "连不上（可能在重启）" if unreachable else "已关闭"
         return define_tool(
             name=_compose(svc_id, raw),
-            description=f"（{svc_id} 已关闭）{t.get('description') or raw}",
+            description=f"（{svc_id} {reason}）{t.get('description') or raw}",
             parameters=params,
             output_schema={"type": "object", "properties": {},
                            "required": [], "additionalProperties": True},
-            execute=lambda **kw: _raise_backend_down(svc_id, raw),
+            execute=lambda **kw: _raise_backend_down(svc_id, raw, unreachable=unreachable),
         )
 
     def _backend_tool(self, svc_id: str, raw: str, t: Mapping[str, object]):
@@ -343,10 +365,25 @@ class Aggregator:
         )
 
     def _call_backend(self, svc_id: str, raw: str, args: dict) -> Mapping[str, object]:
-        """转发一次调用。⚠ **掉线时响亮失败**（带"谁关了" + "怎么重开"）。"""
+        """转发一次调用。⚠ **掉线时响亮失败**（带"谁关了" + "怎么重开"）。
+
+        ## ⭐⭐ 三类失败**必须分开处置**（2026-10-10 真机复现后改准）
+
+        | 失败 | 之前（错） | 现在 |
+        |---|---|---|
+        | **会话级断开**（`BackendConnectError`：连不上 / 调到一半断了 / 端口换了） | 一律当"**软件已关闭**" ⇒ 标 DOWN + 让 AI 去 `open_software` **重开**（而它其实正在被 supervisor 自动重启）| 标 **`unreachable`** + **`resync`（按当前端口重挂 = 新会话 + 新 initialize）** + **重试一次**；还不行就如实说"这一刻连不上，多半在重启" |
+        | 调用超时（`BackendTimeoutError`） | 单独一档 ✅ | 不变（超时 ≠ 关闭） |
+        | 真协议错（`BackendProtocolError`） | 与断开混在一起 | 保持"标 DOWN + 说清"（那是真有问题，不是重启） |
+
+        ⚠ **为什么不能一律标 DOWN**：supervisor 的重启策略会让软件自己回来（可能**换个端口**），
+        标 DOWN 等于把"**正在重启**"报成"**已关闭**"——AI 会去调 `open_software` 重开一个
+        正在重启的东西，而**真相是它马上就会自己好**。
+        """
         entry = self._backends.get(svc_id)
         if entry is None or entry.state is not SvcState.UP:
-            _raise_backend_down(svc_id, raw, entry.why if entry is not None else "")
+            _raise_backend_down(
+                svc_id, raw, entry.why if entry is not None else "",
+                unreachable=(entry is not None and entry.state is SvcState.UNREACHABLE))
         try:
             return _run(entry.backend.call(raw, args))
         except BackendTimeoutError as exc:
@@ -356,8 +393,10 @@ class Aggregator:
                 kind="backend_timeout",
                 hint="超时**不等于**软件关了；先看它的日志再决定要不要重开",
             ) from exc
+        except BackendConnectError as exc:
+            return self._retry_after_resync(svc_id, raw, args, entry, exc)
         except BackendError as exc:
-            # ⚠ 后端"用着用着死了"：把它标成 DOWN（下次调用立刻响亮失败，不用再等超时）
+            # ⚠ 真协议错/其它后端错：后端"用着用着坏了" ⇒ 标 DOWN（下次立刻响亮失败，不再等超时）
             entry.state = SvcState.DOWN
             entry.why = exc.message
             raise MechaError(
@@ -366,6 +405,39 @@ class Aggregator:
                 kind="backend_down",
                 hint=f"{META_LIST}() 看当前哪些软件在跑",
             ) from exc
+
+    def _retry_after_resync(self, svc_id: str, raw: str, args: dict,
+                            entry: "_Attached", exc: BackendError) -> Mapping[str, object]:
+        """会话级断开 ⇒ **重挂（新会话）+ 重试一次**；还不行就如实报"这一刻连不上"。
+
+        ⚠ 重试**只一次**：重挂要真的重建后端连接（可能还含一次 `list_tools`），
+        无限重试会把一次工具调用变成"卡住"（那是比失败更坏的东西）。
+        """
+        first_why = exc.message
+        entry.state = SvcState.UNREACHABLE
+        entry.why = first_why
+        resynced = False
+        if self._resync_fn is not None:
+            try:
+                self._resync_fn()
+                resynced = True
+            except Exception as resync_exc:                   # noqa: BLE001 - 重挂失败要说清
+                first_why = f"{first_why}（重挂也失败：{type(resync_exc).__name__}: {resync_exc}）"
+        fresh = self._backends.get(svc_id)
+        if resynced and fresh is not None and fresh.state is SvcState.UP:
+            try:
+                return _run(fresh.backend.call(raw, args))     # ⭐ 真的自愈：新会话 + 新 initialize
+            except BackendError as retry_exc:
+                fresh.state = SvcState.UNREACHABLE
+                fresh.why = retry_exc.message
+                first_why = f"{first_why}；重挂后重试仍失败：{retry_exc.message}"
+        raise MechaError(
+            f"软件 {svc_id} 这一刻**连不上**（{first_why}）⇒ 不能调用 {raw}。"
+            f"⚠ 它多半**正在重启**（supervisor 会把它拉起来）⇒ **过一会儿再调一次**；"
+            f"真要确认它现在在不在：{META_LIST}()（别急着 {META_OPEN}——那会跟重启抢）。",
+            kind="backend_unreachable",
+            hint="每次调用都会重建会话（含 initialize）；端口变了聚合层会按当前端口重挂",
+        ) from exc
 
     # ---- 元工具 ----
     def authority_view_of_all(self) -> dict:
@@ -490,8 +562,24 @@ class Aggregator:
         )
 
 
-def _raise_backend_down(svc_id: str, raw: str, why: str = "") -> "NoReturn":  # type: ignore[name-defined]
-    """统一的"该后端已关闭"错误（**一处措辞**：墓碑与转发都用它）。"""
+def _raise_backend_down(svc_id: str, raw: str, why: str = "", *,
+                        unreachable: bool = False) -> "NoReturn":  # type: ignore[name-defined]
+    """统一的"这个后端现在调不动"错误（**一处措辞**：墓碑与转发都用它）。
+
+    ⭐⭐ **必须分两档说**（2026-10-10 探针抓到的第三处话术错）：
+    - ``DOWN``（**确实被关了**）⇒ "已关闭 ⇒ 用 ``open_software`` 重开它"（可操作）；
+    - ``UNREACHABLE``（**连不上**：多半正在被 supervisor 重启、可能**换了端口**）
+      ⇒ ⚠ **不许**说"已关闭/去重开" —— 那会让 AI 去跟自动重启**抢**，
+      而真相是"**过一会儿它自己就好**"（每次调用都会重建会话；ready 钩子会按新端口重挂）。
+    """
+    if unreachable:
+        raise MechaError(
+            f"软件 {svc_id} 这一刻**连不上**（{why or '连接失败'}）⇒ 不能调用 {raw}。"
+            f"⚠ 它多半**正在重启**（supervisor 会把它拉起来）⇒ **过一会儿再调一次**；"
+            f"要确认它现在在不在：{META_LIST}()（别急着 {META_OPEN}——那会跟重启抢）。",
+            kind="backend_unreachable",
+            hint="每次调用都会重建会话（含 initialize）；端口变了聚合层会按当前端口重挂",
+        )
     raise MechaError(
         f"软件 {svc_id} 已关闭（{why or '已被关闭'}）⇒ 不能调用 {raw}。"
         f"用 {META_OPEN}('{svc_id}') 重开它。",
@@ -511,4 +599,18 @@ def _run(coro: object) -> object:
     try:
         return loop.run_until_complete(coro)      # type: ignore[arg-type]
     finally:
+        #: ⭐ **收尾要干净**（2026-10-10）：MCP 客户端内部跑 anyio 任务组，失败/中断时
+        #: 可能留下**待处理的 task**。直接 `close()` 会让它们变成
+        #: "Task was destroyed but it is pending" / 未处理 ExceptionGroup 噪声
+        #: —— 现场看就是"聚合层炸了、还不自愈"。⇒ 关之前先取消残余任务、放掉 asyncgen。
+        try:
+            pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
+            for task in pending:
+                task.cancel()
+            if pending:
+                loop.run_until_complete(
+                    asyncio.gather(*pending, return_exceptions=True))
+            loop.run_until_complete(loop.shutdown_asyncgens())
+        except Exception:                         # noqa: BLE001 - 收尾尽力，别再抛新的
+            pass
         loop.close()

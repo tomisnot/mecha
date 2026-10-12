@@ -206,6 +206,12 @@ class AggregateRuntime:
         aggregator.wire(state_fn=supervisor.state,
                         open_fn=self.open_service,
                         close_fn=self.close_service,
+                        #: ⭐ **会话级失败的自愈口**（2026-10-10）：后端连不上/调到一半断了
+                        #: （多半是它在被 supervisor 重启、可能**换了端口**）时，
+                        #: 聚合层调它 ⇒ 按**当前端口**重新 attach（新 ``Backend`` ⇒
+                        #: 新会话 + 新 ``initialize``），然后重试一次。
+                        #: ⚠ 这正是"**要整体重建会话，而不是只重解析端口**"的落点。
+                        resync_fn=self.sync_backends,
                         #: ⚠ **必须把声明的全部 id 交出去**（含还没挂上的）：
                         #: 元工具要能区分"**存在但没跑**"与"**压根没有这个软件**"。
                         #: 只看"挂过的"会把前者误报成后者。

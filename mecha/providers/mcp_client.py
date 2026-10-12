@@ -63,12 +63,63 @@ class BackendProtocolError(BackendError):
     """回了，但不是 MCP（协议层错）。"""
 
 
+def _flatten(exc: BaseException) -> list[BaseException]:
+    """把 ``(Base)ExceptionGroup`` 摊平成子异常列表（递归；非组 ⇒ 单元素）。
+
+    ⚠⚠ **为什么必须摊平**（2026-10-10 真机复现）：``streamable_http_client`` 内部跑 anyio
+    任务组 ⇒ 后端在**调用中途**断开（重启/被关）时，抛出来的外层是
+    ``ExceptionGroup: unhandled errors in a TaskGroup``，而真正的原因（``ConnectError`` /
+    连接被关…）在**子异常**里。只匹配外层消息的字符串 ⇒ **整类"会话级断开"被误判成协议错**
+    （现象：AI 收到"协议错…确认地址是不是 MCP 端点"，而真相是"它正在重启"）。
+    """
+    subs = getattr(exc, "exceptions", None)
+    if not subs:
+        return [exc]
+    out: list[BaseException] = []
+    for sub in subs:
+        out.extend(_flatten(sub))
+    return out
+
+
+#: "会话级断开"的指纹（出现在**摊平后**的任意一层，或外层消息里）。
+_DISCONNECT_HINTS = (
+    "connect", "refused", "unreachable", "resolve", "getaddrinfo", "reset",
+    "abruptly", "closed", "disconnect", "broken", "endofstream", "end of stream",
+    "closedresource", "brokenresource", "cancelled", "canceled", "taskgroup",
+    "remoteprotocol",
+)
+
+
+def _looks_like_disconnect(exc: BaseException) -> bool:
+    """是不是"连不上 / 连着连着断了"这一类（摊平后逐层看类型名与消息）。"""
+    for one in _flatten(exc):
+        name = type(one).__name__.lower()
+        text = (str(one) or "").lower()
+        if any(k in name or k in text for k in _DISCONNECT_HINTS):
+            return True
+    return False
+
+
+def _describe(exc: BaseException) -> str:
+    """给人/给 AI 读的一行描述：**摊平后的真原因**（不是那句 "unhandled errors"）。"""
+    leaves = _flatten(exc)
+    if not leaves:
+        return f"{type(exc).__name__}: {exc}"
+    head = leaves[0]
+    more = f"（另有 {len(leaves) - 1} 条同源错误）" if len(leaves) > 1 else ""
+    return f"{type(head).__name__}: {str(head) or head}{more}"
+
+
 @dataclass
 class Backend:
     """一个后端 MCP 服务端（跨进程，绝不进程内直调）。
 
     ⚠ **每次 :meth:`call` 现连**（短连，见模块 Known Limitations）：后端会随 supervisor
     重启（`restart`）而换实例，长连接的失效判定会变成第二套自愈桥。
+    ⇒ ⭐ **会话（含 ``initialize`` 握手）是"每次调用整体重建"的**——2026-10-10 实测确认：
+    后端被杀之后再调，只要**地址是新的**就能成功（见 `_probe_session.py` 的第 ④ 步）。
+    ⚠ 所以"旧会话的尸体被复用"**不会发生**；会出问题的是**失败的分类与话术**
+    （见 :func:`_flatten` / :meth:`_with_session` 的翻译层）。
     """
 
     url: str
@@ -131,22 +182,27 @@ class Backend:
             name = type(exc).__name__
             msg = str(exc) or name
             low = msg.lower()
+            #: ⭐⭐ **先摊平再看**（2026-10-10 复现）：anyio 任务组把真原因裹在
+            #: ``ExceptionGroup: unhandled errors in a TaskGroup`` 里 ⇒ 只看外层消息
+            #: 必然落到"协议错"那一档（错分类 + 错指引）。
+            cause = _describe(exc)
             if "timeout" in low or "timed out" in low:
                 raise BackendTimeoutError(
                     f"连后端 {self.server_name}（{self.url}）超时",
                     kind="backend_timeout",
                     hint="后端可能正在启动/卡住",
                 ) from exc
-            if any(k in low for k in ("connect", "refused", "unreachable", "resolve",
-                                      "getaddrinfo", "disconnect", "closed")):
+            if _looks_like_disconnect(exc):
                 raise BackendConnectError(
-                    f"连不上后端 {self.server_name}（{self.url}）：{msg}",
+                    f"后端 {self.server_name}（{self.url}）**断开**：{cause}",
                     kind="backend_unreachable",
-                    hint="端口文件里的端口没人听 ⇒ 那个软件可能已经关了"
-                         "（用 query_software 看当前哪些在跑）",
+                    hint="多半是它**正在重启**（或被关）⇒ **再调一次**会自动重建会话"
+                         "（每次调用都是新会话 + 新 initialize）；"
+                         "要知道它现在在不在：query_software()；"
+                         "⚠ 端口变了也没关系（聚合层会按当前端口重新挂）",
                 ) from exc
             raise BackendProtocolError(
-                f"后端 {self.server_name}（{self.url}）协议错：{name}: {msg}",
+                f"后端 {self.server_name}（{self.url}）协议错：{cause}",
                 kind="backend_protocol",
                 hint="确认那个地址真的是 MCP 端点（不是监控端点/网页）",
             ) from exc
