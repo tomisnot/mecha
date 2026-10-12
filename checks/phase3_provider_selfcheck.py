@@ -10,6 +10,8 @@
    撤销后恢复；引用未知动词的 restriction 当场报错（fail loud）。
 5. Skill 目录单一来源：未注册先 declare → 红；注册后目录自动含该项（消 16→18 漂移）。
 6. CodeAct 逐子调用记日志：每步落 History 一条、actor 来自通道、失败步带教学文本。
+7. Log 的**保留策略可注入**：`keep=N` 超 slack 才裁回 N（且**不静默**）；
+   `keep=0` **不裁**（账是资产的项目用它）；**默认仍是出厂策略**（没把"不裁"变成默认）。
 
 每条都有 L7 对偶（不误报用例）。
 
@@ -22,10 +24,15 @@
   其接线判据归 Phase 5；这里测 local 出厂默认 + Definition 语义。
 - Jobs 判据测的是"所有权模型"（实例即注册表），不是线程正确性（竞态压测
   超出判据范围，归真实引擎接入时）。
+- 保留策略判据用小 `keep`（5）触发裁剪，不去压 `JOURNAL_KEEP*SLACK`（1200 行）——
+  测的是"裁剪这条分支与开关"，不是它的性能。
 """
 
 from __future__ import annotations
 
+import contextlib
+import inspect
+import io
 import sys
 import tempfile
 import threading
@@ -41,6 +48,7 @@ from mecha.history import History
 from mecha.providers.approval import LocalApproval
 from mecha.providers.codeact import Action, CodeAct
 from mecha.providers.jobs import JobRegistry, JobState
+from mecha.providers.log_local import JOURNAL_KEEP, JsonlLogSink
 from mecha.providers.skills import SkillCatalog
 from mecha.surface import Engine, EntryKind, ExecutionContext, Surface
 from mecha.tools import ToolRegistry, define_tool
@@ -333,6 +341,68 @@ def check_codeact_failure_leaves_trace(out: list[str]) -> None:
             _fail(out, f"run 动作越界：snapshot={gate2.snapshot} 史={[e.op for e in acts]}")
 
 
+def check_log_keep_is_injectable(out: list[str]) -> None:
+    """落盘账的**保留策略可注入**（`keep`）：默认裁、`keep=0` 不裁。
+
+    由来：模块 docstring 早就写着"保留策略可注入"，而实现里只有一个模块常量
+    ⇒ 账是**资产**的项目（要从账重算派生状态、evidence 要能回推到旧事件）没法不裁。
+    """
+    def journal_lines(path: Path) -> list[str]:
+        return [ln for ln in path.read_text(encoding="utf-8").splitlines() if ln]
+
+    def append_n(sink: JsonlLogSink, n: int) -> None:
+        for i in range(1, n + 1):
+            sink.append({"seq": i, "kind": "history", "op": "x", "target": ""})
+
+    with tempfile.TemporaryDirectory(prefix="mecha-log-") as tmp:
+        # keep=5 ⇒ 超过 5*SLACK(=6) 才裁回 5，且**不静默**
+        layout = resolve_data_dir(Path(tmp) / "trim", ".t")
+        sink = JsonlLogSink(layout, keep=5)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            append_n(sink, 7)
+        lines = journal_lines(layout.data_dir / "journal.jsonl")
+        if len(lines) == 5 and "账已裁剪" in buf.getvalue():
+            _ok("`keep=N` 生效：超 slack 才裁回 N 条，且裁了会出声（不静默）")
+        else:
+            _fail(out, f"keep=5 既没裁也没出声：{len(lines)} 行进盘，输出={buf.getvalue()!r}")
+        sink.close()
+
+        # keep=0 ⇒ 不裁（旧事件不删）
+        layout2 = resolve_data_dir(Path(tmp) / "keep0", ".t")
+        sink2 = JsonlLogSink(layout2, keep=0)
+        append_n(sink2, 7)
+        lines2 = journal_lines(layout2.data_dir / "journal.jsonl")
+        if len(lines2) == 7:
+            _ok("`keep=0` 不裁：7 条全在（账是资产的项目用这一档）")
+        else:
+            _fail(out, f"keep=0 竟裁了：只剩 {len(lines2)} 行")
+        sink2.close()
+
+        # L7 对偶（不误报）：出厂默认仍是 JOURNAL_KEEP，没有把"不裁"变成默认
+        default = inspect.signature(JsonlLogSink.__init__).parameters["keep"].default
+        if default == JOURNAL_KEEP and JOURNAL_KEEP > 0:
+            _ok(f"默认仍是出厂保留策略（keep={default}），'不裁'没被当成默认值")
+        else:
+            _fail(out, f"出厂默认被改了：keep={default!r}（JOURNAL_KEEP={JOURNAL_KEEP}）")
+
+        # 红证（R7）：把"裁剪"掐掉 ⇒ 上面那条"keep=N 生效"必须红（它不是恒真的）
+        orig_trim = JsonlLogSink._trim_if_needed
+        JsonlLogSink._trim_if_needed = lambda self: None
+        try:
+            layout3 = resolve_data_dir(Path(tmp) / "red", ".t")
+            sink3 = JsonlLogSink(layout3, keep=5)
+            append_n(sink3, 7)
+            kept = len(journal_lines(layout3.data_dir / "journal.jsonl"))
+            sink3.close()
+        finally:
+            JsonlLogSink._trim_if_needed = orig_trim
+        if kept == 7 and JsonlLogSink._trim_if_needed is orig_trim:
+            _ok("红证：掐掉裁剪 ⇒ 7 条全留（'keep=N 生效'那条会红，不是哑守卫）")
+        else:
+            _fail(out, f"红证没红：{kept} 行 —— 那条守卫抓不住'不裁'")
+
+
 def main() -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -345,6 +415,7 @@ def main() -> int:
     check_skill_catalog_single_source(out)
     check_codeact_logs_each_subcall(out)
     check_codeact_failure_leaves_trace(out)
+    check_log_keep_is_injectable(out)
     if out:
         print(f"phase3_provider_selfcheck: FAIL（{len(out)} 条）")
         return 1

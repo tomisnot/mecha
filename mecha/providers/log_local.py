@@ -5,7 +5,8 @@
   （format_version），读取走相邻边迁移链。
 - 每行一个 JSON 事件；append 用追加打开 + flush（崩溃尾部由消费方修复，
   与 dsh JSONL provider 同思路）。
-- 归档位置只有一个常量（消 D-9）：ARCHIVE_DIR_NAME，且保留策略可注入。
+- 归档位置只有一个常量（消 D-9）：ARCHIVE_DIR_NAME，且**保留策略可注入**
+  （``keep`` 构造参数；``keep=0`` = 不裁，给"账是资产"的项目）。
 
 ## Known Limitations and Deferred Work
 
@@ -33,6 +34,9 @@ ARCHIVE_DIR_NAME = "archive"
 #: ⭐ **磁盘上保留多少条账**（2026-10-10 用户裁决："磁盘只存储最近一千条，旧的全删"）。
 #: ⚠ 这是**保留策略**，不是"只留能显示的"：面板只显示最近 100 条（见 `cockpit.HISTORY_LIMIT`），
 #: 盘上留 1000 条是为了"最近发生的事还能查"。
+#: ⚠ **它是出厂默认，不是对每个项目都成立的值**：账是**资产**的项目（任何时候要从账
+#: 重算派生状态、evidence 要能回推到旧事件）不能裁 ⇒ 那些项目用 ``keep=0`` 开账
+#: （见 ``JsonlLogSink`` 的构造参数）。**保留策略是项目的领域知识**（原则 3）。
 JOURNAL_KEEP = 1000
 #: 何时真裁剪：超过 `KEEP * SLACK` 才一次裁回 `KEEP`（⚠ 逐条裁剪 = 每次 append 重写整个文件）。
 JOURNAL_TRIM_SLACK = 1.2
@@ -48,10 +52,17 @@ class JsonlLogSink:
     """
 
     def __init__(self, layout: DataLayout, chain: MigrationChain | None = None,
-                 *, exclusive: bool = True) -> None:
+                 *, exclusive: bool = True, keep: int = JOURNAL_KEEP) -> None:
+        """``keep`` = 盘上保留多少条（**保留策略可注入**；出厂 = :data:`JOURNAL_KEEP`）。
+
+        ⚠ ``keep=0``（或负数）＝ **不裁**：给"账是资产"的项目用——它要从账重算派生
+        状态、且 evidence 要能回推到旧事件（删了旧事件，"可重算"就少一截，而回推会
+        指向不存在的 seq）。**它不该是出厂默认**：默认仍是"最近发生的事还能查"。
+        """
         self._dir = layout.data_dir
         self._path = self._dir / JOURNAL_FILENAME
         self._chain = chain or MigrationChain()
+        self._keep = int(keep)
         self._records: list[dict] | None = None  # 惰性读缓存
         self._lease = WriteLease(self._dir) if exclusive else None
 
@@ -73,7 +84,7 @@ class JsonlLogSink:
         self._trim_if_needed()
 
     def _trim_if_needed(self) -> None:
-        """⭐ **保留策略：盘上只留最近 `JOURNAL_KEEP` 条**（超出就裁，旧的真删）。
+        """⭐ **保留策略：盘上只留最近 ``keep`` 条**（超出就裁，旧的真删）。
 
         ## 为什么这么做（2026-10-10 用户裁决 + 代价如实记）
 
@@ -84,10 +95,12 @@ class JsonlLogSink:
         ⚠ 它**不动 seq**：`seq` 仍单调递增（裁掉旧行不重新编号，`last_seq()` 从盘上残余推）。
         ⚠ **不静默**：真裁了就记一行（谁都能在日志里看到"账被裁过"）。
 
-        批量触发（超 `KEEP*SLACK` 才裁回 `KEEP`）⇒ 摊销成本可接受；
+        批量触发（超 `keep*SLACK` 才裁回 `keep`）⇒ 摊销成本可接受；
         ⚠ 逐条裁剪会在**每次 append** 重写整个文件，那是不能接受的。
+
+        ⚠ ``keep <= 0`` ⇒ **不裁**（本函数直接返回）：账是资产的项目这样开账。
         """
-        keep = int(JOURNAL_KEEP)
+        keep = self._keep
         if keep <= 0:
             return
         try:
