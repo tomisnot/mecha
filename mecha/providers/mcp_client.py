@@ -43,8 +43,16 @@ from typing import Any
 
 from ..errors import MechaError
 
-#: 单次调用的默认超时（秒）。可被 ``connect(..., timeout_s=…)`` 覆盖。
+#: **元数据操作**（connect / list_tools）的默认超时（秒）：小请求，秒级就该回；
+#: 回不了说明后端半死（⚠ attach 不能在这里挂 10 分钟）。
 DEFAULT_TIMEOUT_S = 30.0
+#: ⭐⭐ **工具调用**的默认超时（秒）—— **必须远大于元数据那档**（2026-10-10 用户反馈）：
+#: 有些工具**天生是长同步调用**（例如"自定义网络 dry_run / warmup / eval_custom"），
+#: 跑几十秒到几分钟都正常。⚠ 原先两档共用一个 30 秒 ⇒ 长调用**必然超时**，
+#: 而且那时超时还被误判成协议错 ⇒ **把那个软件标成 down 且粘住**。
+#: ⇒ 与聚合端点给 dsh 的 `toolCallTimeoutMs`（`aggregate_runtime.DEFAULT_TOOL_CALL_TIMEOUT_MS`）
+#: **对齐**：中间这一跳不该比两端更短。
+DEFAULT_CALL_TIMEOUT_S = 600.0
 
 
 class BackendError(MechaError):
@@ -90,6 +98,21 @@ _DISCONNECT_HINTS = (
 )
 
 
+def _looks_like_timeout(exc: BaseException) -> bool:
+    """是不是"这一次没在预算内回"（⚠ **摊平后**再看：长调用超时的真原因在子异常里）。
+
+    ⚠ 为什么单独一条（2026-10-10 用户反馈）：不摊平时，长同步调用超时会被外层那句
+    "unhandled errors in a TaskGroup" 吃掉 ⇒ 被当成**协议错** ⇒ 上层把那个软件
+    **标成 down 且粘住**（快调用却一直正常，所以看着像"只有某些工具坏"）。
+    """
+    for one in _flatten(exc):
+        name = type(one).__name__.lower()
+        text = (str(one) or "").lower()
+        if "timeout" in name or "timedout" in name or "timeout" in text or "timed out" in text:
+            return True
+    return False
+
+
 def _looks_like_disconnect(exc: BaseException) -> bool:
     """是不是"连不上 / 连着连着断了"这一类（摊平后逐层看类型名与消息）。"""
     for one in _flatten(exc):
@@ -124,25 +147,37 @@ class Backend:
 
     url: str
     server_name: str
+    #: **元数据**这一档（connect / list_tools）。
     timeout_s: float = DEFAULT_TIMEOUT_S
+    #: ⭐ **工具调用**这一档：长同步调用（几十秒到几分钟）必须活得下来，见模块常量说明。
+    call_timeout_s: float = DEFAULT_CALL_TIMEOUT_S
     #: 最近一次 ``list_tools`` 的结果缓存（只给"没连也能报个大概"用，**不当作真值**）。
     _tools: list[dict] = field(default_factory=list, repr=False)
 
     @classmethod
     async def connect(cls, url: str, *, server_name: str,
-                      timeout_s: float = DEFAULT_TIMEOUT_S) -> "Backend":
+                      timeout_s: float = DEFAULT_TIMEOUT_S,
+                      call_timeout_s: float = DEFAULT_CALL_TIMEOUT_S) -> "Backend":
         """建一个后端句柄并**立刻验一次连通**（拉一次工具表）。
 
         ⚠ 为什么要立刻拉：``attach`` 时就得知道"这个后端到底有没有工具"——
         否则聚合端点会先宣告成功、等 AI 调的时候才发现连不上（那是静默坏事的形状）。
+        ⚠ 这里用的是**元数据**那一档超时（`timeout_s`）；**工具调用**用 `call_timeout_s`。
         """
-        me = cls(url=url, server_name=server_name, timeout_s=timeout_s)
+        me = cls(url=url, server_name=server_name, timeout_s=timeout_s,
+                 call_timeout_s=call_timeout_s)
         me._tools = await me._fetch_tools()
         return me
 
     # ---- 内部：一次短连 ----
-    async def _with_session(self, fn: Any) -> Any:
-        """开一个短会话跑 ``fn(session)``，把 SDK 异常**翻译成三种可读失败**。"""
+    async def _with_session(self, fn: Any, *,
+                            call_timeout_s: float | None = None) -> Any:
+        """开一个短会话跑 ``fn(session)``，把 SDK 异常**翻译成可读失败**。
+
+        @param call_timeout_s - 本次的**读超时**；``None`` ⇒ 用元数据那一档（``timeout_s``）。
+            工具调用会给**长的**那一档（见 :data:`DEFAULT_CALL_TIMEOUT_S`）。
+        """
+        budget = float(call_timeout_s if call_timeout_s is not None else self.timeout_s)
         try:
             from mcp import ClientSession
             from mcp.client.streamable_http import streamable_http_client
@@ -159,14 +194,14 @@ class Backend:
                     streamable_http_client(self.url))
                 read, write = streams[0], streams[1]
                 session = await stack.enter_async_context(
-                    ClientSession(read, write, read_timeout_seconds=self.timeout_s))
+                    ClientSession(read, write, read_timeout_seconds=budget))
                 await session.initialize()
                 try:
                     return await fn(session)
                 except asyncio.TimeoutError as exc:
                     raise BackendTimeoutError(
                         f"调用后端 {self.server_name}（{self.url}）超时"
-                        f"（>{self.timeout_s:.0f}s）",
+                        f"（>{budget:.0f}s）",
                         kind="backend_timeout",
                         hint="后端可能卡住了；看它的日志（supervisor 的 runtime/logs/<id>.log）",
                     ) from exc
@@ -174,7 +209,7 @@ class Backend:
             raise
         except asyncio.TimeoutError as exc:
             raise BackendTimeoutError(
-                f"连后端 {self.server_name}（{self.url}）超时（>{self.timeout_s:.0f}s）",
+                f"连后端 {self.server_name}（{self.url}）超时（>{budget:.0f}s）",
                 kind="backend_timeout",
                 hint="端口在听但握手不回；看后端日志",
             ) from exc
@@ -186,11 +221,17 @@ class Backend:
             #: ``ExceptionGroup: unhandled errors in a TaskGroup`` 里 ⇒ 只看外层消息
             #: 必然落到"协议错"那一档（错分类 + 错指引）。
             cause = _describe(exc)
-            if "timeout" in low or "timed out" in low:
+            #: ⭐ **超时也必须"摊平后再判"**（2026-10-10 反馈）：长调用超时时，外层同样是
+            #: 那个 ExceptionGroup（没有 "timeout" 字样），真原因是子异常里的
+            #: ``TimeoutError``/``ReadTimeout`` ⇒ 只看外层就会把它当**协议错**
+            #: ⇒ 上层按"真协议错"把软件标成 down（**粘住**）。
+            if _looks_like_timeout(exc) or "timeout" in low or "timed out" in low:
                 raise BackendTimeoutError(
-                    f"连后端 {self.server_name}（{self.url}）超时",
+                    f"后端 {self.server_name}（{self.url}）**这次没在 {budget:.0f}s 内回**：{cause}",
                     kind="backend_timeout",
-                    hint="后端可能正在启动/卡住",
+                    hint="⚠ 超时**不等于**软件坏了（长同步调用本来就可能慢）："
+                         "它仍算在跑；要等更久就调大超时，或让那个工具改成"
+                         "**回 job_id + read_job** 的异步形态（更稳）",
                 ) from exc
             if _looks_like_disconnect(exc):
                 raise BackendConnectError(
@@ -242,12 +283,17 @@ class Backend:
         return self._tools
 
     async def call(self, name: str, args: dict) -> dict:
-        """调后端的一个工具。返回**归一化**后的回执（不把 SDK 形状漏给上层）。"""
+        """调后端的一个工具。返回**归一化**后的回执（不把 SDK 形状漏给上层）。
+
+        ⚠ 用**调用那一档**超时（`call_timeout_s`，默认 10 分钟）：有些工具天生是长同步
+        调用（dry_run / warmup / eval_custom）——拿元数据那 30 秒去卡它们，等于**必然超时**
+        （2026-10-10 用户反馈的原发现场），而且超时不该被当成"软件坏了"。
+        """
         async def go(session: Any) -> dict:
             res = await session.call_tool(name, args or {},
-                                          read_timeout_seconds=self.timeout_s)
+                                          read_timeout_seconds=self.call_timeout_s)
             return _normalize_result(res)
-        return await self._with_session(go)
+        return await self._with_session(go, call_timeout_s=self.call_timeout_s)
 
     async def close(self) -> None:
         """本实现是短连 ⇒ 没有常驻资源要放。留着是为了接口稳定（调用方不必判类型）。"""

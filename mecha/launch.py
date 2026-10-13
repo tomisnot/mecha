@@ -377,6 +377,18 @@ PAGE_PORT_FILE = ".page-port"
 #: 存在的意义：别的入口（人、脚本、面板）能在**启动时**重新解析"当前 AI 面在哪"——
 #: 与监控面那套端口文件**同一套发现手法**（⚠ 具体文件名归项目声明，框架不写死）。
 AGGREGATE_PORT_FILE = ".aggregate-port"
+#: ⭐⭐ **聚合端点的默认端口**（2026-10-10 用户裁决："别让 AI 管这些麻烦事……端口别总不好使"）。
+#:
+#: ## 为什么默认**固定**（不是每次由 OS 分配）
+#:
+#: AI 那条腿的入口就是它。地址每次变 ⇒ ① 静态配置的 dsh 指到**死地址**；
+#: ② dsh 客户端对"首次连接失败"是**永久失败**、掉线超预算也**不会按需重连**
+#: （读 dsh 源码确认）⇒ 一旦错过就只能**人工重启 dsh**。
+#: ⇒ **让地址永久稳定**是唯一"不需要人、也不需要 AI 参与"的解法。
+#: ⚠ 被占时：先判**是不是我们自己上一轮的残留**（按 `state.json` 记过的 pid 扫掉），
+#: 只有被**别人的**程序占着才响亮失败 —— 那是唯一该叫人一次的情况。
+#: `--aggregate-port 0` 保留"每次自动分配"作**逃生口**（要并发起多个实例时用）。
+DEFAULT_AGGREGATE_PORT = 3089
 
 
 def _pid_file(runtime: Path) -> Path:
@@ -845,6 +857,12 @@ class LaunchController:
             plan = plan_startup(self.sites, enabled, self._known_pids())   # ⭐ 全部站点
             if plan.stale:
                 self.super.clean_stale(plan.stale)      # 清掉的会进 state().cleaned
+            #: ⭐⭐ **例行扫残留**（B，2026-10-10）：`_detect_stale` 只探"记过的 pid 还活着"
+            #: 与"端口文件陈旧"两种形态；`sweep_leftovers()` 直接按 `state.json` 里记过的
+            #: pid 扫 —— 两者互补。**每一次启动都扫**，"旧世界"（上一轮的 dsh/软件还活着、
+            #: 却指向已经消失的端点）就不会与新世界并存。
+            for line in self.super.sweep_leftovers():
+                self.super.cleaned.append(line)
             self._enabled = plan.enabled
             for child in plan.ordered:                  # ⭐ 按**显式顺序**起
                 self.super.start(child)
@@ -956,6 +974,14 @@ def build_aggregate_wiring(*, sites: Sequence[Site], supervisor: Supervisor,
     #: 绝不偷偷换（换端口 = "AI 工具突然没了"的根源）。⚠ 库内仍然零端口字面量。
     run_root = supervisor.log_dir.parent          # `<runtime>/logs` ⇒ `<runtime>`
     if aggregate_port:
+        #: ⭐⭐ **被占时先清"我们自己的残留"再绑**（A 的一半，2026-10-10）：
+        #: 上一轮没收干净时，占着这个端口的**就是我们的旧进程**（框架把自己锁在一个
+        #: `--stop` 请求通不上的世界里）。⇒ 先按 `state.json` 记过的 pid 扫一遍，
+        #: 只有**别人的**程序占着才响亮失败（那才是该叫人一次的情况）。
+        if _listening(int(aggregate_port)):
+            cleaned = supervisor.sweep_leftovers()
+            for line in cleaned:
+                print(f"  · {line}", flush=True)
         from .portfile import ensure_free
         ensure_free("127.0.0.1", int(aggregate_port), label="聚合端点（--aggregate-port）")
     endpoint = McpEndpoint(registry, server_name=name_of_site,
@@ -975,10 +1001,22 @@ def build_aggregate_wiring(*, sites: Sequence[Site], supervisor: Supervisor,
 
     def backend_factory(url: str, *, server_name: str) -> object:
         import asyncio
+
+        #: ⭐⭐ 两档超时**分开给**（2026-10-10 用户反馈："长同步调用（dry_run/warmup/
+        #: eval_custom）超过聚合层对后端的等待上限 ⇒ 超时并把软件标成 down（粘性）"）：
+        #: - **元数据**（connect / list_tools）：30 秒 —— 半死的后端不该让 attach 挂 10 分钟；
+        #: - **工具调用**：与端点给 dsh 的 `toolCallTimeoutMs` **同一档**
+        #:   （`DEFAULT_TOOL_CALL_TIMEOUT_MS`）—— 中间这一跳**不该比两端更短**，
+        #:   否则长调用**必然**做不成（原实现这里硬写 30 秒 = 那个上限）。
+        from .aggregate_runtime import DEFAULT_TOOL_CALL_TIMEOUT_MS
+        from .providers.mcp_client import DEFAULT_TIMEOUT_S
+
         loop = asyncio.new_event_loop()
         try:
             return loop.run_until_complete(
-                Backend.connect(url, server_name=server_name, timeout_s=30.0))
+                Backend.connect(url, server_name=server_name,
+                                timeout_s=DEFAULT_TIMEOUT_S,
+                                call_timeout_s=DEFAULT_TOOL_CALL_TIMEOUT_MS / 1000.0))
         finally:
             loop.close()
 
@@ -1121,8 +1159,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     #: 给一个固定值 ⇒ ⚠ **占用即响亮失败**（绝不偷偷换：换端口正是"AI 工具突然没了"的根源）。
     #: 固定它的好处：任何**静态配置**的 dsh 永久有效；上一次没收干净留下的旧 dsh
     #: 也能在重连预算内**自己接回**新端点（同一个 URL）。
-    ap.add_argument("--aggregate-port", type=int, default=0,
-                    help="聚合端点固定端口（0=自动分配；固定则被占即响亮失败）")
+    ap.add_argument("--aggregate-port", type=int, default=DEFAULT_AGGREGATE_PORT,
+                    help=f"聚合端点端口（默认固定 {DEFAULT_AGGREGATE_PORT}，让 AI 那条腿的地址"
+                         "**永久稳定**；被占时先清我们自己的残留，仍被占则响亮失败。"
+                         "传 0 = 每次自动分配（逃生口））")
     ap.add_argument("--no-browser", action="store_true", help="不要自动开浏览器")
     ap.add_argument("--dry-run", action="store_true", help="只打印计划，不 spawn")
     ap.add_argument("--stop", action="store_true",

@@ -394,9 +394,31 @@ class Aggregator:
         """
         entry = self._backends.get(svc_id)
         if entry is None or entry.state is not SvcState.UP:
-            _raise_backend_down(
-                svc_id, raw, entry.why if entry is not None else "",
-                unreachable=(entry is not None and entry.state is SvcState.UNREACHABLE))
+            #: ⭐⭐ **先解粘，再报错**（2026-10-10 用户反馈："把 ML 标成 down（粘性）"）：
+            #: 标记是**当时的判断**，而世界会变（软件被重启回来、端口换了，或那次失败
+            #: 本来就是误判）。⇒ "一次失败就永远拒绝它"是错的：先按**当前**状态重挂一次
+            #: （新 `Backend` ⇒ 新会话 + 新 initialize），成了就继续调；不成才给墓碑话术。
+            #: ⚠ 重挂很廉价（一次 list_tools）；软件真关了的情况它自然失败 ⇒
+            #: 代价只是多一次尝试，换来**不粘住**。
+            if self._resync_fn is not None and entry is not None:
+                try:
+                    self._resync_fn()
+                except Exception:                     # noqa: BLE001 - 解粘失败照旧按原样报
+                    pass
+                fresh = self._backends.get(svc_id)
+                if fresh is not None and fresh.state is SvcState.UP:
+                    return self._call_backend_once(svc_id, raw, args, fresh)
+                entry = fresh if fresh is not None else entry
+            if entry is None or entry.state is not SvcState.UP:
+                _raise_backend_down(
+                    svc_id, raw, entry.why if entry is not None else "",
+                    unreachable=(entry is not None
+                                 and entry.state is SvcState.UNREACHABLE))
+        return self._call_backend_once(svc_id, raw, args, entry)
+
+    def _call_backend_once(self, svc_id: str, raw: str, args: dict,
+                           entry: "_Attached") -> Mapping[str, object]:
+        """真正的转发（三类失败分档处置见 :meth:`_call_backend` 的表）。"""
         try:
             return _run(entry.backend.call(raw, args))
         except BackendTimeoutError as exc:
