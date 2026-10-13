@@ -218,22 +218,6 @@ def _endpoint_e2e() -> None:
         endpoint.stop()
 
 
-def check_reattach_predicate() -> None:
-    """⑥ **重挂的判据必须是"状态"而不是"在不在表里"**（真机抓到的第二个真 bug）。
-
-    现场：GP 停掉再起来、进程 ``ready``、可它的工具**全是墓碑**。
-    根因：``AggregateRuntime.sync_backends`` 用 ``svc_id not in agg.attached()`` 判"要不要挂"，
-    而 ``attached()`` 按墓碑设计**含已关闭的后端**（它自己的 docstring 就写着"想判它还活着
-    吗不要用这个方法，用 ``states()``"）⇒ detach 过之后**永远不再 attach**。
-
-    ⚠ 这里做**源码级反向断言**（离线的行为级判据在真机探针里）：本工程已有同型守卫
-    （"不许出现 X"的扫描），代价是它只挡"改回老写法"，不挡"换个法子写错"。
-    """
-    src = (ROOT / "mecha" / "aggregate_runtime.py").read_text(encoding="utf-8")
-    body = src.split("def sync_backends", 1)[-1].split("\n    def ", 1)[0]
-    _check("⑥ 重挂判据用 states()（读到聚合端点这边的真实状态）", "states()" in body, body[:120])
-    _check("⑥ ⛔ 红证：不许再用 attached() 判「要不要重挂」（它含墓碑）",
-           "not in self.agg.attached()" not in body, "sync_backends 里又出现了 attached()")
 
 
 def _failing_tool():
@@ -290,7 +274,6 @@ def main() -> int:
     print("[hot_sync] 工具表热同步：声明能力 / 活表会变 / 真收到通知 / 经端点真调")
     try:
         check_capability_declaration()
-        check_reattach_predicate()
     except Exception as exc:                               # noqa: BLE001
         _check("② 能力声明那一档跑起来了", False, f"{type(exc).__name__}: {exc}")
     try:

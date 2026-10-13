@@ -28,7 +28,7 @@
   `host/mount-host-plugin.ts` / `register-tools.ts` / `mcp-session-http.ts` / `config.ts`）
   **整块删除**：⚠ 代价是"不经 mecha 单独跑 dsh"时**不再出现任何软件工具**（用户已认）。
   ⇒ 载体保留的唯一理由是 **dsh 的加载形状**（一条 patch entry 带一个包，
-  client 半靠它进浏览器）；判据 `checks/panel_one_leg_selfcheck.py` 钉着"三家同形 + 桥不许回来"。
+  client 半靠它进浏览器）；聚合端点和工具热同步验证实际调用路径。
 - **不校验** 声明里的 ``route_path`` 是否真的有人注册（那是**运行期事实**，只有真 dsh 知道）
   ⇒ 面板上那种"tab 在但取数 404"由 tab 自己如实报（资产既有语义）。
 """

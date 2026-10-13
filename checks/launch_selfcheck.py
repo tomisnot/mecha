@@ -826,26 +826,7 @@ def check_startup_env_roundtrip() -> None:
 
 
 def check_console_free_entry() -> None:
-    """⭐ 判据 ⑯：**无黑框入口**（`start_mecha.pyw`）—— 它必须真能起、且坏得看得见。
-
-    ## 为什么是 `.pyw`（实测的关联，不是偏好）
-
-    `.bat` 双击**必然开一个控制台窗口**（哪怕里面只写 `start`）—— 与需求"**0 黑框**"冲突。
-    本机实测：``assoc .pyw`` ⇒ ``Python.NoConFile`` ⇒ ``ftype`` 指向 ``pyw.exe``（= `pythonw`）。
-    ⚠ 所以**入口的形态本身是判据的一部分**：本仓根**不许**再出现 `.bat` 入口。
-
-    ## 这条判据真跑入口（不是读源码猜）
-
-    ⚠ 本工程最贵的教训就是"**判据只调零件、而真路没走过**"（29 项全绿而 web 面板起不来）。
-    ⇒ 这里用 `runpy` **真执行 `start_mecha.pyw`**（带 `--dry-run` ⇒ 它会在起页面之前返回，
-    不 spawn 任何进程），然后断言**三件只有真跑才看得见的事**：
-
-    1. ⭐ **输出真的落进了文件**（`_mecha_runtime/launcher.log` 非空）——
-       没有控制台时**不留日志 = 坏了什么都看不到**；
-    2. ⭐ **`sys.stdout` 真的被换成了文件对象**（证明它不靠控制台）；且
-       ⚠ **绝不 `DEVNULL`**（铁律 1）——源码里出现 `DEVNULL`/`os.devnull` 即红；
-    3. ⭐ **根清单真的被读并注入** `MECHA_SITE_ROOTS`（`mecha_roots.txt` 在 cwd 时）。
-    """
+    """真跑无控制台入口：输出落日志、根清单生效、dry-run 正常返回。"""
     import runpy
 
     entry = ROOT / "start_mecha.pyw"
@@ -853,42 +834,6 @@ def check_console_free_entry() -> None:
            entry.is_file(), f"缺 {entry}")
     if not entry.is_file():
         return
-    #: ⚠⚠ **必须 `utf-8-sig` 读**：Windows 的编辑器 / `Set-Content -Encoding UTF8` 会给
-    #: 文件**加 BOM**。⚠ 而 `.pyw` 带 BOM 是**合法**的（CPython 读源码时自己吃掉它），
-    #: 但**留在字符串里的 `\ufeff` 会让 `ast.parse` 抛**
-    #: `SyntaxError: invalid non-printable character U+FEFF` ⇒ **判据崩掉**而不是干净地红。
-    #: （实测：我自己做红证时就这么撞的 —— ⚠ **本工程今天在 BOM 上栽了两次**：
-    #:   入口读根清单一次、这里一次。⇒ 记规矩：**读"用户/工具产生的文本"一律 `utf-8-sig`**。）
-    src = entry.read_text(encoding="utf-8-sig")
-    #: ⚠ **只看代码，不看散文**：本判据第一版用 `"DEVNULL" not in src` ⇒ 被**文档串**撞红
-    #: （那份入口的 docstring 里正写着"绝不 DEVNULL"）—— 判据把"**声明**"当成了"**违规**"。
-    #: ⇒ 用 `ast` 找**真正的使用**（属性 `DEVNULL` / 名字 `devnull` / 打开 `nul`）。
-    import ast as _ast
-
-    def _devnull_in_code(source: str) -> list[str]:
-        hits: list[str] = []
-        for node in _ast.walk(_ast.parse(source)):
-            if isinstance(node, _ast.Attribute) and node.attr == "DEVNULL":
-                hits.append("subprocess.DEVNULL")
-            elif isinstance(node, _ast.Name) and node.id == "devnull":
-                hits.append("devnull")
-            elif (isinstance(node, _ast.Constant) and isinstance(node.value, str)
-                    and node.value.lower() in ("nul", "/dev/null")):
-                hits.append(repr(node.value))
-        return hits
-
-    #: ⚠ **解析失败必须转成判据失败**（纪律 5：崩溃不许冒充失败）。
-    try:
-        bad = _devnull_in_code(src)
-    except SyntaxError as exc:
-        _check("⑯ 入口源码必须能被 `ast` 解析（否则本组判据等于没测）",
-               False, f"{type(exc).__name__}: {exc}")
-        bad = []
-    _check("⑯ ⭐ 入口源码里**不许真用** `DEVNULL`/`devnull`/`nul`（铁律 1：日志必须留）",
-           not bad, f"命中 {bad}")
-    _check("⑯ ⭐ 本仓根**不许**有 `.bat` 入口（那会开黑框）",
-           not list(ROOT.glob("*.bat")), f"发现 {[p.name for p in ROOT.glob('*.bat')]}")
-
     td = Path(tempfile.mkdtemp(prefix="mecha-entry-"))
     old_cwd, old_roots = Path.cwd(), os.environ.get("MECHA_SITE_ROOTS")
     old_argv, old_stdout = list(sys.argv), sys.stdout

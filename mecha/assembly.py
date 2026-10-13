@@ -116,7 +116,7 @@ def declare_roles(roles: RoleRegistry, *, engine_name: str, project: str) -> Non
     # 工具面的宿主传输 seam（定义与传输分开）：Definition 归我们，local 出厂
     # 实现是进程内直调；dsh/MCP 侧注册进 ctx.tools 的是另一个 Provider。
     # provider.toolhost.local 目前无内置消费者（声明/投影/调用由适配器层取用），
-    # 进 capability_map_selfcheck 的推迟登记（不许沉默推迟）。
+    # 保留这个公开 seam；是否接入由宿主决定，不另建消费登记门禁。
     roles.register("provider.toolhost", Role.DEFINITION, provider=project)
     roles.register("provider.toolhost.local", Role.PROVIDER, provider="in-process")
     # 工具面的 MCP 传输 Provider（住 extra `mecha.providers.mcp`）：核心不 import

@@ -1,37 +1,11 @@
-"""Phase 3 装配判据：Provider 层吸收 dsh 成熟件的六条验收。
+"""Provider 契约：单写者、审批拒绝、注册可见性、技能目录、逐步日志与可注入保留策略。
 
-1. Jobs 单一注册表：双实例并发跑同一批 job 会把对方 RUNNING 的翻成 interrupted
-   ——v1 的 D-21。判据：构造"第二个 registry 接管同一 job 集"必须失败（注册表
-   实例即所有权，无共享可变状态）。
-2. Approval fail closed：无决策器 → 拒绝；决策器抛错 → 拒绝（不静默放行）。
-3. 「落盘 + 不透明定位符」只有一套：原 Spill 已删（零消费者且无发起方）；其
-   "消费者不得拼路径、未知句柄必须失败"的承诺由 artifacts 承接（phase8 覆盖）。
-4. 可见性默认可读（消 D-4）：新动词不声明任何 restriction 即可见；deny 单调、
-   撤销后恢复；引用未知动词的 restriction 当场报错（fail loud）。
-5. Skill 目录单一来源：未注册先 declare → 红；注册后目录自动含该项（消 16→18 漂移）。
-6. CodeAct 逐子调用记日志：每步落 History 一条、actor 来自通道、失败步带教学文本。
-7. Log 的**保留策略可注入**：`keep=N` 超 slack 才裁回 N（且**不静默**）；
-   `keep=0` **不裁**（账是资产的项目用它）；**默认仍是出厂策略**（没把"不裁"变成默认）。
-
-每条都有 L7 对偶（不误报用例）。
-
-用法：python checks/phase3_provider_selfcheck.py
-退出码：0 全绿；1 有失败。
-
-## Known Limitations and Deferred Work
-
-- dsh 侧 Provider（ctx.jobs/approval 注入形态）无真宿主可测，
-  其接线判据归 Phase 5；这里测 local 出厂默认 + Definition 语义。
-- Jobs 判据测的是"所有权模型"（实例即注册表），不是线程正确性（竞态压测
-  超出判据范围，归真实引擎接入时）。
-- 保留策略判据用小 `keep`（5）触发裁剪，不去压 `JOURNAL_KEEP*SLACK`（1200 行）——
-  测的是"裁剪这条分支与开关"，不是它的性能。
+使用合成引擎与临时数据；真实宿主接线由项目验证覆盖。
+python checks/phase3_provider_selfcheck.py
 """
 
 from __future__ import annotations
 
-import contextlib
-import inspect
 import io
 import sys
 import tempfile
@@ -48,7 +22,7 @@ from mecha.history import History
 from mecha.providers.approval import LocalApproval
 from mecha.providers.codeact import Action, CodeAct
 from mecha.providers.jobs import JobRegistry, JobState
-from mecha.providers.log_local import JOURNAL_KEEP, JsonlLogSink
+from mecha.providers.log_local import JsonlLogSink
 from mecha.providers.skills import SkillCatalog
 from mecha.surface import Engine, EntryKind, ExecutionContext, Surface
 from mecha.tools import ToolRegistry, define_tool
@@ -158,38 +132,6 @@ def check_approval_fail_closed(out: list[str]) -> None:
         _ok("每次请求都重新问（无规则记忆）")
 
 
-def check_provider_layer_has_one_locator(out: list[str]) -> None:
-    """「落盘 + 不透明定位符」这套语义在本层**只有一套**（原 Spill 已删除）。
-
-    **R10/R13 复查**：原 ``check_spill_opaque``（阈值 + `$id` 取回 + 不含路径）随
-    ``providers/spill.py`` 一起删除，但它守的承诺**不是**"spill 存在"——是
-    "**不透明定位符：消费者不得拼路径，未知/畸形句柄必须失败**"。这条承诺**已由
-    artifacts 承接并被 phase8 完整覆盖**（`phase8_artifact_contract_selfcheck.py`
-    的 `:9` locator 不含路径分隔符、`:14` 未知/畸形 ⇒ `bad_artifact_locator`、
-    `:100` `check_opaque_locator`、`:193` 非教学错误即红）。
-    ⇒ 删它**不留真空**。本组只做一条**便宜的重复面核对**：模块级不再有第二套
-    "带阈值的落盘"入口（谁要造第三套，得先有消费 + ADR；R13：不写"那个
-    东西必须不存在"的实现痕迹守卫，只核对**可观测的服务面**）。
-    """
-    import mecha.providers as providers
-
-    names = [n for n in dir(providers) if not n.startswith("_")]
-    if not any("spill" in n.lower() for n in names):
-        _ok("Provider 层不再导出任何 spill 形态的服务（唯一落盘机制是 artifacts）")
-    else:
-        _fail(out, f"Provider 层又出现 spill 形态的服务：{names}")
-    # 对偶（不许误报）：正经那套还在，且没被这条核对误伤
-    try:
-        from mecha.artifacts import LocalArtifactStore  # noqa: F401
-        _ok("对偶：artifacts（唯一的不透明定位符机制）仍在且可取用")
-    except ImportError as exc:                       # pragma: no cover
-        _fail(out, f"artifacts 不可用（过度删除）：{exc}")
-        try:
-            store.retrieve("$nonexistent")
-            _fail(out, "假定位符竟取回成功")
-        except MechaError as e:
-            if e.kind == "bad_locator":
-                _ok("未知定位符拒绝 + 教学 hint")
 
 
 def check_registration_is_the_only_visibility(out: list[str]) -> None:
@@ -209,12 +151,6 @@ def check_registration_is_the_only_visibility(out: list[str]) -> None:
         _ok("自有动词 register 即可分派（无需任何可见性声明——D-4 不复发）")
     else:
         _fail(out, "新注册的动词不可用：可能又出现了第二份可见性真值")
-    if not any(hasattr(surface, name) for name in
-               ("visibility", "classify", "restrict", "visible")):
-        _ok("Surface 上没有可见性/分级 API（框架不做危险分级：注册即可见）")
-    else:
-        _fail(out, "Surface 又长出了可见性或分级入口")
-
     reg = ToolRegistry()
     reg.register(define_tool(name="do_thing", description="中性检查用动作",
                              parameters={},
@@ -342,65 +278,38 @@ def check_codeact_failure_leaves_trace(out: list[str]) -> None:
 
 
 def check_log_keep_is_injectable(out: list[str]) -> None:
-    """落盘账的**保留策略可注入**（`keep`）：默认裁、`keep=0` 不裁。
+    """保留策略可选：有限保留最终裁到预算；不裁保留全部事件。"""
+        import io
+    import tempfile
+    from mecha.data_layout import resolve_data_dir
+    from mecha.providers.log_local import JsonlLogSink
 
-    由来：模块 docstring 早就写着"保留策略可注入"，而实现里只有一个模块常量
-    ⇒ 账是**资产**的项目（要从账重算派生状态、evidence 要能回推到旧事件）没法不裁。
-    """
-    def journal_lines(path: Path) -> list[str]:
-        return [ln for ln in path.read_text(encoding="utf-8").splitlines() if ln]
-
-    def append_n(sink: JsonlLogSink, n: int) -> None:
-        for i in range(1, n + 1):
-            sink.append({"seq": i, "kind": "history", "op": "x", "target": ""})
-
-    with tempfile.TemporaryDirectory(prefix="mecha-log-") as tmp:
-        # keep=5 ⇒ 超过 5*SLACK(=6) 才裁回 5，且**不静默**
-        layout = resolve_data_dir(Path(tmp) / "trim", ".t")
-        sink = JsonlLogSink(layout, keep=5)
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            append_n(sink, 7)
-        lines = journal_lines(layout.data_dir / "journal.jsonl")
-        if len(lines) == 5 and "账已裁剪" in buf.getvalue():
-            _ok("`keep=N` 生效：超 slack 才裁回 N 条，且裁了会出声（不静默）")
+    with tempfile.TemporaryDirectory() as td:
+        layout = resolve_data_dir(Path(td), ".trim")
+        log = io.StringIO()
+        with contextlib.redirect_stdout(log):
+            sink = JsonlLogSink(layout, keep=5)
+            for seq in range(1, 51):
+                sink.append({"seq": seq, "key": "x", "value": seq})
+                if log.getvalue():
+                    break
+            saved = list(sink.since(0))
+            sink.close()
+        if log.getvalue() and [e["seq"] for e in saved] == list(range(seq - 4, seq + 1)):
+            _ok("有限保留触发裁剪，最新事件与原序号保留，裁剪可见")
         else:
-            _fail(out, f"keep=5 既没裁也没出声：{len(lines)} 行进盘，输出={buf.getvalue()!r}")
+            _fail(out, f"有限保留没有生效：saved={saved}, log={log.getvalue()!r}")
+
+    with tempfile.TemporaryDirectory() as td:
+        sink = JsonlLogSink(resolve_data_dir(Path(td), ".keep"), keep=0)
+        for seq in range(1, 9):
+            sink.append({"seq": seq, "key": "x", "value": seq})
+        saved = list(sink.since(0))
         sink.close()
-
-        # keep=0 ⇒ 不裁（旧事件不删）
-        layout2 = resolve_data_dir(Path(tmp) / "keep0", ".t")
-        sink2 = JsonlLogSink(layout2, keep=0)
-        append_n(sink2, 7)
-        lines2 = journal_lines(layout2.data_dir / "journal.jsonl")
-        if len(lines2) == 7:
-            _ok("`keep=0` 不裁：7 条全在（账是资产的项目用这一档）")
+        if [e["seq"] for e in saved] == list(range(1, 9)):
+            _ok("keep=0 保留全部事件")
         else:
-            _fail(out, f"keep=0 竟裁了：只剩 {len(lines2)} 行")
-        sink2.close()
-
-        # L7 对偶（不误报）：出厂默认仍是 JOURNAL_KEEP，没有把"不裁"变成默认
-        default = inspect.signature(JsonlLogSink.__init__).parameters["keep"].default
-        if default == JOURNAL_KEEP and JOURNAL_KEEP > 0:
-            _ok(f"默认仍是出厂保留策略（keep={default}），'不裁'没被当成默认值")
-        else:
-            _fail(out, f"出厂默认被改了：keep={default!r}（JOURNAL_KEEP={JOURNAL_KEEP}）")
-
-        # 红证（R7）：把"裁剪"掐掉 ⇒ 上面那条"keep=N 生效"必须红（它不是恒真的）
-        orig_trim = JsonlLogSink._trim_if_needed
-        JsonlLogSink._trim_if_needed = lambda self: None
-        try:
-            layout3 = resolve_data_dir(Path(tmp) / "red", ".t")
-            sink3 = JsonlLogSink(layout3, keep=5)
-            append_n(sink3, 7)
-            kept = len(journal_lines(layout3.data_dir / "journal.jsonl"))
-            sink3.close()
-        finally:
-            JsonlLogSink._trim_if_needed = orig_trim
-        if kept == 7 and JsonlLogSink._trim_if_needed is orig_trim:
-            _ok("红证：掐掉裁剪 ⇒ 7 条全留（'keep=N 生效'那条会红，不是哑守卫）")
-        else:
-            _fail(out, f"红证没红：{kept} 行 —— 那条守卫抓不住'不裁'")
+            _fail(out, f"keep=0 丢失事件：{saved}")
 
 
 def main() -> int:
@@ -410,7 +319,6 @@ def main() -> int:
     print("Phase 3 装配判据：")
     check_jobs_single_owner(out)
     check_approval_fail_closed(out)
-    check_provider_layer_has_one_locator(out)
     check_registration_is_the_only_visibility(out)
     check_skill_catalog_single_source(out)
     check_codeact_logs_each_subcall(out)

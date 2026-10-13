@@ -1,52 +1,9 @@
-"""判据 ⑲：**dsh 的 argv 形状**（`--patch` 必须与它的值成对；overlay 必须最后）。
+"""启动参数回归：--patch 与值保持成对，overlay 放在最后。
 
-## 为什么单独立这一条（本工程为它付过一次"面板永远起不来"的代价）
-
-2026-10-09 实测：面板点「启动 ▸」后 **dsh 每一次都以 exit=1 退出**（`restarts=4`），
-那行永远是 stopped、**"dsh 窗口不弹出"**。日志里是 commander 的话：
-
-```
-error: too many arguments. Expected 0 arguments but got 1: <最后一个 --patch 的值>
-```
-
-⛔ 根因在 `aggregate_runtime.with_overlay_patch`：它把聚合端点的 overlay **插在最后一个
-`--patch` 标志与它的值之间**（`argv[idx+1:idx+1] = [overlay]`）⇒ 那个值被顶成一个**裸 token**
-⇒ 而 dsh 的 CLI 规则是"**启动器选项在遇到它不认识的 token 为止，之后全归 app**"
-（`apps/cli/src/args.ts`：`passThroughOptions` + `enablePositionalOptions`）
-⇒ 裸路径落进 web app 的位置参数 ⇒ **CLI 当场退出**。
-
-⚠ 形状错得**很像"dsh 不认 `--patch`"**，于是很容易"修错方向"：
-🔬 实测反了 —— `dsh web --patch X --port 0` **能起来**；`--patch` 放 `web` **之前**反而报
-`--profile <name> is required`（那会让"启动器选项必须在第一个非选项之前"的假设当场证伪）。
-
-## 三条
-
-| # | 断言 | 怎么才会红 |
-|---|---|---|
-| ① | 形状：每个 `--patch` **紧跟**它的值；`web` 与 `--port` 之间**没有裸 token**；overlay 是**最后**一份 | 退回"插在标志与值之间"⇒ ① 当场红 |
-| ② | ⭐ **红证**：把**旧的错位 argv** 喂给**同一个**判据函数 ⇒ 必须报出缺陷（R7/R16：不另抄谓词） | 判据被写哑（例如只数 `--patch` 个数）⇒ 红证那条红 |
-| ③ | ⭐ **真机**：按框架生成的 argv（合成夹具，不依赖三家声明）起一次真 dsh（`--port 0 --no-open`）⇒ **15 秒后仍活着**且日志有 `dsh web: http://` | 形状退回坏的 ⇒ `too many arguments` + 退出 ⇒ ③ 红 |
-
-## ⚠ 外部依赖（缺即 **SKIP**，严格模式 `--require-external` 变 FAIL）
-
-| 档 | 要什么 |
-|---|---|
-| ①② | **零外部依赖**（合成夹具） |
-| ③ | `dsh` 在 PATH 上 + `MECHA_SITE_ROOTS`（⚠ **必须用真声明**：`--port 0` 要靠**项目隔离层**把 `webserver.port` 从"字面量 3080"改回 `!!js ctx.webStartup.port`；夹具不带那层 ⇒ 会撞上正在跑的 dsh 报 `EADDRINUSE`，实测踩到） |
-
-## Known Limitations and Deferred Work
-
-- **③ 只断言"起得来 + 打出 URL 行"，不断言"浏览器真的被弹出来"**：
-  弹窗那一步是 dsh 自己的 `openBrowser`（默认 true，受 `--no-open` 与"SSH 启动"抑制），
-  ⚠ **观察它需要真开一个浏览器标签**（会打断人）⇒ 这里只到"就绪"为止，
-  "窗口真弹了"留给**用户点一次面板**（本判据的验收口径，已如实登记）。
-- **③ 的等待是"有界轮询"（上限 120 秒），不是等它的就绪协议**：dsh 是别人的进程，本判据不做
-  它的就绪客户端，只在日志里等 `dsh web: http://` 那一行。⚠ **实测（2026-10-09）**：冷启动
-  （刚重建过三份 client bundle，dsh 要为每份现算 `rev` 哈希）要 **~50 秒**，第二次启动
-  **<10 秒** —— 所以「固定睡 15 秒」会**假红**（本判据自己栽过这一次，已改成轮询 + 上界）。
-- **不测 dsh 的退出码语义**：只判"15 秒后还活着"；`--port 0` 起的实例由 `taskkill /T /F`
-  收尾（与 supervisor 同一套杀树）。
-- ⚠ **不覆盖"多站点 dsh 身份合并"**（那是 `endtoend_selfcheck` ⑦ 的事）。
+默认运行合成声明的参数验证与已知错位案例。
+python checks/dsh_argv_selfcheck.py --live 显式运行真实 dsh 启动场景；
+需要 dsh 在 PATH、MECHA_SITE_ROOTS 指向真实项目声明。该场景在临时目录内
+启动隔离实例并清理进程，不属于日常套件；它不验证浏览器弹窗或客户端打包。
 """
 
 from __future__ import annotations
@@ -172,6 +129,9 @@ def main() -> int:
     #   改回 `!!js ctx.webStartup.port`（那是**项目隔离层**干的活）⇒ `--port 0` 不生效
     #   ⇒ 撞上正在跑的 dsh（本会话宿主就在 3080）⇒ `EADDRINUSE`（实测量到过这一坑）。
     #   ⇒ 真机档**必须**用真声明（它才带那层 patch）；缺仓库就 SKIP（不假绿）。
+    if "--live" not in sys.argv:
+        print(f"dsh_argv_selfcheck: {'FAIL' if FAILS else 'PASS'}（参数组合；真 dsh 用 --live 单独验）")
+        return 1 if FAILS else 0
     roots_env = os.environ.get("MECHA_SITE_ROOTS", "").strip()
     if not roots_env:
         print("SKIP: 缺 MECHA_SITE_ROOTS ⇒ 跳过「真机」那一档（①② 已跑；"

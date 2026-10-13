@@ -1,20 +1,10 @@
-"""生成 docs/capabilities.md（总纲 §5.4 交付 2：分类是生成的，不是手写的）。
+"""按需生成 docs/capabilities.md，供阅读角色与能力关系。
 
-调 ``mecha.assembly.build_roles`` 取角色表，渲染成表。字段格式（能力名 /
-角色 / provider / 消费方）固定，使第二个项目的能力表能直接并表（交付 3）。
+python scripts/gen_capability_map.py          # 刷新静态快照
+python scripts/gen_capability_map.py --check  # 可选：比较快照是否最新
 
-用法：
-  python scripts/gen_capability_map.py            # 生成/覆盖 docs/capabilities.md
-  python scripts/gen_capability_map.py --check    # 只校验现文件与生成结果一致（守卫）
-
---check 非零退出 = 文件被手改过或与声明漂移（§5.4 拒收标准"手工编辑过 ⇒ 红"）。
-
-## Known Limitations and Deferred Work
-
-- 只反映 ``build_roles`` 里的静态声明；运行时动态 register 的能力（如项目
-  自己注册的查询动词）不进出厂 map——那是各项目自己的 map，Phase 5 接 EL 时
-  由 EL 的装配点生成，两份 map 的并表判据在 checks/capability_map_selfcheck。
-- 生成器不 import dsh（库边界）；dsh 侧能力由宿主 map 表达。
+来源是 build_roles；不含运行时动态注册或宿主自身能力。
+快照新鲜度不是日常开发门禁。render 接口供项目侧复用。
 """
 
 from __future__ import annotations

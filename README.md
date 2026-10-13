@@ -5,7 +5,7 @@
 GUI 平级——不是主子关系。软件不依附 dsh：dsh 消失时，数据、账、监控
 面全部照常，只少一个操作者。
 
-## 四个仓的关系（**框架与用它的项目**）
+## 框架与使用它的项目
 
 | 仓 | 是什么 | 它用了 mecha 的哪一面 |
 |---|---|---|
@@ -13,12 +13,13 @@ GUI 平级——不是主子关系。软件不依附 dsh：dsh 消失时，数�
 | `energy-level` | 物理仿真 | **CodeAct 通道**跑 AI 演化 |
 | `get-paper` | 论文管理与推荐 | **命令面 + 工具面（MCP）** |
 | `ml-toolbox` | 机器学习方法试验台 | **宿主适配 + 面板** |
+| `tutor` | 长期学习档案 | **领域事件账 + 命令面 + 人面** |
 
-⚠ 三个项目**不是框架的一部分**：各自独立成仓、各自装自己的领域内容；**mecha 里没有任何领域实现**。
+⚠ 项目**不是框架的一部分**：各自独立成仓、各自装自己的领域内容；**mecha 里没有任何领域实现**。
 
 ⭐ **第一次来该从哪读起**：**先读 [`docs/接入指南.md`](docs/接入指南.md)**
 （六步顺序 + 每步验收 + 「该由谁提供」+ n=3 要回答的问题）。
-三个项目仓是**用法样例**，不是入门读物 —— 从它们乱点最容易误以为「框架里有这些东西」。
+项目仓是**用法样例**，不是入门读物 —— 从它们乱点最容易误以为「框架里有这些东西」。
 
 ## 安装（陌生人照这个做）
 
@@ -27,12 +28,10 @@ GUI 平级——不是主子关系。软件不依附 dsh：dsh 消失时，数�
 
 ```bash
 git clone https://github.com/tomisnot/mecha && cd mecha
-python checks/run_all.py        # 门禁一条跑全
+python checks/run_all.py        # 默认核心契约
 ```
 
-**门禁的「跳过」语义**：本机若**没有 EL 仓（`MECHA_EL_ROOT`）**或**没有 typescript
-（`MECHA_TSC_ROOT`）**，相应判据会**跳过并打印判据名**；用 **`--require-external`**
-让**跳过变成失败**（有依赖的 CI 用）。⚠ 具体是哪几条**不在这里列**——跑一次就会打印。
+日常开发先跑受影响的验证；集成、面板资产和真实项目显式选择，见 [验证说明](checks/README.md)。
 
 **作为依赖被别家引用**（三个项目就是这么装的）：
 
@@ -60,8 +59,8 @@ mecha/          软件自己的四件：gate / history / surface / monitor / aut
                 artifacts（宿主产物托管）+ assembly（具名装配点）
 mecha/providers/  Provider 层（dsh 的 churn 关在这里）：log_local / jobs /
                 approval / skills / codeact —— local 是出厂默认
-checks/         判据（见下）+ 门禁；python checks/run_all.py 一条跑全
-                （缺外部依赖会**跳过并打印判据名**，见「安装」节）
+checks/         结构与结果验证；run_all 默认核心，按套件或名称选范围
+                （运行方式见 checks/README.md）
 docs/v2/交接-给下一个模型.md  ⭐ **接手先读这个**（入口：读什么文档 / 用户要什么 /
                 现在到哪了 / 别踩哪些坑）
 docs/v2/        架构总纲（为什么这么设计）+ 架构详解（建成态导览：代码现在长什么样、
@@ -116,27 +115,19 @@ build_tool_registry + V2Bridge + hub），不在本框架仓——"个性知识�
 
 ## 验证
 
-```
-python checks/run_all.py     # 全部门禁；缺外部依赖的判据会【跳过并打印判据名】
-                             #   --require-external 让跳过变成失败（CI 用）
+```powershell
+python checks/run_all.py                  # 默认核心
+python checks/run_all.py --only authority  # 当前改动涉及的项
+python checks/run_all.py --all             # 核心、集成、资产、真实项目
 ```
 
-**外部依赖与跳过语义**（**缺依赖 ⇒ 跳过并打印判据名；`--require-external` ⇒ 跳过即失败**）：
-⚠ 名字不写数字（L8）：跑一次 `run_all` 看它打印 PASS / FAIL / SKIP 与跳过的判据名。
-1. **EL 仓在位**——`phase5_*` 直接 import EL 的 `mecha_v2`；
-2. **`node` 在 PATH**——`dsh_panel_selfcheck` 跑 `mecha/dsh-panel/` 那份**共享资产**的
-   TS 自测（Node ≥22.6 原生剥类型，零 npm 依赖）；
-3. **一份可用的 `tsc`**——同一判据**借接入项目装的那份**（`<项目>/dsh/node_modules/typescript`；
-   `MECHA_TSC_ROOT` 可覆盖）做**类型检查**：`node --test` **只剥类型**，看不见**只在类型位置**
-   的错（真实缺口：资产漏了一个 `import type` ⇒ 自测全绿，而消费者一跑 `npm run typecheck` 就红）。
-   ⇒ **本仓的完整门禁需要 EL 仓 + node + 一份可用的 `tsc`**。
-
-判据纪律：测装配不测单元（L6）；每条"能抓坏"配"不许误报"对偶（L7）；
-缺真依赖即红不假绿。
+运行范围、外部依赖、SKIP 和发布扫描见 [checks/README.md](checks/README.md)。
+文档不强制固定章节、计数禁令或验证章节；测试按实际风险选择，不要求每条配红证。
+工程判断见 [框架准入线](docs/v2/框架准入线.md)。
 
 ## 与 v1 的关系
 
-从零重写。v1 的原创在纪律不在代码（L1-L9，见总纲 §3），全部保留；机制层
+从零重写。v1 的原创在纪律不在代码（L1-L9，见总纲 §3），设计不变量保留，工程规则按当前准入线使用；机制层
 84% 被 dsh 成熟件或本仓更瘦的实现取代。禁读 v1 旧代码（防锚定）。
 
 ## 决策怎么查

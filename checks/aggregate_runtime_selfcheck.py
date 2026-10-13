@@ -269,6 +269,10 @@ def check_toggle_on_off_three_times() -> None:
             _check(f"⑦ 第 {i} 轮：开 ⇒ 真的在跑（pid 有、state=ready）",
                    row["state"] == "ready" and bool(row["pid"]), f"row={row}")
 
+            # 每次重开都真调工具，验证墓碑恢复；不约束 sync_backends 的源码写法。
+            result = _call(rig.agg, "mock_echo_thing")
+            _check(f"⑦ 第 {i} 轮：工具恢复可调用", result.get("text") == "ok:echo_thing", result)
+
             rig.rt.close_service("MOCK")
             row = _rows(rig.super)["MOCK"]
             _check(f"⑦ 第 {i} 轮：关 ⇒ 真的停了",
