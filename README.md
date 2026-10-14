@@ -1,136 +1,145 @@
-# mecha v2
+# mecha
 
-**人机同门**：写入门（Gate）、账（History）、能力面
-（Surface）、人类监控面（Monitor）。AI 适配器只是它的一个操作者适配器，和
-GUI 平级——不是主子关系。软件不依附 dsh：dsh 消失时，数据、账、监控
-面全部照常，只少一个操作者。
+让有长期状态的软件同时服务于人和 AI：共用写入治理、操作记录、能力接口和监控。
 
-## 框架与使用它的项目
+mecha 是软件框架。软件拥有自己的状态、数据和生命周期；AI、GUI、CLI 等是它的操作者。AI 宿主断开后，软件、记录和人类操作界面仍可独立工作。任务判断由操作者完成，领域模型与业务规则由项目提供。
 
-| 仓 | 是什么 | 它用了 mecha 的哪一面 |
-|---|---|---|
-| **`mecha`**（本仓） | **框架**：人机同门 —— Gate 写入门 / History 账 / Surface 能力面 / Monitor 人类监控面 + Provider 层（log_local / jobs / approval / skills / codeact / mcp） | — |
-| `energy-level` | 物理仿真 | **CodeAct 通道**跑 AI 演化 |
-| `get-paper` | 论文管理与推荐 | **命令面 + 工具面（MCP）** |
-| `ml-toolbox` | 机器学习方法试验台 | **宿主适配 + 面板** |
-| `tutor` | 长期学习档案 | **领域事件账 + 命令面 + 人面** |
+## 设计理念
 
-⚠ 项目**不是框架的一部分**：各自独立成仓、各自装自己的领域内容；**mecha 里没有任何领域实现**。
+- **状态属于软件**：数据和操作记录比一次会话、一个操作者活得久。
+- **人机同门**：不同交互形式使用同一套写权规则和记录，不靠调用者自觉维护治理。
+- **机制与内容分开**：框架提供接线与治理机制，项目决定参数、工具语义、策略和界面。
+- **调用形式自由**：查询、后台任务、批处理、GUI 动作和组合调用可以各有适合的形状。
+- **架构先消除错误空间**：验证重要关系和可观察结果，按改动范围运行，不以文档格式或重复检查代替设计。
 
-⭐ **第一次来该从哪读起**：**先读 [`docs/接入指南.md`](docs/接入指南.md)**
-（六步顺序 + 每步验收 + 「该由谁提供」+ n=3 要回答的问题）。
-项目仓是**用法样例**，不是入门读物 —— 从它们乱点最容易误以为「框架里有这些东西」。
+理念与边界见 [使用模式与核心原则](docs/v2/使用模式与核心原则.md)；接入新项目从 [接入指南](docs/接入指南.md) 开始。
 
-## 安装（陌生人照这个做）
+## 提供的机制
 
-**前置**：Python ≥ 3.10。⭐ **mecha 不依赖任何第三方**（`dependencies = []`）——
-核心只用标准库；只有 MCP 投影那条路要可选依赖（`mecha[mcp]`）。
+| 机制 | 用途 |
+|---|---|
+| Authority / Gate | 写权模式、受控写入、参数校验与归因 |
+| History | 只追加的事件记录；从记录重建状态，支持项目注入折叠语义 |
+| Surface / Commands / Tools | 引擎能力、受控命令和工具声明；供不同操作者适配 |
+| Monitor / Cockpit | 只读状态与操作记录，保留原始依据 |
+| Providers | 本地日志、后台任务、审批、技能、结构化动作序列和可选 MCP 传输 |
+| Artifacts / Assembly | 产物托管和软件装配 |
+| Site / Launcher / Aggregator | 多项目启动、进程管理、工具聚合、重连与动态工具更新 |
+
+当前使用 mecha 的项目各自独立成仓，领域实现保留在项目中：
+
+| 项目 | 定位 |
+|---|---|
+| [Energy Level](https://github.com/tomisnot/energy-level) | 里德堡原子与多体物理仿真 |
+| [ML Toolbox](https://github.com/tomisnot/ml-toolbox) | 机器学习方法、训练观测与优化试验台 |
+| [PaperPilot](https://github.com/tomisnot/get-paper) | 论文库、文献评审与研究工作台 |
+| Tutor | 长期学习档案、讲解材料与反馈记录 |
+
+## 安装
+
+Python 3.10+。核心使用标准库；MCP 传输需要可选依赖。
 
 ```bash
-git clone https://github.com/tomisnot/mecha && cd mecha
-python checks/run_all.py        # 默认核心契约
+git clone https://github.com/tomisnot/mecha.git
+cd mecha
+python -m pip install -e .
 ```
 
-日常开发先跑受影响的验证；集成、面板资产和真实项目显式选择，见 [验证说明](checks/README.md)。
+需要 MCP 或整站 AI 接入时：
 
-**作为依赖被别家引用**（三个项目就是这么装的）：
-
-```
-mecha @ git+https://github.com/tomisnot/mecha@v0.2.0
+```bash
+python -m pip install -e ".[mcp]"
 ```
 
-⚠ **如实说明**：**仓库还没建 ⇒ 这个 URL 目前会 404**；等仓建好、`v0.2.0` 推上去后即可解析。
+开发多个项目时，建议将它们安装到各自所用的 Python 环境，并使用同一版本的 mecha。MCP 传输之外的核心用法不要求安装 AI 宿主。
 
-## 它是什么 / 不是什么
+## 最小装配示例
 
-| 是 | 不是 |
-|---|---|
-| 成熟软件（如仿真程序）接入 AI 操作者的**门与史** | 一个自给自足的 AI 框架（v1 的旧定位） |
-| dsh 等宿主里的一个 Provider + 操作者适配器 | dsh 的能力族/子组件（已被否决，见 notes/rejected） |
-| 人机同路的**一道**写入门 | 第二套写权门、第二份真值 |
-
-## 仓库地图
-
-```
-mecha/          软件自己的四件：gate / history / surface / monitor / authority /
-                cockpit（Monitor 的只读传输）/ portfile（端口发现规则）/
-                tools（形状）/ toolhost（工具定义→宿主传输）/
-                roles / format_version / data_layout / errors /
-                artifacts（宿主产物托管）+ assembly（具名装配点）
-mecha/providers/  Provider 层（dsh 的 churn 关在这里）：log_local / jobs /
-                approval / skills / codeact —— local 是出厂默认
-checks/         结构与结果验证；run_all 默认核心，按套件或名称选范围
-                （运行方式见 checks/README.md）
-docs/v2/交接-给下一个模型.md  ⭐ **接手先读这个**（入口：读什么文档 / 用户要什么 /
-                现在到哪了 / 别踩哪些坑）
-docs/v2/        架构总纲（为什么这么设计）+ 架构详解（建成态导览：代码现在长什么样、
-                三层与两条腿、启动功能）+ 框架准入线（改动纪律 R 系列）+ 操作陷阱（工具与
-                测量层面的坑）+ 软件-交互-写权-三层架构（三层的第一版正文明细）+ 遗留登记 +
-                ADR 制度 + notes/（ADR 四态树 + archived/ 过期文档）
-docs/capabilities.md  生成的 capability map（禁止手改，改了判据红）
-docs/接入指南.md       新项目接入的**顺序表 + 每步验收 + 边界**（第一次接入先读它；
-                      也是 n=3 那个"陌生项目"的持久入口）
-scripts/        gen_capability_map.py（map 生成器）
-```
-
-## 怎么起（30 秒）
-
-mecha 是**领域无关框架**——接入 = 实现 `Engine` 的四个必方法（schema/run/
-summary/estimate），经具名装配点 `assemble` 组装。下面是一个自包含的最小例子
-（不依赖任何外部项目，可直接跑）：
-
-> **要真接一个项目**（不只是跑这个最小例子）→ 走 [`docs/接入指南.md`](docs/接入指南.md)：
-> 六步顺序 + 每步验收 + 「该由谁提供」（**别把领域塞进框架**）+ n=3 要回答的四个问题。
+下面只展示状态写入和留痕。真实项目的引擎、参数校验和业务能力由项目实现。
 
 ```python
 from pathlib import Path
+
 from mecha.assembly import assemble
 from mecha.authority import Mode
 from mecha.gate import accept_all
 from mecha.surface import Engine
 
+
 class MyEngine(Engine):
-    def schema(self):  return {"run_output_required": ["ok"]}
-    def run(self, spec, *, context, **opts): return {"ok": True}
-    def summary(self): return {"ok": True}
-    def estimate(self, spec): return {"est_sec": 1.0}
+    def schema(self):
+        return {"run_output_required": ["ok"]}
 
-sw = assemble(root=Path("./my-software"), data_dir_name=".mydata",
-              engine=MyEngine(), summarizer=lambda evs: {},
-              validate=accept_all)          # 不校验请显式传 accept_all
-sw.authority.switch_mode(Mode.AI, side="human")   # 出厂 LOCKED，人类侧开闸
-sw.gate.set(sw.channels["ai"], "power", 42, reason="demo")
-print(sw.gate.snapshot)                     # {'power': 42}——写经门、记进史
+    def run(self, spec, *, context, **opts):
+        return {"ok": True}
+
+    def summary(self):
+        return {"ok": True}
+
+    def estimate(self, spec):
+        return {"est_sec": 1.0}
+
+
+sw = assemble(
+    root=Path("./my-software"),
+    data_dir_name=".mydata",
+    engine=MyEngine(),
+    summarizer=lambda events: {},
+    validate=accept_all,
+)
+try:
+    sw.authority.switch_mode(Mode.AI, side="human")
+    sw.gate.set(sw.channels["ai"], "power", 42, reason="demo")
+    print(sw.gate.snapshot)  # {"power": 42}
+finally:
+    sw.close()
 ```
 
-真项目接线（EL 消费配置）：领域实现住 **EL 项目仓**（`mecha_v2` 包：ElEngine +
-build_tool_registry + V2Bridge + hub），不在本框架仓——"个性知识归所属项目"
-（ADR `领域参考实现搬回所属项目`）。⭐ **起软件走 `python -m mecha --all`**（统一启动器；
-⚠ 是 `-m mecha`，**不是** `-m mecha.launch` —— 后者是模块不是包，会**静默什么都不做**）。
-⚠ 各家**不再自己编排进程**：EL 原来的看门人 `launcher.py` 已按三层架构删除
-（它干的事——起进程、等就绪、编排 dsh——整块归框架）。
-⭐ 架构权威见 [`docs/v2/软件-交互-写权-三层架构.md`](docs/v2/软件-交互-写权-三层架构.md)。
-本仓判据的 phase5_* 直接 import EL 仓的 `mecha_v2`
-（缺 EL 即红，不假绿）。
+工程中用自己的校验函数替换 `accept_all`，并将实际写入接到受控入口。
 
-## 验证
+## 启动接入的项目
 
-```powershell
-python checks/run_all.py                  # 默认核心
-python checks/run_all.py --only authority  # 当前改动涉及的项
-python checks/run_all.py --all             # 核心、集成、资产、真实项目
+项目通过站点声明描述自己的软件入口、数据根、就绪条件和交互面。mecha 负责统一编排：
+
+```bash
+python -m mecha --root ../energy-level
+python -m mecha --all --root ../energy-level --root ../ml-toolbox
+python -m mecha --dry-run --all --root ../energy-level
 ```
 
-运行范围、外部依赖、SKIP 和发布扫描见 [checks/README.md](checks/README.md)。
-文档不强制固定章节、计数禁令或验证章节；测试按实际风险选择，不要求每条配红证。
-工程判断见 [框架准入线](docs/v2/框架准入线.md)。
+`--root` 可重复使用；`--all` 跳过项目选择页，`--dry-run` 只查看启动计划。路径请替换为实际检出的仓库目录。
 
-## 与 v1 的关系
+整站 AI 界面使用 dsh，需要其可执行命令在 PATH 中，并准备所选项目声明的插件资产。软件存活、客户端连接和写权是三个独立维度；切换写权不需要重启软件。见 [三层架构](docs/v2/软件-交互-写权-三层架构.md)。
 
-从零重写。v1 的原创在纪律不在代码（L1-L9，见总纲 §3），设计不变量保留，工程规则按当前准入线使用；机制层
-84% 被 dsh 成熟件或本仓更瘦的实现取代。禁读 v1 旧代码（防锚定）。
+## 开发与验证
 
-## 决策怎么查
+```bash
+python checks/run_all.py
+python checks/run_all.py --only authority
+python checks/run_all.py --suite integration
+python checks/run_all.py --all
+```
 
-一切非平凡决策在 `docs/v2/notes/{implemented,rejected}/`，格式有门禁。
-被否决的路为什么被否决，看 `rejected/`（12 条，全带重新考虑条件）。
+默认运行核心契约；集成、面板资产、真实项目和发布扫描分开选择。外部项目缺失会明确显示 SKIP，运行范围与依赖见 [验证说明](checks/README.md)。
+
+测试按实际风险选择。文档记录设计理由、用法和真实限制，不要求每次修改新增登记表、固定章节或额外检查。
+
+## 仓库导航
+
+- [接入指南](docs/接入指南.md)：项目如何接入、哪些内容由谁提供。
+- [架构总纲](docs/v2/架构总纲.md)：分层与设计依据。
+- [框架准入线](docs/v2/框架准入线.md)：当前工程取舍与适量验证。
+- [能力快照](docs/capabilities.md)：可按需生成的代码导览。
+- [决策记录](docs/v2/notes)：已实现、否决及历史方案。
+- `mecha/`：框架核心、Provider、启动与适配机制。
+- `mecha/dsh-panel/`：供项目使用的共享面板资产。
+
+能力快照可用 `python scripts/gen_capability_map.py` 更新；注册表与实际接口是能力来源。
+
+## 当前边界
+
+本地 Jobs 的任务表保存在进程内，进程重启后的任务追踪需要项目提供持久信息。默认产物定位符也仅在当前存储实例内有效。后台任务的并发策略、业务结果持久化和恢复方式由项目安排。各模块说明记录更具体的限制。
+
+## 许可
+
+[MIT](LICENSE)。
