@@ -79,6 +79,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 
 from .errors import GateDenied, MechaError, ToolFailure, UnknownOp
+from .operations import operation
 from .roles import Disposer, Role, RoleRegistry
 
 #: 命令名守卫：snake_case、非空、无项目前缀。
@@ -102,7 +103,7 @@ AUDIT_KEY_PREFIX = "command."
 #: ⚠ 命令体若要自己用（例如要在域史里记"为什么干"），**唯一的路是把它显式列进
 #: ``parameters.required``**——只有 ``required`` 里的名字才会被保留进 handler 的参数；
 #: **只写进 ``properties`` 不够**。⚠ 这个"会被剥"的行为很容易让人以为"参数没传进来"。
-RESERVED_ARGS = ("reason", "call_id")
+RESERVED_ARGS = ("reason", "call_id", "operation_id")
 
 
 def _is_name_sequence(value: object) -> bool:
@@ -445,6 +446,7 @@ class CommandRegistry:
             except MechaError as e:
                 return _failure(e)
         meta = {k: args.get(k) for k in RESERVED_ARGS if k in args}
+        operation_id = str(meta.get("operation_id", "") or "")
         # 审批闸也在**任何副作用之前**（与 authority 前置检查同一处）。声明了
         # `approval_required` 就是要一次 one-shot 授权；**没接审批通道时拒绝**
         # （fail closed）——照跑等于"声明了治理、实际不拦"，那比没有这个字段更坏
@@ -491,16 +493,24 @@ class CommandRegistry:
             #  而且每次手滑都记一条会把真痕迹淹掉）。
             return _failure(e)
         try:
-            result = self._call_handler(spec, body_args, context, channel=channel)
+            with operation(
+                f"command.{name}",
+                actor=(channel or _default_channel(spec.name)).actor,  # type: ignore[attr-defined]
+                reason=str(meta.get("reason", "") or f"command {name}"),
+                call_id=str(meta.get("call_id", "") or ""),
+                operation_id=operation_id,
+            ) as op:
+                operation_id = op.id
+                result = self._call_handler(spec, body_args, context, channel=channel)
         except MechaError as e:
             # handler **已进入** ⇒ 副作用**可能已经发生** ⇒ 先留一条痕，再按原样返回失败
-            self._audit_entered_failure(spec, gate, channel, meta, e)
+            self._audit_entered_failure(spec, gate, channel, meta, e, operation_id)
             return _failure(e)
         except BaseException as e:
             # 同上：**先留痕，再把异常原样放走** —— 两条纪律同时保住：
             # ①"跑过的 handler 必须有痕"；②"不把 bug 伪装成域失败"（bug 仍穿透，
             # 由传输边界兜，见 invoke 的 docstring）。
-            self._audit_entered_failure(spec, gate, channel, meta, e)
+            self._audit_entered_failure(spec, gate, channel, meta, e, operation_id)
             raise
         error = None if result.ok else (result.error or MechaError(
             f"命令 {name!r} 回执 ok=False 却没给 error",
@@ -513,7 +523,7 @@ class CommandRegistry:
         # 审计在回执契约判定之后、返回之前：有副作用的命令哪怕回执不合契约，
         # 也已经动过宿主状态 ⇒ 必须留痕（否则最该被审计的失败反而无痕）。
         audit_error = self._audit(spec, gate, channel, meta, payload, error,
-                                  result.result_ref)
+                                  result.result_ref, operation_id)
         if error is not None:
             return _failure(error, payload)
         if audit_error is not None:
@@ -618,7 +628,7 @@ class CommandRegistry:
 
     def _audit_entered_failure(self, spec: CommandSpec, gate: object | None,
                                channel: object | None, meta: Mapping[str, object],
-                               exc: BaseException) -> None:
+                               exc: BaseException, operation_id: str = "") -> None:
         """「handler **已进入**」的失败：先写一条 ``ok=False`` 审计（在把失败放走之前）。
 
         ⚠ 判据是【**副作用有没有可能已经发生**】，不是【这次失败没失败】：
@@ -635,12 +645,13 @@ class CommandRegistry:
             return
         error = exc if isinstance(exc, MechaError) else MechaError(
             f"{type(exc).__name__}: {exc}", kind=type(exc).__name__)
-        self._audit(spec, gate, channel, meta, {}, error, None)
+        self._audit(spec, gate, channel, meta, {}, error, None, operation_id)
 
     def _audit(self, spec: CommandSpec, gate: object | None,
                channel: object | None, meta: Mapping[str, object],
                payload: Mapping[str, object], error: MechaError | None,
-               result_ref: Mapping[str, object] | None = None
+               result_ref: Mapping[str, object] | None = None,
+               operation_id: str = "",
                ) -> MechaError | None:
         """有副作用的命令经 Gate 写 ``command.<name>`` 审计事件。
 
@@ -677,7 +688,7 @@ class CommandRegistry:
             gate.record(
                 f"{AUDIT_KEY_PREFIX}{spec.name}", "", record,
                 (channel or _default_channel(spec.name)).actor,   # type: ignore[attr-defined]
-                reason, call_id)
+                reason, call_id, operation_id=operation_id, role="action")
         except MechaError as e:
             # 承诺不变（**不静默**）：审计写不进去 ⇒ 命令回失败。⚠ 路径变了：
             # 审计**不再经过宿主 validator**（所以不再要求宿主接受 'command.' 前缀），

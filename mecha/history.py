@@ -25,6 +25,21 @@ from datetime import datetime, timezone
 from typing import Protocol, runtime_checkable
 
 from .errors import MechaError
+from .operations import current_operation_id
+
+
+def _stored_seq(value: object | None) -> int | None:
+    """从 Provider 返回值取数据库分配的序号。"""
+    if value is None:
+        return None
+    raw = getattr(value, "seq", None)
+    if raw is None and isinstance(value, dict):
+        raw = value.get("seq")
+    try:
+        seq = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return seq if seq > 0 else None
 
 
 @dataclass(frozen=True)
@@ -53,6 +68,10 @@ class Event:
     #: ⚠ 框架**只给槽位**：撤销需要"旧值 + 领域规则 + 冲突处理"，三样都归项目。
     #: ⚠ **三态是刻意的**：用布尔会把"**没声明**"冒充成"不可撤"。
     undoable: bool | None = None
+    #: 统一操作账的关联号；老事件缺失时为空。
+    operation_id: str = ""
+    #: 事件在操作中的角色：action / mutation / derivation。
+    role: str = ""
 
     def to_record(self) -> dict:
         return {
@@ -60,6 +79,8 @@ class Event:
             "after": self.after, "before": self.before, "actor": self.actor,
             "reason": self.reason, "call_id": self.call_id, "ts": self.ts,
             "undoable": self.undoable,
+            "operation_id": self.operation_id,
+            "role": self.role,
         }
 
     @staticmethod
@@ -72,6 +93,8 @@ class Event:
                 before=rec.get("before"), actor=rec.get("actor", ""),
                 reason=rec.get("reason", ""), call_id=rec.get("call_id", ""),
                 ts=str(rec.get("ts", "") or ""), undoable=rec.get("undoable", None),
+                operation_id=str(rec.get("operation_id", "") or ""),
+                role=str(rec.get("role", "") or ""),
             )
         # **老记录零迁移**（照 ts/undoable 的先例，推理**只有这一处**）：
         #   key 以 "command." 开头 ⇒ 审计 ⇒ kind="history"
@@ -82,7 +105,9 @@ class Event:
                          before=None, actor=rec.get("actor", ""),
                          reason=rec.get("reason", ""), call_id=rec.get("call_id", ""),
                          ts=str(rec.get("ts", "") or ""),
-                         undoable=rec.get("undoable", None))
+                         undoable=rec.get("undoable", None),
+                         operation_id=str(rec.get("operation_id", "") or ""),
+                         role=str(rec.get("role", "") or ""))
         return Event(seq=rec["seq"], kind="state", op="set", target=key,
                      after=rec.get("value"), before=None, actor=rec.get("actor", ""),
                      reason=rec.get("reason", ""), call_id=rec.get("call_id", ""),
@@ -101,7 +126,7 @@ class LogSink(Protocol):
     **知识只有 sink 有**（格式归它）⇒ 由它回答，Gate 在**落地之前**问。
     """
 
-    def append(self, record: dict) -> None: ...
+    def append(self, record: dict) -> object | None: ...
     def since(self, seq: int, *, actor: str | None = None,
               op: str | None = None, limit: int | None = None) -> Iterable[dict]: ...
     def last_seq(self) -> int: ...
@@ -154,19 +179,27 @@ class History:
     def append_history(self, op: str, target: str = "", after: object = None,
                        before: object = None, actor: str = "", reason: str = "",
                        call_id: str = "", *, ts: str | None = None,
-                       undoable: bool | None = None) -> Event:
+                       undoable: bool | None = None, operation_id: str = "",
+                       role: str = "") -> Event:
         """**只记史**（审计 / 编排日志）：`fold` 不折它 ⇒ **永不进快照**。"""
         if not op.strip():
             raise MechaError("事件 op 不能为空", kind="bad_event",
                              hint="append_history 必须带非空 op")
         when = ts if ts is not None else datetime.now(timezone.utc).isoformat()
         with self._lock:
+            self._refresh_locked()
             seq = self._seq + 1
             ev = Event(seq, "history", op, target, after, before, actor, reason,
-                       call_id, when, undoable)
+                       call_id, when, undoable, operation_id or current_operation_id(),
+                       role or "action")
             if self._sink is not None:
-                self._sink.append(ev.to_record())
-            self._seq = seq
+                stored = self._sink.append(ev.to_record())
+                seq = _stored_seq(stored) or seq
+                if seq != ev.seq:
+                    ev = Event(seq, ev.kind, ev.op, ev.target, ev.after, ev.before,
+                               ev.actor, ev.reason, ev.call_id, ev.ts, ev.undoable,
+                               ev.operation_id, ev.role)
+            self._seq = max(self._seq, seq)
             self._events.append(ev)
             subs = list(self._subs)
         for cb in subs:
@@ -194,7 +227,8 @@ class History:
 
     def append_state(self, target: str, after: object, before: object = None,
                      actor: str = "", reason: str = "", call_id: str = "",
-                     *, ts: str | None = None, undoable: bool | None = None) -> Event:
+                     *, ts: str | None = None, undoable: bool | None = None,
+                     operation_id: str = "", role: str = "mutation") -> Event:
         """**改域状态**（唯一会被 `fold` 折进快照的那类事件）。"""
         """追加一条事件。``ts`` 缺省**现取墙钟**（UTC ISO；给人看，不参与排序）；
         ``undoable`` 是**项目声明的槽位**（`None`＝未声明），框架不据此实现撤销。"""
@@ -203,15 +237,21 @@ class History:
                              hint="append_state 必须带非空 target")
         when = ts if ts is not None else datetime.now(timezone.utc).isoformat()
         with self._lock:
+            self._refresh_locked()
             seq = self._seq + 1
             ev = Event(seq, "state", "set", target, after, before, actor, reason,
-                       call_id, when, undoable)
+                       call_id, when, undoable, operation_id or current_operation_id(), role)
             # ⚠ **先落盘、后推进内存**（2026-09-26 起）：反过来的话，sink 抛错时内存里
             # 已经多了一条**盘上没有**的事件 ⇒ `events()` 与 journal 不一致，
             # 而"快照必须能从史折叠出来"这条不变量正是建在这上面。
             if self._sink is not None:
-                self._sink.append(ev.to_record())
-            self._seq = seq
+                stored = self._sink.append(ev.to_record())
+                seq = _stored_seq(stored) or seq
+                if seq != ev.seq:
+                    ev = Event(seq, ev.kind, ev.op, ev.target, ev.after, ev.before,
+                               ev.actor, ev.reason, ev.call_id, ev.ts, ev.undoable,
+                               ev.operation_id, ev.role)
+            self._seq = max(self._seq, seq)
             self._events.append(ev)
             subs = list(self._subs)      # 快照迭代：回调里可退订
         for cb in subs:
@@ -246,6 +286,7 @@ class History:
     def events(self) -> list[Event]:
         """只读副本（append-only：外部拿不到可改的内部列表）。"""
         with self._lock:
+            self._refresh_locked()
             return list(self._events)
 
     def close(self) -> None:
@@ -256,4 +297,20 @@ class History:
 
     def snapshot(self) -> dict[str, object]:
         with self._lock:
+            self._refresh_locked()
             return self._fold(self._events)
+
+    def _refresh_locked(self) -> None:
+        """吸收 sink 中由同库其它写口提交的事件。
+
+        History 是读取门面，不再把自己的进程内列表当成第二本账。Provider 仍可
+        返回 None；这时本地序号保持原有行为。数据库 Provider 返回实际行时，
+        其序号成为权威。
+        """
+        if self._sink is None:
+            return
+        fresh = [Event.from_record(r) for r in self._sink.since(self._seq)]
+        if not fresh:
+            return
+        self._events.extend(fresh)
+        self._seq = max(self._seq, max(e.seq for e in fresh))

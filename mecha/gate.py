@@ -114,7 +114,8 @@ class Gate:
         self._authority.gate(channel.side)
 
     def record(self, op: str, target: str, value: object, actor: str, reason: str,
-               call_id: str = "", *, undoable: bool | None = None) -> Event:
+               call_id: str = "", *, undoable: bool | None = None,
+               operation_id: str = "", role: str = "action") -> Event:
         """**只记史、不改快照**（`set` 的第 4 步，单独暴露）。
 
         ⚠ 为什么需要这个口子：**审计事件属于事件史，不属于域状态快照**
@@ -124,7 +125,8 @@ class Gate:
         **只有一份语义**。
         """
         return self._history.append_history(op, target, value, None, actor, reason,
-                                            call_id, undoable=undoable)
+                                            call_id, undoable=undoable,
+                                            operation_id=operation_id, role=role)
 
     def validate_only(self, key: str, value: object) -> None:
         """**dry-run**：这个值会被写口接受吗（校验 + 预检）——**不落地、不记史**。

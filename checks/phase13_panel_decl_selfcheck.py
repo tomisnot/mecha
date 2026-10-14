@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import re
 import sys
 from pathlib import Path
@@ -319,6 +320,9 @@ def check() -> tuple[int, list[str]]:
 def main() -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if shutil.which("dsh") is None:
+        print("SKIP phase13_panel_decl_selfcheck: 未找到 dsh 可执行文件（外部依赖）")
+        return 0
     code, lines = check()
     for line in lines:
         print(line)

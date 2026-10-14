@@ -7,6 +7,7 @@ python checks/phase3_provider_selfcheck.py
 from __future__ import annotations
 
 import io
+import contextlib
 import sys
 import tempfile
 import threading
@@ -279,7 +280,7 @@ def check_codeact_failure_leaves_trace(out: list[str]) -> None:
 
 def check_log_keep_is_injectable(out: list[str]) -> None:
     """保留策略可选：有限保留最终裁到预算；不裁保留全部事件。"""
-        import io
+    import io
     import tempfile
     from mecha.data_layout import resolve_data_dir
     from mecha.providers.log_local import JsonlLogSink
