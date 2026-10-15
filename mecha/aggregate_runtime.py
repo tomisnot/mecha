@@ -288,7 +288,9 @@ class AggregateRuntime:
                         backend = self._factory(url, server_name=svc_id)
                         self.agg.attach(svc_id, backend)      # type: ignore[arg-type]
                         self._pending_connect.discard(svc_id)
-                        self.last_sync_error = None
+                        if self.agg.states().get(svc_id) == "unreachable":
+                            self.last_sync_error = (
+                                f"{svc_id}: MCP backend initialized but tool list is unreachable")
                     except Exception as exc:                 # noqa: BLE001
                         #: ready 只证明端口可探活，不保证 MCP 已完成初始化。
                         #: 保留待连接项，稍后重试；不要让一个后端阻断其它软件的对账。
@@ -301,6 +303,9 @@ class AggregateRuntime:
             else:
                 self._pending_connect.discard(svc_id)
                 self._detach_if_attached(svc_id)
+        if (not self._pending_connect
+                and not any(v == "unreachable" for v in self.agg.states().values())):
+            self.last_sync_error = None
         #: ⭐ **对账 + 广播**（2026-10-10）：attach/detach 改的是 ``Aggregator`` 的
         #: registry，而**端点发出去的**是另一张表（``MCPServer`` 里那张）——
         #: ⚠ 不接这一步，AI 的工具表就永远停在"端点启动那一刻"（实测：registry 里
