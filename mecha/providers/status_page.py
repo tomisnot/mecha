@@ -121,6 +121,12 @@ header,footer{flex:0 0 auto}
 #side{border-right:1px solid #242a35;overflow-y:auto;min-height:0}
 #shell.collapsed #side{display:none}
 #main{overflow-y:auto;min-height:0;padding:4px 18px 14px}
+.terminal{flex:0 0 230px;min-height:120px;border-top:1px solid #242a35;background:#0b0e13;
+          display:flex;flex-direction:column}
+.terminal-head{padding:6px 18px;color:#8b93a1;font-size:12px;border-bottom:1px solid #1b2029}
+#console{margin:0;padding:8px 18px;overflow:auto;white-space:pre-wrap;word-break:break-word;
+         color:#c9d1d9;font:12px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace;flex:1;
+         max-height:none;border:0;border-radius:0;background:#0b0e13}
 .row{display:grid;grid-template-columns:24px 170px 92px 88px 1fr;gap:10px;align-items:center;
      padding:8px 2px;border-bottom:1px solid #1b2029}   /* ⚠ 只有分隔线，**不套卡片框** */
 .brief{grid-column:2 / span 4;color:#8b93a1;font-size:12px;margin:-4px 0 2px}
@@ -402,6 +408,8 @@ def render_page(controller: Controller) -> str:
         + ai_line
         + f'<div id="shell"><div id="side">{"".join(side)}</div>'
         f'<div id="main">{head}{"".join(items)}</div></div>'
+        '<section class="terminal"><div class="terminal-head">运行输出 · 每秒刷新（进程状态、最近 stdout/stderr、就绪证据和聚合同步错误）</div>'
+        '<pre id="console">正在读取启动器状态…</pre></section>'
         '<footer><button type="button" onclick="allOn(true)">全部启用</button>'
         '<button type="button" onclick="allOn(false)">全部停用</button>'
         '<button onclick="startNow(this)">启动 ▸</button>'
@@ -424,6 +432,20 @@ def render_page(controller: Controller) -> str:
         'function mode(id,act){post("/mode", new URLSearchParams({svc:id,action:act}))}'
         'function allOn(v){post("/all", new URLSearchParams({on:v?"1":"0"}))}'
         'function shutdownNow(){if(confirm("收尾退出：逆序停掉全部 child？"))post("/shutdown")}'
+        'async function pollConsole(){try{const r=await fetch("/console.json",{cache:"no-store"});'
+        'const d=await r.json();const lines=[];'
+        'if(d.last_error)lines.push("[launcher] ERROR "+d.last_error);'
+        'if(d.aggregate_sync_error)lines.push("[aggregate] ERROR "+d.aggregate_sync_error);'
+        'if(d.aggregate_publish_error)lines.push("[aggregate] ERROR "+d.aggregate_publish_error);'
+        '(d.children||[]).forEach(c=>{const pid=c.pid?" pid="+c.pid:"";'
+        'lines.push("["+c.id+"] "+(c.state||"?")+pid);'
+        'if(c.last_error)lines.push("  ! "+c.last_error);'
+        'if(c.ready_evidence)lines.push("  ready: "+c.ready_evidence);'
+        '(c.logs||[]).forEach(x=>lines.push("  "+x));});'
+        'const box=document.getElementById("console");if(!box)return;'
+        'const follow=box.scrollHeight-box.scrollTop-box.clientHeight<40;box.textContent=lines.join("\\n")||"（暂无子进程输出）";'
+        'if(follow)box.scrollTop=box.scrollHeight;}catch(e){const box=document.getElementById("console");if(box)box.textContent="[console] "+e;}}'
+        'pollConsole();setInterval(pollConsole,1000);'
         '</script></body></html>')
 
 
@@ -451,6 +473,9 @@ class _Handler(BaseHTTPRequestHandler):
             return self._html(200, render_page(self.controller))
         if path == "/state.json":
             return self._send(200, json.dumps(self.controller.state(), ensure_ascii=False)
+                              .encode("utf-8"), "application/json; charset=utf-8")
+        if path == "/console.json":
+            return self._send(200, json.dumps(self.page.console_snapshot(), ensure_ascii=False)
                               .encode("utf-8"), "application/json; charset=utf-8")
         if path == "/health":
             return self._send(200, b'{"ok":true}', "application/json; charset=utf-8")
@@ -583,6 +608,30 @@ class StatusPage:
         return (f'<h1>日志 · {html.escape(child_id)}</h1>'
                 f'<p class="muted">{path}</p><pre>{body}</pre>'
                 f'<p><a href="/">← 回控制台</a></p>')
+
+    def console_snapshot(self) -> dict:
+        """给启动页终端区的有界快照。
+
+        进程状态仍来自 Supervisor；这里只把每个 child 的最后一小段日志
+        复制到页面传输，避免浏览器为了看实时输出反复拉完整日志文件。
+        """
+        state = self.controller.state()
+        out = {
+            "last_error": state.get("last_error", ""),
+            "aggregate_sync_error": state.get("aggregate_sync_error", ""),
+            "aggregate_publish_error": state.get("aggregate_publish_error", ""),
+            "children": [],
+        }
+        sup = getattr(self.controller, "super", None)
+        for row in state.get("children", []) or []:
+            item = dict(row)
+            try:
+                child = sup.child(str(row.get("id")))
+                item["logs"] = child.log_tail(80)
+            except Exception as exc:                       # noqa: BLE001
+                item["logs"] = [f"日志读取失败：{type(exc).__name__}: {exc}"]
+            out["children"].append(item)
+        return out
 
     def stop(self) -> None:
         #: ⭐ 先立旗：让 `serve_forever()` 那个循环退出（否则 launcher 不退出）。

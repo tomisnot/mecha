@@ -198,6 +198,12 @@ class AggregateRuntime:
         self.last_publish_error: str | None = None
         #: `unreachable` 后端的有界重试计数（见 :meth:`_retry_unreachable`）。
         self._retry_count = 0
+        #: 后端进程已经 ready、但 MCP 端点尚未接受连接时的待连接集合。
+        #: 这类失败发生在 backend_factory 之前，Aggregator 还没有 entry，
+        #: 因而不能只扫描 states() 里的 ``unreachable``。
+        self._pending_connect: set[str] = set()
+        #: 最近一次同步失败，供启动控制台显示，不作为进程状态的替代。
+        self.last_sync_error: str | None = None
         #: ⭐ **把三个回调接上** —— 本类就是"聚合端点 ↔ supervisor"的那根线。
         #: ⚠ 不做这一步，元工具 ``query_software`` 的 ``process`` 栏永远是 ``None``
         #: ⇒ "跑着的软件被报成没有进程事实"，**违反铁律 7**（元工具必须经
@@ -278,9 +284,22 @@ class AggregateRuntime:
                 if states.get(svc_id) != "up":
                     url = self._url_for(svc, row)
                     assert url is not None
-                    backend = self._factory(url, server_name=svc_id)
-                    self.agg.attach(svc_id, backend)      # type: ignore[arg-type]
+                    try:
+                        backend = self._factory(url, server_name=svc_id)
+                        self.agg.attach(svc_id, backend)      # type: ignore[arg-type]
+                        self._pending_connect.discard(svc_id)
+                        self.last_sync_error = None
+                    except Exception as exc:                 # noqa: BLE001
+                        #: ready 只证明端口可探活，不保证 MCP 已完成初始化。
+                        #: 保留待连接项，稍后重试；不要让一个后端阻断其它软件的对账。
+                        self._pending_connect.add(svc_id)
+                        self.last_sync_error = (
+                            f"{svc_id}: {type(exc).__name__}: {exc}")
+                        # 这里可能发生在尚未完成 stdout UTF-8 重配置的启动阶段，
+                        # 所以日志用 ASCII，避免 cp936 再制造一个“同步线程崩了”的假故障。
+                        print(f"[aggregate] WARN backend pending: {self.last_sync_error}")
             else:
+                self._pending_connect.discard(svc_id)
                 self._detach_if_attached(svc_id)
         #: ⭐ **对账 + 广播**（2026-10-10）：attach/detach 改的是 ``Aggregator`` 的
         #: registry，而**端点发出去的**是另一张表（``MCPServer`` 里那张）——
@@ -301,13 +320,14 @@ class AggregateRuntime:
         全部 up 时计数归零（下次事件重新开始）。
         """
         states = self.agg.states()
-        broken = [s for s in self._services if states.get(s) == "unreachable"]
+        broken = [s for s in self._services
+                  if states.get(s) == "unreachable" or s in self._pending_connect]
         if not broken:
             self._retry_count = 0
             return
         if self._retry_count >= UNREACHABLE_RETRIES:
-            print(f"[aggregate] ⚠ 后端仍是 unreachable（重试 {self._retry_count} 次后放弃）："
-                  f"{sorted(broken)}；下次软件启停会再试")
+            print(f"[aggregate] WARN backend still unreachable after "
+                  f"{self._retry_count} retries: {sorted(broken)}; retry on next lifecycle event")
             return
         self._retry_count += 1
         timer = threading.Timer(RETRY_DELAY_S, self._retry_tick, args=(self._retry_count,))
@@ -321,7 +341,7 @@ class AggregateRuntime:
         try:
             self.sync_backends()
         except Exception as exc:                      # noqa: BLE001 - 后台重试不许炸线程
-            print(f"[aggregate] ⚠ 重试同步失败：{type(exc).__name__}: {exc}")
+            print(f"[aggregate] WARN resync failed: {type(exc).__name__}: {exc}")
 
     def publish_tools(self) -> None:
         """把活工具表对齐到 ``Aggregator`` 的当前 registry，并在变化时广播。

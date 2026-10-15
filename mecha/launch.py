@@ -499,6 +499,14 @@ class LaunchController:
             "dsh_url": (f"http://127.0.0.1:{int(spec.port_preference)}/"
                         if spec is not None else ""),
         }
+        #: 聚合工具表同步属于独立事实：软件进程可以已经 ready，MCP 连接仍可能
+        #: 在初始化窗口内失败。把它显式放进状态页，避免“软件活着但 AI 没工具”
+        #: 只能靠猜日志。
+        if self.agg_runtime is not None:
+            st["aggregate_sync_error"] = str(
+                getattr(self.agg_runtime, "last_sync_error", "") or "")
+            st["aggregate_publish_error"] = str(
+                getattr(self.agg_runtime, "last_publish_error", "") or "")
         return st
 
     def dsh_spec(self) -> "DSHSpec | None":
