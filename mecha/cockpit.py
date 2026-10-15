@@ -41,7 +41,7 @@ Monitor 是软件自己四件里与 Gate / History / Surface **并列的第一�
 - ``schema_rows``：配置 schema 行（每行至少 ``name``，可选 ``family`` / ``unit`` /
   ``type`` / ``desc``）。**框架不定义 schema 概念**——EL 从引擎参数表来，ML 没有
   这层就如实空表，端点走"无 schema"分支（``has_schema=false`` + 快照全进
-  ``orphans``）。往 ``Engine`` 加必实现会逼没有 schema 的项目编造行（"凭空造树把
+  ``orphans``）。把配置树绑定到 Engine 会逼没有 schema 的项目编造行（"凭空造树把
   面板撑满"），所以只有注入这一个形态。
 - ``status_extra``：``/status`` 的附加键（如 pid / 端口一类**宿主生命周期事实**——
   那个端点自己不知道）。默认空，于是默认响应与"只回 ``{ok, mode}``"的宿主逐字节一致。

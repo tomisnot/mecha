@@ -52,10 +52,10 @@ from mecha.assembly import assemble  # noqa: E402
 from mecha.errors import MechaError  # noqa: E402
 from mecha.gate import accept_all  # noqa: E402
 from mecha.providers.jobs import JobState  # noqa: E402
-from mecha.surface import Engine  # noqa: E402
+from mecha.surface import ExecutionContext  # noqa: E402
 
 
-class ToyEngine(Engine):
+class ToyEngine:
     def schema(self):
         return {"run_output_required": ["ok"], "keys": []}
 
@@ -80,7 +80,7 @@ def _fail(out: list[str], msg: str) -> None:
 
 def _with_software():
     td = tempfile.mkdtemp(prefix="phase7-")
-    return assemble(root=Path(td), data_dir_name="p7data", engine=ToyEngine(),
+    return assemble(root=Path(td), data_dir_name="p7data",
                     summarizer=lambda evs: {}, validate=accept_all, project="toyhost")
 
 

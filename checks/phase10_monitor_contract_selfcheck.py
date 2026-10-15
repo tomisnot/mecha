@@ -56,13 +56,13 @@ from mecha.authority import Mode  # noqa: E402
 from mecha.gate import accept_all  # noqa: E402
 from mecha.history import fold  # noqa: E402
 from mecha.monitor import Claim, Monitor  # noqa: E402
-from mecha.surface import Engine  # noqa: E402
+from mecha.surface import ExecutionContext  # noqa: E402
 
 #: 本判据如实登记的未支持项（打印出来，不算失败，也不假绿）。
 UNSUPPORTED: list[str] = []
 
 
-class ToyEngine(Engine):
+class ToyEngine:
     def schema(self):
         return {"run_output_required": ["ok"], "keys": ["power", "gain"]}
 
@@ -88,7 +88,7 @@ def _fail(out: list[str], msg: str) -> None:
 def _software(summarizer):
     """装配一台玩具软件实例（Monitor 经真实装配点接线到同一份 History）。"""
     td = tempfile.mkdtemp(prefix="phase10-")
-    return assemble(root=Path(td), data_dir_name="p10data", engine=ToyEngine(),
+    return assemble(root=Path(td), data_dir_name="p10data",
                     summarizer=summarizer, validate=accept_all, project="toyhost")
 
 

@@ -106,7 +106,7 @@ class _Toy:
 
 
 def _software(tmp: Path, *, mode: Mode = Mode.AI, summarizer=None):
-    return assemble(root=tmp, data_dir_name=".cockpit-check", engine=_Toy(),
+    return assemble(root=tmp, data_dir_name=".cockpit-check",
                     summarizer=summarizer or (lambda evs: {}),
                     validate=accept_all, mode=mode, project="cockpit-check")
 

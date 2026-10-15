@@ -35,10 +35,10 @@ from mecha.authority import Mode  # noqa: E402
 from mecha.errors import GateDenied, MechaError  # noqa: E402
 from mecha.gate import accept_all  # noqa: E402
 from mecha.monitor import Claim  # noqa: E402
-from mecha.surface import Engine, ExecutionContext  # noqa: E402
+from mecha.surface import ExecutionContext  # noqa: E402
 
 
-class ToyEngine(Engine):
+class ToyEngine:
     def __init__(self) -> None:
         self.runs = 0
 
@@ -72,7 +72,7 @@ def _summarizer(events):
 
 
 def build(root: Path):
-    return assemble(root=root, data_dir_name="projdata", engine=ToyEngine(),
+    return assemble(root=root, data_dir_name="projdata",
                     summarizer=_summarizer, validate=accept_all, project="toyproj")
 
 
@@ -113,14 +113,11 @@ def check_hole1_no_bypass_write(out: list[str]) -> None:
 def check_hole2_run_is_only_executor(out: list[str]) -> None:
     with tempfile.TemporaryDirectory() as td:
         with build(Path(td)) as sw:
-            # 物理演化经 Surface.run（唯一 executor）
-            r = sw.surface.run({"mode": "evolve"}, context=ExecutionContext())
-            eng = sw.surface._engine
-            if r["ok"] and eng.runs == 1:
-                _ok("run 经 Surface 落到引擎（唯一 executor）")
+            # mecha 不再提供通用 Engine；能力面只暴露项目注册的查询/命令。
+            if not hasattr(sw.surface, "commands"):
+                _fail(out, "能力面没有命令注册表")
             else:
-                _fail(out, f"run 未落引擎：{r}")
-            # 引擎句柄不经公开 API 外露：Software 上没有 get_engine/engine()
+                _ok("能力面以命令/查询注册项目动作，不强制 Engine")
             exposed = [a for a in dir(sw) if "engine" in a.lower()]
             if not exposed:
                 _ok("装配实例不暴露引擎句柄（洞2：无绕过 run 的库内入口）")

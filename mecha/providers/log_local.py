@@ -113,7 +113,13 @@ class JsonlLogSink:
         tmp = self._path.with_suffix(self._path.suffix + ".trim")
         try:
             tmp.write_text("\n".join(tail) + "\n", encoding="utf-8")
-            tmp.replace(self._path)                      # 原子替换（Windows 上 replace 可覆盖）
+            try:
+                tmp.replace(self._path)                  # 原子替换
+            except OSError:
+                # 某些 Windows 沙箱禁止覆盖已存在的文件；仍保持内容语义，
+                # 退回同目录截断写入，避免保留策略静默失效。
+                self._path.write_text("\n".join(tail) + "\n", encoding="utf-8")
+                tmp.unlink(missing_ok=True)
         except OSError:
             try:
                 tmp.unlink()

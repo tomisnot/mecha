@@ -6,7 +6,7 @@
 形态：一个受限动作解释器。动作是**结构化 dict**（不是 eval 任意代码——
 库不执行模型写的任意代码，那是宿主 code-runtime 的权力，我们只编排自家工具）。
 每个子调用产出一条 ``SubCallLog``，落 History（可归因，Phase 1 洞 2 的配套：
-物理演化只经 run，这里 run 动作就是 Surface.run）。
+  计算动作由项目自己的 dispatcher 提供，框架不预设任何通用 Engine 语义。
 
 ## Known Limitations and Deferred Work
 
@@ -67,11 +67,12 @@ class CodeAct:
     """动作序列编排器。run(actions) 逐子调用记日志并落 History。"""
 
     def __init__(self, surface: Surface, history: History,
-                 actor_provider: Callable[[], str]) -> None:
+                 actor_provider: Callable[[], str],
+                 dispatcher: Callable[[str, Mapping[str, object], ExecutionContext], object] | None = None) -> None:
         self._surface = surface
         self._history = history
         self._actor = actor_provider
-        self._known = {"run", "summary", "estimate", "schema"}
+        self._dispatcher = dispatcher
 
     def run(self, actions: Sequence[Action], *, context: ExecutionContext | None = None,
             call_id: str = "") -> CodeActResult:
@@ -116,18 +117,11 @@ class CodeAct:
         )
 
     def _dispatch(self, a: Action, ctx: ExecutionContext) -> object:
-        if a.op == "run":
-            spec = a.args.get("spec")
-            if not isinstance(spec, Mapping):
-                raise MechaError("run 动作需要 args['spec'] 映射",
-                                 kind="bad_action", hint="Action('run', {'spec': {...}})")
-            return self._surface.run(spec, context=ctx)
-        if a.op == "summary":
-            return self._surface.summary()
-        if a.op == "estimate":
-            return self._surface.estimate(dict(a.args.get("spec", {})))
-        if a.op == "schema":
-            return self._surface.schema()
+        if self._dispatcher is not None:
+            try:
+                return self._dispatcher(a.op, a.args, ctx)
+            except UnknownOp:
+                pass
         # 其余走注册查询
         try:
             return self._surface.query(a.op, **dict(a.args))
@@ -135,5 +129,5 @@ class CodeAct:
             raise UnknownOp(
                 f"动作 {a.op!r} 不在能力面",
                 kind="unknown_action",
-                hint=f"内置：{sorted(self._known)}；查询：注册项见 Surface.entries('query')",
+                hint="查询：注册项见 Surface.entries('query')；计算动作由项目自己的 dispatcher 提供",
             ) from None

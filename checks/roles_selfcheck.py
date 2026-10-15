@@ -41,7 +41,7 @@ def main() -> int:
         def estimate(self, spec): return {"est_sec": 0}
 
     with tempfile.TemporaryDirectory() as td:
-        with assemble(root=Path(td), data_dir_name=".test", engine=Engine(),
+        with assemble(root=Path(td), data_dir_name=".test",
                       summarizer=lambda events: {}, validate=accept_all) as sw:
             assert sw.surface.roles is sw.roles
             undo = sw.roles.register("project-feature", Role.PROVIDER, provider="project")

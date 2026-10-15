@@ -25,11 +25,11 @@ from mecha.providers.codeact import Action, CodeAct
 from mecha.providers.jobs import JobRegistry, JobState
 from mecha.providers.log_local import JsonlLogSink
 from mecha.providers.skills import SkillCatalog
-from mecha.surface import Engine, EntryKind, ExecutionContext, Surface
+from mecha.surface import EntryKind, ExecutionContext, Surface
 from mecha.tools import ToolRegistry, define_tool
 
 
-class ToyEngine(Engine):
+class ToyEngine:
     def schema(self):
         return {"run_output_required": ["ok", "method"]}
 
@@ -144,7 +144,7 @@ def check_registration_is_the_only_visibility(out: list[str]) -> None:
     "机制好用"，而是 **D-4 不复发**：没有任何东西能替项目把自有动词判成危险/隐藏。
     所以这里换成**行为级**的同一承诺，而不是删掉了事。
     """
-    surface = Surface(ToyEngine())
+    surface = Surface()
     surface.register(EntryKind.QUERY, "my_query", lambda **kw: {"ok": True},
                      called_by="check")
     if [e.name for e in surface.entries(EntryKind.QUERY)] == ["my_query"] \
@@ -165,7 +165,7 @@ def check_registration_is_the_only_visibility(out: list[str]) -> None:
 
 
 def check_skill_catalog_single_source(out: list[str]) -> None:
-    s = Surface(ToyEngine())
+    s = Surface()
     cat = SkillCatalog(s)
     # 能抓坏：未注册先 declare → 红（目录只有一个来源）
     try:
@@ -199,17 +199,16 @@ def check_codeact_logs_each_subcall(out: list[str]) -> None:
         hist = History()
         auth = Authority(Mode.AI)
         gate = Gate(auth, hist, validate=accept_all)
-        s = Surface(ToyEngine())
+        s = Surface()
         s.register(EntryKind.QUERY, "echo", lambda word="": f"E:{word}", called_by="framework")
         act = CodeAct(s, hist, actor_provider=lambda: "ai")
         r = act.run([
             Action("echo", {"word": "hi"}),
-            Action("run", {"spec": {"mode": "x"}}),
             Action("no_such_op"),
         ], call_id="c1")
         # 逐子调用记日志（Phase 3 补的债）
         steps = [e for e in hist.events() if e.op.startswith("codeact.")]
-        if len(steps) == 3:
+        if len(steps) == 2:
             _ok("每子调用一条 History 记录（含失败步）")
         else:
             _fail(out, f"记日志条数不符：{[e.op for e in steps]}")
@@ -217,12 +216,12 @@ def check_codeact_logs_each_subcall(out: list[str]) -> None:
             _ok("子调用日志带通道 actor + call_id（可归因互引）")
         else:
             _fail(out, "子调用日志归因缺失")
-        detail2 = steps[2].after["detail"] if len(steps) > 2 else ""
-        if r.stopped_at == 2 and "不在能力面" in detail2 and "提示：" in detail2:
+        detail2 = steps[1].after["detail"] if len(steps) > 1 else ""
+        if r.stopped_at == 1 and "不在能力面" in detail2 and "提示：" in detail2:
             _ok("失败步带教学文本（message + hint 进日志）")
         else:
             _fail(out, f"失败步无教学文本：{detail2!r}")
-        if r.outputs[0] == "E:hi" and r.outputs[1].get("ok"):
+        if r.outputs[0] == "E:hi":
             _ok("成功步输出正常（不误报）")
         else:
             _fail(out, f"成功步输出不符：{r.outputs}")
@@ -239,7 +238,7 @@ def check_codeact_failure_leaves_trace(out: list[str]) -> None:
 
     with tempfile.TemporaryDirectory() as td:
         hist = History()
-        s = Surface(ToyEngine())
+        s = Surface()
         s.register(EntryKind.QUERY, "ok_op", lambda word="": f"E:{word}",
                    called_by="framework")
         s.register(EntryKind.QUERY, "boom_op", boom, called_by="framework")
@@ -269,13 +268,6 @@ def check_codeact_failure_leaves_trace(out: list[str]) -> None:
         # 免得后人以为"CodeAct 在改世界"（它只编排；域状态写归宿主的 handler）。
         hist2 = History()
         gate2 = Gate(Authority(Mode.AI), hist2, validate=accept_all)
-        act2 = CodeAct(Surface(ToyEngine()), hist2, actor_provider=lambda: "ai")
-        act2.run([Action("run", {"spec": {"mode": "x"}})], call_id="c10")
-        acts = [e for e in hist2.events() if e.op.startswith("codeact.")]
-        if gate2.snapshot == {} and len(acts) == 1:
-            _ok("`run` 动作**不产生域状态写**（快照空；只在史里留 codeact.* 一条）")
-        else:
-            _fail(out, f"run 动作越界：snapshot={gate2.snapshot} 史={[e.op for e in acts]}")
 
 
 def check_log_keep_is_injectable(out: list[str]) -> None:

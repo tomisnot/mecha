@@ -42,7 +42,7 @@ sys.path.insert(0, str(ROOT))
 from mecha.assembly import assemble  # noqa: E402
 from mecha.errors import MechaError  # noqa: E402
 from mecha.gate import accept_all  # noqa: E402
-from mecha.surface import Engine  # noqa: E402
+from mecha.surface import ExecutionContext  # noqa: E402
 from mecha.toolhost import LOCAL_HOST, LocalToolHost, ToolHost  # noqa: E402
 from mecha.tools import MODEL_VISIBLE_FIELDS, ToolRegistry, define_tool  # noqa: E402
 
@@ -50,7 +50,7 @@ from mecha.tools import MODEL_VISIBLE_FIELDS, ToolRegistry, define_tool  # noqa:
 BAD_DECLARATION = "bad_tool_declaration"
 
 
-class ToyEngine(Engine):
+class ToyEngine:
     def schema(self):
         return {"run_output_required": ["ok"], "keys": []}
 
@@ -337,7 +337,7 @@ def check_teardown_idempotent(out: list[str]) -> None:
 def check_assembled_path(out: list[str]) -> None:
     """F：L7 对偶——经装配点的合规路径全绿（机制建好必须装配接上）。"""
     td = tempfile.mkdtemp(prefix="phase9-sw-")
-    with assemble(root=Path(td), data_dir_name="p9data", engine=ToyEngine(),
+    with assemble(root=Path(td), data_dir_name="p9data",
                   summarizer=lambda evs: {}, validate=accept_all,
                   project="toyhost") as sw:
         host = sw.toolhost

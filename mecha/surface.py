@@ -1,48 +1,20 @@
-"""Surface：能力面（总纲 §5.2③，Phase 2 瘦身；硬纪律 3）。
+"""Surface：项目查询与注册项的分派面。
 
-一个 Engine seam = Definition（本模块）+ Provider（项目引擎）+ Consumer
-（ops 管道）。**必实现只有 4 个**：``schema`` / ``run`` / ``summary`` /
-``estimate``（消 D-13：v1 的 13 必实现对"没有运行"的项目也全强制）。
-
-铁律：**框架自己会调用的，才配进 Definition；框架不调、只做分派目标的，
-必须是注册项**（消 D-18 的"钩子"混合概念——三类东西各有明确角色与"谁调它"）。
-
-- Definition 无默认值（消 D-17）：回退值只存在于 Provider；本模块不藏
-  ``?? default``。
-- 隐式契约键显式化（消 D-15）：``schema()`` 必须声明 ``run`` 回执的必填键，
-  ops 管道逐条校验，缺键即报错——契约不再"只在 spec 与判据里"。
-- 取消与进度是 ExecutionContext 的显式字段（消 D-16），不是数组三槽约定。
-- 命令面（``commands``）是 **additive** 的另一条分派路径：命令是注册项，
-  不是 Definition 的第 5 个必实现（消"具名 ABC 方法膨胀"）。``run`` / ``query``
-  语义一字未改——单操作引擎照旧，多命令宿主多了归宿。
-
-## Known Limitations and Deferred Work
-
-- ``queries`` / ``mcp_tools`` / ``hooks`` / ``custom_types`` 先按注册项实现，
-  是否升格为独立 seam 推迟到 n=2（ADR 边界写机制不写分类）。
-- ``schema`` 合一 v1 的五个视图，但视图切分逻辑（给 GUI 的树形 vs 给模型的
-  JSON Schema）归 Consumer；Definition 只保证"一处声明"。
-- run 的长任务化（job 化）归 Phase 3 Jobs seam；这里只定同步契约。
+mecha 不规定项目必须拥有计算引擎、流水线或统一的 ``run``。项目把查询、
+生命周期钩子和其它可组合能力注册到这里；受治理的写动作注册到同一对象的
+``commands``。取消与进度使用通用 ``ExecutionContext``，长任务交给 Jobs。
 """
 
 from __future__ import annotations
 
 import threading
-from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 
 from .commands import CommandRegistry
-from .errors import InvalidSpec, MechaError, UnknownOp
+from .errors import MechaError, UnknownOp
 from .roles import Disposer, Role, RoleRegistry
-
-#: 框架真会调的名单（判据 checks/phase2_surface_selfcheck.py 引用同一常量，
-#: Definition 方法名必须是它的子集——总纲 §7 Phase 2 第 2 条）。
-FRAMEWORK_CALLS: frozenset[str] = frozenset(
-    {"schema", "run", "summary", "estimate"}
-)
-
 
 @dataclass
 class ExecutionContext:
@@ -71,36 +43,6 @@ class ExecutionContext:
         return list(self._progress)
 
 
-class Engine(ABC):
-    """引擎 Definition：具体注册服务形态的 ABC，只有 4 个必实现。
-
-    项目 Provider 继承它；"没有运行"的项目 run/estimate 可以返回
-    ``{"ok": True, "skipped": "无运行概念"}`` 之类的显式声明——但**必须**
-    显式写，不许框架替你默认（D-17）。
-    """
-
-    @abstractmethod
-    def schema(self) -> Mapping[str, object]:
-        """一处声明的 schema（合一 v1 五视图）。
-
-        必须含 ``run_output_required``: list[str] —— run 回执的必填键名单
-        （消 D-15：隐式键变显式声明，缺键即校验失败）。
-        """
-
-    @abstractmethod
-    def run(self, spec: Mapping[str, object], *, context: ExecutionContext,
-            **opts: object) -> Mapping[str, object]:
-        """合一 v1 的 build+check+evolve。长任务经 context 感知取消。"""
-
-    @abstractmethod
-    def summary(self) -> Mapping[str, object]:
-        """合一 v1 的两个摘要方法。"""
-
-    @abstractmethod
-    def estimate(self, spec: Mapping[str, object]) -> Mapping[str, object]:
-        """契约先行：框架真会调（回执必须含 ``est_sec``，由 ops 校验）。"""
-
-
 class EntryKind(str, Enum):
     """注册项的三种角色（取代 v1"钩子"混合概念，消 D-18）。"""
 
@@ -119,17 +61,18 @@ class RegisteredEntry:
 
 
 class Surface:
-    """Consumer 侧装配点：持有 Engine Provider + 注册项，跑 ops 管道。"""
+    """项目查询和生命周期注册项的分派面。
 
-    def __init__(self, engine: Engine, roles: RoleRegistry | None = None) -> None:
-        self._engine = engine
+    计算引擎、流水线和其它长操作属于项目；它们以命令或查询注册，
+    不再被框架要求实现一个通用 ``Engine``。
+    """
+
+    def __init__(self, roles: RoleRegistry | None = None) -> None:
         self._roles = roles or RoleRegistry()
         self._entries: dict[tuple[EntryKind, str], RegisteredEntry] = {}
-        # 通用命令面（additive；不占 Engine 必实现，不改 run/query 语义）。
+        # 通用命令面与查询面共用一个注册表。
         # 角色表共用装配点那张 ⇒ command:<name> 能力行与声明表同源。
         self._commands = CommandRegistry(roles=self._roles, caller="Surface")
-        self._roles.register("engine", Role.DEFINITION)
-        self._roles.register("engine", Role.PROVIDER, provider=type(engine).__name__)
         self._roles.register("ops_pipeline", Role.CONSUMER, consumer="Surface")
 
     @property
@@ -181,8 +124,6 @@ class Surface:
         kind = EntryKind(kind)
         return [e for (k, _), e in sorted(self._entries.items()) if k is kind]
 
-    # ---- ops 管道（框架真会调的 4 个方法 + 校验）----
-
     def query(self, op_name: str, **args: object) -> object:
         """只读查询分派。查询**不经写权门**（这是 D-4 的解法：不存在"只读动词
         被判不可逆"）；未注册的查询名报 ``UnknownOp`` 并带 hint——先 register 再调。
@@ -199,42 +140,6 @@ class Surface:
                 hint=f"已注册查询见 Surface.entries('query')；新动词先 register",
             )
         return entry.fn(**args)
-
-    def schema(self) -> Mapping[str, object]:
-        s = self._engine.schema()
-        if "run_output_required" not in s:
-            raise InvalidSpec(
-                "engine.schema() 未声明 run_output_required",
-                kind="missing_output_contract",
-                hint="schema() 必须含 run_output_required: list[str]（run 回执必填键）",
-            )
-        return s
-
-    def run(self, spec: Mapping[str, object], *, context: ExecutionContext,
-            **opts: object) -> Mapping[str, object]:
-        result = dict(self._engine.run(spec, context=context, **opts))
-        required = list(self.schema()["run_output_required"])  # type: ignore[arg-type]
-        missing = [k for k in required if k not in result]
-        if missing:
-            raise MechaError(
-                f"run 回执缺必填键 {missing}",
-                kind="bad_run_output",
-                hint="回执键契约由 schema()['run_output_required'] 声明（消 D-15）",
-            )
-        return result
-
-    def summary(self) -> Mapping[str, object]:
-        return dict(self._engine.summary())
-
-    def estimate(self, spec: Mapping[str, object]) -> Mapping[str, object]:
-        est = dict(self._engine.estimate(spec))
-        if "est_sec" not in est:
-            raise MechaError(
-                "estimate 回执缺必填键 'est_sec'",
-                kind="bad_estimate_output",
-                hint="estimate() 必须返回含 est_sec（秒）的映射（D7 契约先行）",
-            )
-        return est
 
     def fire_hooks(self, point: str, payload: Mapping[str, object]) -> list[object]:
         """固定挂点：框架按 point 调已注册 HOOK。挂点不存在=空列表（不是错）。"""

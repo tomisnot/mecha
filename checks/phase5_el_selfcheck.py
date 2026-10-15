@@ -77,7 +77,7 @@ def main() -> int:
     history = History()
     authority = Authority(Mode.LOCKED)
     gate = Gate(authority, history, validate=make_validator(engine))
-    surface = Surface(engine)
+    surface = Surface()
     ai = Channel("ai")
     authority.switch_mode(Mode.AI, side="human")
     tools = build_tool_registry(engine, gate, surface, authority, ai,
@@ -214,7 +214,7 @@ def main() -> int:
         _fail(out, f"est_sec 适配失败：{r}")
 
     # ---- 6b. summary：取 EL 公开声明面（methods 非空且与 enum 一致）----
-    summ = surface.summary()
+    summ = engine.summary()
     if summ.get("engine") == "energy-level" and summ.get("methods"):
         _ok(f"summary 回引擎身份 + methods={summ['methods']}（公开声明面）")
     else:
@@ -347,7 +347,7 @@ def main() -> int:
     g2.set(ai, "dynamic.t_max", 5.0, "r")
     g2.set(ai, "dynamic.npts", 50, "r")
     try:
-        surface.run(g2.snapshot, context=ExecutionContext())
+        engine.run(g2.snapshot, context=ExecutionContext())
         _fail(out, "缺初态竟跑成功")
     except MechaError as e:
         if e.kind == "build_failed" and e.hint:
@@ -357,7 +357,7 @@ def main() -> int:
 
     # ---- 10b. 空演化：仍跑（EL 语义），但 check_run 的问题如实进 warnings（不静默）----
     g2.set(ai, "dynamic.psi_single", key0, "r")
-    res = surface.run(g2.snapshot, context=ExecutionContext())
+    res = engine.run(g2.snapshot, context=ExecutionContext())
     warns = " ".join(res.get("warnings") or [])
     if res.get("ok") and "空演化" in warns:
         _ok("空演化配置：仍跑但 warnings 如实带出（告诉 AI，不静默——L3 反面）")

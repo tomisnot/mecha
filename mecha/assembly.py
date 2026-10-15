@@ -1,6 +1,6 @@
 """具名装配点（L6/L7：机制建好必须装配接上，判据从这里取数）。
 
-把软件自己的四件 + Provider 层 + 形状组装成一台可运行的软件实例，并在此
+把软件自己的治理、账、能力面与 Provider 层组装成一台可运行的软件实例，并在此
 **声明每个 seam 的角色**（§5.4 交付 1）。capability map 由
 ``scripts/gen_capability_map.py`` 调 ``build_roles()`` 生成——分类是生成的，
 不是手写的。
@@ -29,7 +29,7 @@ from .providers.approval import LocalApproval
 from .providers.jobs import JobRegistry
 from .providers.log_local import JsonlLogSink
 from .roles import Role, RoleRegistry
-from .surface import Engine, Surface
+from .surface import Surface
 from .toolhost import LocalToolHost
 from .tools import ToolRegistry
 
@@ -76,14 +76,12 @@ class Software:
         return False
 
 
-def declare_roles(roles: RoleRegistry, *, engine_name: str, project: str) -> None:
+def declare_roles(roles: RoleRegistry, *, project: str) -> None:
     """§5.4 交付 1：每个 seam 声明角色。无角色标注的扩展点 = 拒收。"""
     # 软件自己的四件
     roles.register("gate", Role.DEFINITION, provider=project)
     roles.register("history", Role.DEFINITION, provider=project)
     roles.register("surface", Role.DEFINITION, provider=project)
-    # Surface 的 Provider 是项目引擎本身（Definition 我们拥有、Provider 项目提供）
-    roles.register("surface.engine", Role.PROVIDER, provider=engine_name, consumer="surface")
     roles.register("monitor", Role.DEFINITION, provider=project)
     # 写权模式机（审查完整性守卫抓出的漏声明：脊椎件却不在表里）
     roles.register("authority", Role.DEFINITION, provider=project)
@@ -145,14 +143,14 @@ def declare_roles(roles: RoleRegistry, *, engine_name: str, project: str) -> Non
     roles.register("provider.skills", Role.PROVIDER, provider="catalog")
 
 
-def build_roles(*, engine_name: str = "unconfigured", project: str = "mecha") -> RoleRegistry:
+def build_roles(*, project: str = "mecha") -> RoleRegistry:
     """只取角色表（map 生成入口，不构造实例）。"""
     roles = RoleRegistry()
-    declare_roles(roles, engine_name=engine_name, project=project)
+    declare_roles(roles, project=project)
     return roles
 
 
-def assemble(*, root: Path, data_dir_name: str | None, engine: Engine,
+def assemble(*, root: Path, data_dir_name: str | None,
              summarizer: Summarizer, validate: Validator,
              project: str = "mecha",
              mode: Mode = DEFAULT_MODE,
@@ -165,14 +163,14 @@ def assemble(*, root: Path, data_dir_name: str | None, engine: Engine,
     mode 默认出厂 LOCKED（nothing ships enabled）；GUI 类宿主显式传 HUMAN。
     """
     layout: DataLayout = resolve_data_dir(root, data_dir_name)
-    roles = build_roles(engine_name=type(engine).__name__, project=project)
+    roles = build_roles(project=project)
     # ⚠ 落盘 sink **可注入**（默认仍是本机 JSONL）——Provider 层既有做法：
     # 出厂默认本机文件，项目可换成自己的实现（如把账写进自己的库）。
     sink = log_sink if log_sink is not None else JsonlLogSink(layout, chain=migration)
     history = History(sink)
     authority = Authority(mode)
     gate = Gate(authority, history, validate=validate)
-    surface = Surface(engine, roles=roles)
+    surface = Surface(roles=roles)
     monitor = Monitor(history.events, summarizer)
     jobs = JobRegistry()
     artifacts = LocalArtifactStore(layout)

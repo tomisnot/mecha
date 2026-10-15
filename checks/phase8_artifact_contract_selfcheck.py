@@ -45,13 +45,13 @@ from mecha.assembly import assemble  # noqa: E402
 from mecha.data_layout import resolve_data_dir  # noqa: E402
 from mecha.errors import MechaError  # noqa: E402
 from mecha.gate import accept_all  # noqa: E402
-from mecha.surface import Engine  # noqa: E402
+from mecha.surface import ExecutionContext  # noqa: E402
 
 BAD_KIND = "bad_artifact_locator"
 ONE_MIB = 1024 * 1024
 
 
-class ToyEngine(Engine):
+class ToyEngine:
     def schema(self):
         return {"run_output_required": ["ok"], "keys": []}
 
@@ -92,7 +92,7 @@ class _Store:
 
 def _with_software():
     td = tempfile.mkdtemp(prefix="phase8-sw-")
-    return assemble(root=Path(td), data_dir_name="p8data", engine=ToyEngine(),
+    return assemble(root=Path(td), data_dir_name="p8data",
                     summarizer=lambda evs: {}, validate=accept_all,
                     project="toyhost")
 

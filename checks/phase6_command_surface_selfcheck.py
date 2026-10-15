@@ -61,10 +61,10 @@ from mecha.gate import Channel, Gate, accept_all  # noqa: E402
 from mecha.history import History  # noqa: E402
 from mecha.scopes import ScopePolicy  # noqa: E402
 from mecha.providers.approval import LocalApproval  # noqa: E402
-from mecha.surface import Engine, ExecutionContext  # noqa: E402
+from mecha.surface import ExecutionContext  # noqa: E402
 
 
-class ToyEngine(Engine):
+class ToyEngine:
     """合规替身引擎：命令面不碰它，只用来装配一台实例。"""
 
     def schema(self) -> Mapping[str, object]:
@@ -355,7 +355,7 @@ def check_params_and_output(out: list[str]) -> None:
 
 def _with_software(validate=accept_all):
     td = tempfile.mkdtemp(prefix="phase6-")
-    return assemble(root=Path(td), data_dir_name="p6data", engine=ToyEngine(),
+    return assemble(root=Path(td), data_dir_name="p6data",
                     summarizer=lambda evs: {}, validate=validate, project="toyhost")
 
 

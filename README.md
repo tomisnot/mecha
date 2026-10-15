@@ -20,7 +20,7 @@ mecha 是软件框架。软件拥有自己的状态、数据和生命周期；AI
 |---|---|
 | Authority / Gate | 写权模式、受控写入、参数校验与归因 |
 | History | 只追加的事件记录；从记录重建状态，支持项目注入折叠语义 |
-| Surface / Commands / Tools | 引擎能力、受控命令和工具声明；供不同操作者适配 |
+| Surface / Commands / Tools | 项目查询、受控命令和工具声明；供不同操作者适配 |
 | Monitor / Cockpit | 只读状态与操作记录，保留原始依据 |
 | Providers | 本地日志、后台任务、审批、技能、结构化动作序列和可选 MCP 传输 |
 | Artifacts / Assembly | 产物托管和软件装配 |
@@ -63,27 +63,9 @@ from pathlib import Path
 from mecha.assembly import assemble
 from mecha.authority import Mode
 from mecha.gate import accept_all
-from mecha.surface import Engine
-
-
-class MyEngine(Engine):
-    def schema(self):
-        return {"run_output_required": ["ok"]}
-
-    def run(self, spec, *, context, **opts):
-        return {"ok": True}
-
-    def summary(self):
-        return {"ok": True}
-
-    def estimate(self, spec):
-        return {"est_sec": 1.0}
-
-
 sw = assemble(
     root=Path("./my-software"),
     data_dir_name=".mydata",
-    engine=MyEngine(),
     summarizer=lambda events: {},
     validate=accept_all,
 )
