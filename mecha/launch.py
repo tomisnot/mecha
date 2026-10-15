@@ -936,7 +936,9 @@ def build_aggregate_wiring(*, sites: Sequence[Site], supervisor: Supervisor,
        却让"开关软件"立刻反映到服务端。
     """
     from .aggregate import AGGREGATE_SERVER_NAME, Aggregator
-    from .aggregate_runtime import AggregateRuntime, make_prepare_hook
+    from .aggregate_runtime import (DEFAULT_TOOL_CALL_TIMEOUT_MS,
+                                    AggregateRuntime, make_prepare_hook,
+                                    site_runtime, write_dsh_overlay)
     from .providers.mcp import McpEndpoint
     from .providers.mcp_client import Backend
 
@@ -1030,11 +1032,23 @@ def build_aggregate_wiring(*, sites: Sequence[Site], supervisor: Supervisor,
 
     # ⭐ 平铺全集：**全部站点的全部服务**（§1.1 规则 5）
     all_svcs = flat_services(sites)
+    def refresh_dsh_overlay() -> None:
+        """触发 dsh HMR 重新装载 MCP 客户端配置。
+
+        dsh 的旧连接可能在 initialize 时没有订阅 listChanged；工具表变化时
+        覆盖写同一路径可以让支持 HMR 的 dsh 原地重建 mcp-client，拿到完整表。
+        """
+        if sites:
+            write_dsh_overlay(site_runtime(sites[0]), mcp_port=mcp_port,
+                              server_name=AGGREGATE_SERVER_NAME,
+                              timeout_ms=DEFAULT_TOOL_CALL_TIMEOUT_MS)
+
     runtime = AggregateRuntime(supervisor=supervisor,
                                services=all_svcs,
                                aggregator=agg, backend_factory=backend_factory,
                                #: ⭐ 活工具表那一侧：每次 sync_backends 后"对账 + 广播"
-                               endpoint=endpoint)
+                               endpoint=endpoint,
+                               overlay_refresh=refresh_dsh_overlay)
     # ⭐ 铁律 7：进程事实**只有一个来源**（supervisor）；``known`` 交出**声明里全部** id
     #   （否则"存在但没跑"会被误报成"压根没有这个软件"）。
     agg.wire(state_fn=supervisor.state,

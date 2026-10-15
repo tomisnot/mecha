@@ -184,12 +184,17 @@ class AggregateRuntime:
     def __init__(self, *, supervisor: Supervisor, services: Sequence[Service],
                  aggregator: Aggregator, backend_factory: BackendFactory,
                  endpoint: object | None = None,
+                 overlay_refresh: Callable[[], object] | None = None,
                  timeout_ms: int = DEFAULT_TOOL_CALL_TIMEOUT_MS) -> None:
         self.super = supervisor
         self._services = {s.id: s for s in services}
         self.agg = aggregator
         self._factory = backend_factory
         self.timeout_ms = timeout_ms
+        #: 重写 dsh overlay 的小钩子。它是客户端热重载的可靠兜底：
+        #: 即使某个旧 MCP 会话在 initialize 时没有声明 listChanged，
+        #: overlay 文件变化也能让 dsh HMR 原地重建 mcp-client。
+        self._overlay_refresh = overlay_refresh
         #: ⭐ **活工具表那一侧**（``McpEndpoint``）：``sync_backends`` 每次对齐完就让它
         #: "对账 + 广播"（见 :meth:`publish_tools`）。⚠ 不注入它就退回"表不会变"的旧行为
         #: （判据 ``aggregate_tools_hot_sync_selfcheck`` 钉住注入 + 通知真到）。
@@ -361,6 +366,14 @@ class AggregateRuntime:
             changed = endpoint.publish_tools(self.agg.registry())
             self.last_publish_error = None
             if changed:
+                if self._overlay_refresh is not None:
+                    try:
+                        self._overlay_refresh()
+                    except Exception as exc:                 # noqa: BLE001
+                        self.last_publish_error = (
+                            f"overlay refresh: {type(exc).__name__}: {exc}")
+                        print(f"[aggregate] WARN dsh overlay refresh failed: "
+                              f"{self.last_publish_error}")
                 #: ⚠ 走 supervisor 那张"给人看的清单"（状态页读得到），别自己另开一本账。
                 self.super.cleaned.append(
                     f"工具表已更新（后端：{sorted(self.agg.attached())}）")
