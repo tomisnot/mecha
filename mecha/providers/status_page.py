@@ -57,6 +57,7 @@ from __future__ import annotations
 
 import html
 import json
+import socket
 import threading
 import webbrowser
 from dataclasses import dataclass
@@ -438,8 +439,10 @@ def render_page(controller: Controller) -> str:
         'if(d.aggregate_sync_error)lines.push("[aggregate] ERROR "+d.aggregate_sync_error);'
         'if(d.aggregate_publish_error)lines.push("[aggregate] ERROR "+d.aggregate_publish_error);'
         '(d.children||[]).forEach(c=>{const pid=c.pid?" pid="+c.pid:"";'
-        'lines.push("["+c.id+"] "+(c.state||"?")+pid);'
+        'const port=c.port?" port="+c.port+"/"+(c.port_live?"live":"dead"):"";'
+        'lines.push("["+c.id+"] "+(c.state||"?")+pid+port);'
         'if(c.last_error)lines.push("  ! "+c.last_error);'
+        'if(c.port_error)lines.push("  port: "+c.port_error);'
         'if(c.ready_evidence)lines.push("  ready: "+c.ready_evidence);'
         '(c.logs||[]).forEach(x=>lines.push("  "+x));});'
         'const box=document.getElementById("console");if(!box)return;'
@@ -630,6 +633,14 @@ class StatusPage:
                 item["logs"] = child.log_tail(80)
             except Exception as exc:                       # noqa: BLE001
                 item["logs"] = [f"日志读取失败：{type(exc).__name__}: {exc}"]
+            port = item.get("port")
+            if isinstance(port, int) and port > 0 and item.get("state") in ("ready", "running"):
+                try:
+                    with socket.create_connection(("127.0.0.1", port), timeout=0.25):
+                        item["port_live"] = True
+                except OSError as exc:
+                    item["port_live"] = False
+                    item["port_error"] = f"{type(exc).__name__}: {exc}"
             out["children"].append(item)
         return out
 
