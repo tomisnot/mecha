@@ -1180,6 +1180,9 @@ def _request_stop(runtime: Path) -> int:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    # 工作台终端是 launcher stdout/stderr 的实时汇聚视图；不靠调用点逐条登记日志。
+    from .runtime_console import install as install_runtime_console
+    install_runtime_console()
     #: ⭐ **输出必须"立刻可见"**：`print` 到**被重定向的文件**时是**块缓冲**
     #: ⇒ 那行 `mecha：已启动 ⇒ http://…` **会卡到进程退出才出现**
     #: （`.bat`/脚本把 stdout 重定向到日志时就是这么踩的——**实测**：launcher 明明起来了，

@@ -438,6 +438,7 @@ def render_page(controller: Controller) -> str:
         'if(d.last_error)lines.push("[launcher] ERROR "+d.last_error);'
         'if(d.aggregate_sync_error)lines.push("[aggregate] ERROR "+d.aggregate_sync_error);'
         'if(d.aggregate_publish_error)lines.push("[aggregate] ERROR "+d.aggregate_publish_error);'
+        '(d.launcher_logs||[]).forEach(x=>lines.push(x));'
         '(d.children||[]).forEach(c=>{const pid=c.pid?" pid="+c.pid:"";'
         'const port=c.port?" port="+c.port+"/"+(c.port_live?"live":"dead"):"";'
         'lines.push("["+c.id+"] "+(c.state||"?")+pid+port);'
@@ -625,6 +626,8 @@ class StatusPage:
             "aggregate_publish_error": state.get("aggregate_publish_error", ""),
             "children": [],
         }
+        from ..runtime_console import console
+        out["launcher_logs"] = console().recent(400)
         sup = getattr(self.controller, "super", None)
         for row in state.get("children", []) or []:
             item = dict(row)
