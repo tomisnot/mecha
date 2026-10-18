@@ -253,6 +253,7 @@ function startMcpRefresh(ctx) {
     inFlight = url
     try {
       await fiber.update({ ...(entry.options?.config ?? {}), url }, true)
+      await fiber.await()
       lastUrl = url
       ctx.logger?.info?.(`[mecha-panel] 已重新初始化 ${id}（${url}）`)
       return true
@@ -334,10 +335,11 @@ export async function apply(ctx) {
         disposers.push(webServer.register({
           kind: 'exact',
           path: MCP_REFRESH_ROUTE,
-          handler: async (_req, res) => {
-            const done = await mcpRefresh.trigger()
-            sendJson(res, done ? 200 : 503,
-              done ? { ok: true, refreshed: true } : { ok: false, refreshed: false })
+          handler: (_req, res) => {
+            // MCP 重连可能需要数秒；控制面只负责接收触发，不能把 DSH HTTP
+            // 请求绑在重连生命周期上。结果写入 DSH 自己的日志。
+            void mcpRefresh.trigger()
+            sendJson(res, 202, { ok: true, accepted: 'mcp-refresh' })
           },
         }))
       }

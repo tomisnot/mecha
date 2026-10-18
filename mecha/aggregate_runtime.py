@@ -368,15 +368,6 @@ class AggregateRuntime:
             self.last_publish_error = None
             if changed:
                 print(f"[aggregate] 工具表发生变化：后端={sorted(self.agg.attached())}，开始通知 DSH 刷新", flush=True)
-                if self._client_refresh is not None:
-                    try:
-                        sent = self._client_refresh()
-                        if sent is False:
-                            print("[aggregate] WARN DSH 主动刷新未发送：客户端当前不可达", flush=True)
-                        else:
-                            print("[aggregate] DSH 主动刷新请求已发送", flush=True)
-                    except Exception as exc:                 # noqa: BLE001
-                        print(f"[aggregate] WARN DSH 主动刷新失败：{type(exc).__name__}: {exc}", flush=True)
                 if self._overlay_refresh is not None:
                     try:
                         self._overlay_refresh()
@@ -386,6 +377,15 @@ class AggregateRuntime:
                             f"overlay refresh: {type(exc).__name__}: {exc}")
                         print(f"[aggregate] WARN dsh overlay refresh failed: "
                               f"{self.last_publish_error}")
+                if self._client_refresh is not None:
+                    try:
+                        sent = self._client_refresh()
+                        if sent is False:
+                            print("[aggregate] WARN DSH 主动刷新未发送：客户端当前不可达", flush=True)
+                        else:
+                            print("[aggregate] DSH 主动刷新请求已发送", flush=True)
+                    except Exception as exc:                 # noqa: BLE001
+                        print(f"[aggregate] WARN DSH 主动刷新失败：{type(exc).__name__}: {exc}", flush=True)
                 #: ⚠ 走 supervisor 那张"给人看的清单"（状态页读得到），别自己另开一本账。
                 self.super.cleaned.append(
                     f"工具表已更新（后端：{sorted(self.agg.attached())}）")
