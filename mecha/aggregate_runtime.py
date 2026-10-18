@@ -191,9 +191,8 @@ class AggregateRuntime:
         self.agg = aggregator
         self._factory = backend_factory
         self.timeout_ms = timeout_ms
-        #: 重写 dsh overlay 的小钩子。它是客户端热重载的可靠兜底：
-        #: 即使某个旧 MCP 会话在 initialize 时没有声明 listChanged，
-        #: overlay 文件变化也能让 dsh HMR 原地重建 mcp-client。
+        #: 重写 dsh overlay 的小钩子。mecha 注入的 host 插件监视此文件，
+        #: 变化后通过公开 Loader API 重建 mcp-client；不依赖 DSH 核心 HMR。
         self._overlay_refresh = overlay_refresh
         #: ⭐ **活工具表那一侧**（``McpEndpoint``）：``sync_backends`` 每次对齐完就让它
         #: "对账 + 广播"（见 :meth:`publish_tools`）。⚠ 不注入它就退回"表不会变"的旧行为

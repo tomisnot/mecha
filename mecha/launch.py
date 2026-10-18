@@ -1033,10 +1033,10 @@ def build_aggregate_wiring(*, sites: Sequence[Site], supervisor: Supervisor,
     # ⭐ 平铺全集：**全部站点的全部服务**（§1.1 规则 5）
     all_svcs = flat_services(sites)
     def refresh_dsh_overlay() -> None:
-        """触发 dsh HMR 重新装载 MCP 客户端配置。
+        """通知 mecha 注入的 host 插件重新装载 MCP 客户端配置。
 
         dsh 的旧连接可能在 initialize 时没有订阅 listChanged；工具表变化时
-        覆盖写同一路径可以让支持 HMR 的 dsh 原地重建 mcp-client，拿到完整表。
+        覆盖写同一路径，由插件通过公开 Loader API 重建 mcp-client，拿到完整表。
         """
         if sites:
             write_dsh_overlay(site_runtime(sites[0]), mcp_port=mcp_port,

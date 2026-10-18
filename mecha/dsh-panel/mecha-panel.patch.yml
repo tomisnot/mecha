@@ -11,3 +11,5 @@
 - insert:
     - id: mecha-panel-host
       name: './host-plugin/mecha-panel-host.mjs'
+    - id: mecha-mcp-refresh
+      name: './host-plugin/mecha-mcp-refresh.mjs'
