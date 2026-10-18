@@ -1050,10 +1050,17 @@ def build_aggregate_wiring(*, sites: Sequence[Site], supervisor: Supervisor,
         row = next((r for r in supervisor.state().get("children", [])
                     if r.get("id") == DSH_CHILD_ID and isinstance(r.get("port"), int)
                     and r["port"] > 0), None)
-        if row is None:
-            print("[aggregate] DSH 主动刷新跳过：状态中没有可用的 dsh 端口", flush=True)
-            return
-        url = f"http://127.0.0.1:{int(row['port'])}{MCP_REFRESH_ROUTE}"
+        port = row["port"] if row is not None else None
+        if not isinstance(port, int) or port <= 0:
+            # DSH 当前没有 ready 探针，supervisor 不会凭空填 port；启动命令已经
+            # 明确传入同一个声明端口，因此使用 DSHSpec 的启动值作为控制面地址。
+            try:
+                _, dsh_spec = merge_dsh(sites)
+                port = int(dsh_spec.port_preference)
+                print(f"[aggregate] WARN supervisor 未回读 DSH 端口，使用启动声明端口 {port}", flush=True)
+            except Exception as exc:
+                raise RuntimeError(f"无法解析 DSH 启动端口：{exc}") from exc
+        url = f"http://127.0.0.1:{port}{MCP_REFRESH_ROUTE}"
         print(f"[aggregate] 请求 DSH 刷新 MCP 客户端：{url}", flush=True)
         req = urllib.request.Request(
             url,
@@ -1062,6 +1069,7 @@ def build_aggregate_wiring(*, sites: Sequence[Site], supervisor: Supervisor,
         try:
             with urllib.request.urlopen(req, timeout=1.0) as resp:
                 print(f"[aggregate] DSH 刷新路由返回 HTTP {resp.status}", flush=True)
+            return True
         except (urllib.error.URLError, OSError) as exc:
             raise RuntimeError(f"DSH 主动刷新路由不可用：{exc}") from exc
 
