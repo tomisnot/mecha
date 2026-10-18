@@ -236,7 +236,6 @@ function startMcpRefresh(ctx) {
     }
   }
   if (!file) return undefined
-  let lastUrl
   let inFlight
   let stopped = false
   const findEntry = (id) => {
@@ -270,15 +269,20 @@ function startMcpRefresh(ctx) {
     const id = text.match(/^\s*- id:\s*([^\s#]+)/m)?.[1] ?? AGGREGATE_MCP_ENTRY_ID
     const url = text.match(/^\s*url:\s*(\S+)\s*$/m)?.[1]
     if (!url || inFlight === url) return false
-    if (url === lastUrl) return true
     const entry = findEntry(id)
     const fiber = entry?.fiber
     if (!fiber?.uid) return false
     inFlight = url
     try {
-      await fiber.update({ ...(entry.options?.config ?? {}), url }, true)
+      const config = { ...(entry.options?.config ?? {}), url }
+      if (entry.options?.config?.url === url) {
+        // 工具表变化时聚合地址通常不变；必须显式重启 MCP client，
+        // 不能把“URL 未变”误当成“无需刷新”。
+        await fiber.restart()
+      } else {
+        await fiber.update(config, true)
+      }
       await fiber.await()
-      lastUrl = url
       ctx.logger?.info?.(`[mecha-panel] 已重新初始化 ${id}（${url}）`)
       return true
     } catch (error) {
