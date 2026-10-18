@@ -1051,14 +1051,17 @@ def build_aggregate_wiring(*, sites: Sequence[Site], supervisor: Supervisor,
                     if r.get("id") == DSH_CHILD_ID and isinstance(r.get("port"), int)
                     and r["port"] > 0), None)
         if row is None:
+            print("[aggregate] DSH 主动刷新跳过：状态中没有可用的 dsh 端口", flush=True)
             return
+        url = f"http://127.0.0.1:{int(row['port'])}{MCP_REFRESH_ROUTE}"
+        print(f"[aggregate] 请求 DSH 刷新 MCP 客户端：{url}", flush=True)
         req = urllib.request.Request(
-            f"http://127.0.0.1:{int(row['port'])}{MCP_REFRESH_ROUTE}",
+            url,
             data=b"{}", method="POST",
             headers={"content-type": "application/json"},)
         try:
-            with urllib.request.urlopen(req, timeout=1.0):
-                pass
+            with urllib.request.urlopen(req, timeout=1.0) as resp:
+                print(f"[aggregate] DSH 刷新路由返回 HTTP {resp.status}", flush=True)
         except (urllib.error.URLError, OSError) as exc:
             raise RuntimeError(f"DSH 主动刷新路由不可用：{exc}") from exc
 

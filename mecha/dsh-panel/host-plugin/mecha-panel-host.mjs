@@ -244,7 +244,8 @@ function startMcpRefresh(ctx) {
     try { text = readFileSync(file, 'utf8') } catch { return }
     const id = text.match(/^\s*- id:\s*([^\s#]+)/m)?.[1] ?? 'mcp-mecha'
     const url = text.match(/^\s*url:\s*(\S+)\s*$/m)?.[1]
-    if (!url || url === lastUrl || inFlight === url) return false
+    if (!url || inFlight === url) return false
+    if (url === lastUrl) return true
     let entry
     try { entry = ctx.loader?.resolve(id) } catch { return }
     const fiber = entry?.fiber
@@ -262,10 +263,11 @@ function startMcpRefresh(ctx) {
       if (inFlight === url) inFlight = undefined
     }
   }
-  const trigger = (attempt = 0) => {
-    void refresh().then((done) => {
-      if (!done && !stopped && attempt < 20) setTimeout(() => trigger(attempt + 1), 250)
-    })
+  const trigger = async (attempt = 0) => {
+    const done = await refresh()
+    if (done || stopped || attempt >= 20) return done
+    await new Promise(resolve => setTimeout(resolve, 250))
+    return trigger(attempt + 1)
   }
   trigger()
   return { trigger, stop: () => {
@@ -332,9 +334,10 @@ export async function apply(ctx) {
         disposers.push(webServer.register({
           kind: 'exact',
           path: MCP_REFRESH_ROUTE,
-          handler: (_req, res) => {
-            mcpRefresh.trigger()
-            sendJson(res, 202, { ok: true, accepted: 'mcp-refresh' })
+          handler: async (_req, res) => {
+            const done = await mcpRefresh.trigger()
+            sendJson(res, done ? 200 : 503,
+              done ? { ok: true, refreshed: true } : { ok: false, refreshed: false })
           },
         }))
       }

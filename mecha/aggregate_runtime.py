@@ -367,14 +367,17 @@ class AggregateRuntime:
             changed = endpoint.publish_tools(self.agg.registry())
             self.last_publish_error = None
             if changed:
+                print(f"[aggregate] 工具表发生变化：后端={sorted(self.agg.attached())}，开始通知 DSH 刷新", flush=True)
                 if self._client_refresh is not None:
                     try:
                         self._client_refresh()
+                        print("[aggregate] DSH 主动刷新请求已发送", flush=True)
                     except Exception as exc:                 # noqa: BLE001
-                        print(f"[aggregate] WARN dsh client refresh failed: {type(exc).__name__}: {exc}")
+                        print(f"[aggregate] WARN DSH 主动刷新失败：{type(exc).__name__}: {exc}", flush=True)
                 if self._overlay_refresh is not None:
                     try:
                         self._overlay_refresh()
+                        print("[aggregate] 聚合 overlay 已重写", flush=True)
                     except Exception as exc:                 # noqa: BLE001
                         self.last_publish_error = (
                             f"overlay refresh: {type(exc).__name__}: {exc}")
