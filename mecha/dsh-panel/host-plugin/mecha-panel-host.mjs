@@ -367,6 +367,10 @@ export async function apply(ctx) {
           handler: (_req, res) => {
             // MCP 重连可能需要数秒；控制面只负责接收触发，不能把 DSH HTTP
             // 请求绑在重连生命周期上。结果写入 DSH 自己的日志。
+            if (_req?.method === 'GET') {
+              sendJson(res, 200, { ok: true, diagnostic: mcpRefresh.inspect() })
+              return
+            }
             ctx.logger?.info?.('[mecha-panel] 收到聚合 MCP 刷新请求')
             void mcpRefresh.trigger()
             sendJson(res, 202, { ok: true, accepted: 'mcp-refresh', target: mcpRefresh.inspect() })

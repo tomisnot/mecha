@@ -1072,6 +1072,26 @@ def build_aggregate_wiring(*, sites: Sequence[Site], supervisor: Supervisor,
             with urllib.request.urlopen(req, timeout=1.0) as resp:
                 body = resp.read().decode("utf-8", errors="replace")
                 print(f"[aggregate] DSH 刷新路由返回 HTTP {resp.status}：{body}", flush=True)
+            # 主动验证异步重载的最终事实，不把 202 当成完成。
+            import threading
+            def verify() -> None:
+                import time
+                for attempt in range(1, 6):
+                    time.sleep(1.0)
+                    try:
+                        with urllib.request.urlopen(
+                                urllib.request.Request(url, method="GET"), timeout=1.0) as check:
+                            detail = check.read().decode("utf-8", errors="replace")
+                        print(f"[aggregate] DSH 刷新验证 #{attempt}：{detail}", flush=True)
+                        diagnostic = json.loads(detail).get("diagnostic", {})
+                        if (diagnostic.get("found")
+                                and diagnostic.get("requestedUrl") == diagnostic.get("currentUrl")):
+                            print("[aggregate] DSH 刷新验证通过：Entry 已指向当前聚合端点", flush=True)
+                            return
+                    except (urllib.error.URLError, OSError) as exc:
+                        print(f"[aggregate] DSH 刷新验证 #{attempt} 失败：{exc}", flush=True)
+                print("[aggregate] WARN DSH 刷新验证未确认 Entry 已切换", flush=True)
+            threading.Thread(target=verify, name="mecha-dsh-refresh-verify", daemon=True).start()
             return True
         except (urllib.error.URLError, OSError) as exc:
             raise RuntimeError(f"DSH 主动刷新路由不可用：{exc}") from exc
