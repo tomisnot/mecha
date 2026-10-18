@@ -184,12 +184,14 @@ class AggregateRuntime:
     def __init__(self, *, supervisor: Supervisor, services: Sequence[Service],
                  aggregator: Aggregator, backend_factory: BackendFactory,
                  endpoint: object | None = None,
+                 client_refresh: Callable[[], object] | None = None,
                  overlay_refresh: Callable[[], object] | None = None,
                  timeout_ms: int = DEFAULT_TOOL_CALL_TIMEOUT_MS) -> None:
         self.super = supervisor
         self._services = {s.id: s for s in services}
         self.agg = aggregator
         self._factory = backend_factory
+        self._client_refresh = client_refresh
         self.timeout_ms = timeout_ms
         #: 重写 dsh overlay 的小钩子。mecha 注入的 host 插件监视此文件，
         #: 变化后通过公开 Loader API 重建 mcp-client；不依赖 DSH 核心 HMR。
@@ -365,6 +367,11 @@ class AggregateRuntime:
             changed = endpoint.publish_tools(self.agg.registry())
             self.last_publish_error = None
             if changed:
+                if self._client_refresh is not None:
+                    try:
+                        self._client_refresh()
+                    except Exception as exc:                 # noqa: BLE001
+                        print(f"[aggregate] WARN dsh client refresh failed: {type(exc).__name__}: {exc}")
                 if self._overlay_refresh is not None:
                     try:
                         self._overlay_refresh()

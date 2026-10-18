@@ -46,6 +46,8 @@ from .site import ExtraPage, MonitorSpec, Service, Site
 #: ⭐ **那一个**同源只读路由：框架的 host 插件注册它、client 半 fetch 它。
 #: ⚠ 资产的 ``panel/services.ts`` 是它的**镜像**（判据钉相等），改一处必须改两处。
 PANEL_SERVICES_ROUTE = "/mecha/panels"
+# DSH host 插件的本机控制路由：mecha 用它主动刷新聚合 MCP 客户端。
+MCP_REFRESH_ROUTE = "/mecha/mcp/refresh"
 
 #: 递给框架自己那份 dsh 插件的两个变量（§7.3.8 第 2 条）。
 PANEL_ROUTE_ENV = "MECHA_PANEL_ROUTE"

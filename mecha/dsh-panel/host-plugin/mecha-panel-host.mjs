@@ -52,7 +52,7 @@
  * （漏一个文件就静默空白）；现在框架照 `MECHA_PANEL_PORT_FILES` 替项目注册
  * ⇒ **新项目连 host 半都不用写**（§7.3.8 末段登记的下一步，已落地）。
  */
-import { existsSync, readFileSync, watch } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { basename } from 'node:path'
 
 /** 要显式声明的服务（缺它 ⇒ 本插件不激活 ⇒ 那不是我们要的语义，见硬约束 4）。 */
@@ -66,6 +66,7 @@ export const ROUTE_ENV = 'MECHA_PANEL_ROUTE'
 export const SERVICES_ENV = 'MECHA_PANEL_SERVICES'
 /** ⭐ 第三个变量：`{svc_id: 端口文件**绝对**路径}` —— **只给本插件**（绝不交给浏览器）。 */
 export const PORT_FILES_ENV = 'MECHA_PANEL_PORT_FILES'
+export const MCP_REFRESH_ROUTE = '/mecha/mcp/refresh'
 
 /**
  * 读并校验那份参数（**缺失/坏 ⇒ 抛**）。
@@ -233,11 +234,9 @@ function startMcpRefresh(ctx) {
       break
     }
   }
-  if (!file) return () => {}
+  if (!file) return undefined
   let lastUrl
   let inFlight
-  let timer
-  let watcher
   let stopped = false
   const refresh = async () => {
     if (stopped || !existsSync(file)) return
@@ -245,30 +244,33 @@ function startMcpRefresh(ctx) {
     try { text = readFileSync(file, 'utf8') } catch { return }
     const id = text.match(/^\s*- id:\s*([^\s#]+)/m)?.[1] ?? 'mcp-mecha'
     const url = text.match(/^\s*url:\s*(\S+)\s*$/m)?.[1]
-    if (!url || url === lastUrl || inFlight === url) return
+    if (!url || url === lastUrl || inFlight === url) return false
     let entry
     try { entry = ctx.loader?.resolve(id) } catch { return }
     const fiber = entry?.fiber
-    if (!fiber?.uid) return
+    if (!fiber?.uid) return false
     inFlight = url
     try {
       await fiber.update({ ...(entry.options?.config ?? {}), url }, true)
       lastUrl = url
       ctx.logger?.info?.(`[mecha-panel] 已重新初始化 ${id}（${url}）`)
+      return true
     } catch (error) {
       ctx.logger?.error?.(`[mecha-panel] 重初始化 ${id} 失败：${error.message}`)
+      return false
     } finally {
       if (inFlight === url) inFlight = undefined
     }
   }
-  timer = setInterval(refresh, 250)
-  watcher = watch(file, { persistent: false }, () => void refresh())
-  void refresh()
-  return () => {
-    stopped = true
-    clearInterval(timer)
-    watcher.close()
+  const trigger = (attempt = 0) => {
+    void refresh().then((done) => {
+      if (!done && !stopped && attempt < 20) setTimeout(() => trigger(attempt + 1), 250)
+    })
   }
+  trigger()
+  return { trigger, stop: () => {
+    stopped = true
+  } }
 }
 
 /**
@@ -326,6 +328,16 @@ export async function apply(ctx) {
           + `（服务 ${svc.id}；现读 ${basename(portFile)}，不回落默认端口）`,
         )
       }
+      if (mcpRefresh) {
+        disposers.push(webServer.register({
+          kind: 'exact',
+          path: MCP_REFRESH_ROUTE,
+          handler: (_req, res) => {
+            mcpRefresh.trigger()
+            sendJson(res, 202, { ok: true, accepted: 'mcp-refresh' })
+          },
+        }))
+      }
       return () => {
         for (const d of disposers.splice(0)) {
           try { d?.() } catch { /* 收尾失败不掩盖其余收尾（与资产骨架同口径） */ }
@@ -338,13 +350,13 @@ export async function apply(ctx) {
       }
     }
   }
-  const stopMcpRefresh = startMcpRefresh(ctx)
+  const mcpRefresh = startMcpRefresh(ctx)
   if (typeof ctx.effect === 'function') {
     return await ctx.effect(() => {
       const stopRoutes = mount()
       return () => {
         stopRoutes?.()
-        stopMcpRefresh()
+        mcpRefresh?.stop()
       }
     }, 'mecha-panel-host: panel routes and aggregate MCP refresh')
   }
