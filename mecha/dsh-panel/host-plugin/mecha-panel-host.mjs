@@ -52,7 +52,7 @@
  * （漏一个文件就静默空白）；现在框架照 `MECHA_PANEL_PORT_FILES` 替项目注册
  * ⇒ **新项目连 host 半都不用写**（§7.3.8 末段登记的下一步，已落地）。
  */
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync, watch } from 'node:fs'
 import { basename } from 'node:path'
 
 /** 要显式声明的服务（缺它 ⇒ 本插件不激活 ⇒ 那不是我们要的语义，见硬约束 4）。 */
@@ -223,6 +223,54 @@ export function makeMonitorUrlHandler(portFile) {
   }
 }
 
+// 聚合 MCP 客户端刷新也属于 mecha host 插件职责：不另起一个 DSH 插件入口。
+function startMcpRefresh(ctx) {
+  const argv = process.argv
+  let file
+  for (let i = 0; i < argv.length - 1; i++) {
+    if (argv[i] === '--patch' && basename(String(argv[i + 1] ?? '')) === 'dsh-aggregate.patch.yml') {
+      file = String(argv[i + 1])
+      break
+    }
+  }
+  if (!file) return () => {}
+  let lastUrl
+  let inFlight
+  let timer
+  let watcher
+  let stopped = false
+  const refresh = async () => {
+    if (stopped || !existsSync(file)) return
+    let text
+    try { text = readFileSync(file, 'utf8') } catch { return }
+    const id = text.match(/^\s*- id:\s*([^\s#]+)/m)?.[1] ?? 'mcp-mecha'
+    const url = text.match(/^\s*url:\s*(\S+)\s*$/m)?.[1]
+    if (!url || url === lastUrl || inFlight === url) return
+    let entry
+    try { entry = ctx.loader?.resolve(id) } catch { return }
+    const fiber = entry?.fiber
+    if (!fiber?.uid) return
+    inFlight = url
+    try {
+      await fiber.update({ ...(entry.options?.config ?? {}), url }, true)
+      lastUrl = url
+      ctx.logger?.info?.(`[mecha-panel] 已重新初始化 ${id}（${url}）`)
+    } catch (error) {
+      ctx.logger?.error?.(`[mecha-panel] 重初始化 ${id} 失败：${error.message}`)
+    } finally {
+      if (inFlight === url) inFlight = undefined
+    }
+  }
+  timer = setInterval(refresh, 250)
+  watcher = watch(file, { persistent: false }, () => void refresh())
+  void refresh()
+  return () => {
+    stopped = true
+    clearInterval(timer)
+    watcher.close()
+  }
+}
+
 /**
  * 挂载：注册那**一个**同源只读路由（那份参数）+ ⭐ **每个服务一条地址路由**。
  *
@@ -290,6 +338,15 @@ export async function apply(ctx) {
       }
     }
   }
-  if (typeof ctx.effect === 'function') return await ctx.effect(mount, 'mecha-panel-host: panel routes')
+  const stopMcpRefresh = startMcpRefresh(ctx)
+  if (typeof ctx.effect === 'function') {
+    return await ctx.effect(() => {
+      const stopRoutes = mount()
+      return () => {
+        stopRoutes?.()
+        stopMcpRefresh()
+      }
+    }, 'mecha-panel-host: panel routes and aggregate MCP refresh')
+  }
   mount()
 }

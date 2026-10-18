@@ -88,11 +88,6 @@ def framework_plugin_artifact() -> Path:
     return asset_dir() / HOST_PLUGIN_REL
 
 
-def framework_mcp_refresh_artifact() -> Path:
-    """聚合 MCP 客户端的插件侧刷新器（不改 DSH 核心）。"""
-    return asset_dir() / "host-plugin" / "mecha-mcp-refresh.mjs"
-
-
 def panel_kind(svc_id: str) -> str:
     """⭐ §7.3.3：**每个服务一个 `kind`**（契约拒绝**同 tier 同 kind** 二次注册）。"""
     return f"mecha:{svc_id}"
@@ -222,7 +217,6 @@ def with_panel_contributions(site_dsh, sites: Sequence[Site]):
     patches = tuple(site_dsh.patches) + ((framework_patch_path(),)
                                          if framework_patch_path() not in site_dsh.patches else ())
     artifacts = tuple(site_dsh.plugin_artifacts)
-    for artifact in (framework_plugin_artifact(), framework_mcp_refresh_artifact()):
-        if artifact not in artifacts:
-            artifacts += (artifact,)
+    if framework_plugin_artifact() not in artifacts:
+        artifacts += (framework_plugin_artifact(),)
     return replace(site_dsh, patches=patches, plugin_artifacts=artifacts, env=env)
