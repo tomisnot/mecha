@@ -67,6 +67,7 @@ export const SERVICES_ENV = 'MECHA_PANEL_SERVICES'
 /** ⭐ 第三个变量：`{svc_id: 端口文件**绝对**路径}` —— **只给本插件**（绝不交给浏览器）。 */
 export const PORT_FILES_ENV = 'MECHA_PANEL_PORT_FILES'
 export const MCP_REFRESH_ROUTE = '/mecha/mcp/refresh'
+const AGGREGATE_MCP_ENTRY_ID = 'mcp-mecha'
 
 /**
  * 读并校验那份参数（**缺失/坏 ⇒ 抛**）。
@@ -238,16 +239,21 @@ function startMcpRefresh(ctx) {
   let lastUrl
   let inFlight
   let stopped = false
+  const findEntry = (id) => {
+    try { return ctx.loader?.resolve(id) } catch { /* nested entry ids may differ */ }
+    const rows = [...(ctx.loader?.entries?.() ?? [])]
+    return rows.find((row) => row.options?.name === '@deepseek-ai/dsh-mcp-client'
+      && row.options?.config?.serverName === 'mecha')
+  }
   const refresh = async () => {
     if (stopped || !existsSync(file)) return
     let text
     try { text = readFileSync(file, 'utf8') } catch { return }
-    const id = text.match(/^\s*- id:\s*([^\s#]+)/m)?.[1] ?? 'mcp-mecha'
+    const id = text.match(/^\s*- id:\s*([^\s#]+)/m)?.[1] ?? AGGREGATE_MCP_ENTRY_ID
     const url = text.match(/^\s*url:\s*(\S+)\s*$/m)?.[1]
     if (!url || inFlight === url) return false
     if (url === lastUrl) return true
-    let entry
-    try { entry = ctx.loader?.resolve(id) } catch { return }
+    const entry = findEntry(id)
     const fiber = entry?.fiber
     if (!fiber?.uid) return false
     inFlight = url
@@ -266,7 +272,12 @@ function startMcpRefresh(ctx) {
   }
   const trigger = async (attempt = 0) => {
     const done = await refresh()
-    if (done || stopped || attempt >= 20) return done
+    if (done || stopped || attempt >= 20) {
+      if (!done && !stopped) {
+        ctx.logger?.error?.(`[mecha-panel] 找不到可重载的聚合 MCP Entry（id=${AGGREGATE_MCP_ENTRY_ID}）`)
+      }
+      return done
+    }
     await new Promise(resolve => setTimeout(resolve, 250))
     return trigger(attempt + 1)
   }
@@ -338,6 +349,7 @@ export async function apply(ctx) {
           handler: (_req, res) => {
             // MCP 重连可能需要数秒；控制面只负责接收触发，不能把 DSH HTTP
             // 请求绑在重连生命周期上。结果写入 DSH 自己的日志。
+            ctx.logger?.info?.('[mecha-panel] 收到聚合 MCP 刷新请求')
             void mcpRefresh.trigger()
             sendJson(res, 202, { ok: true, accepted: 'mcp-refresh' })
           },
