@@ -245,6 +245,24 @@ function startMcpRefresh(ctx) {
     return rows.find((row) => row.options?.name === '@deepseek-ai/dsh-mcp-client'
       && row.options?.config?.serverName === 'mecha')
   }
+  const inspect = () => {
+    let text = ''
+    try { text = readFileSync(file, 'utf8') } catch (error) {
+      return { found: false, error: `overlay unreadable: ${error.message}` }
+    }
+    const id = text.match(/^\s*- id:\s*([^\s#]+)/m)?.[1] ?? AGGREGATE_MCP_ENTRY_ID
+    const requestedUrl = text.match(/^\s*url:\s*(\S+)\s*$/m)?.[1] ?? null
+    const entry = findEntry(id)
+    if (!entry) return { id, requestedUrl, found: false }
+    return {
+      id: entry.id,
+      requestedUrl,
+      found: true,
+      fiberUid: entry.fiber?.uid ?? null,
+      fiberState: entry.fiber?.state ?? null,
+      currentUrl: entry.options?.config?.url ?? null,
+    }
+  }
   const refresh = async () => {
     if (stopped || !existsSync(file)) return
     let text
@@ -282,7 +300,7 @@ function startMcpRefresh(ctx) {
     return trigger(attempt + 1)
   }
   trigger()
-  return { trigger, stop: () => {
+  return { trigger, inspect, stop: () => {
     stopped = true
   } }
 }
@@ -351,7 +369,7 @@ export async function apply(ctx) {
             // 请求绑在重连生命周期上。结果写入 DSH 自己的日志。
             ctx.logger?.info?.('[mecha-panel] 收到聚合 MCP 刷新请求')
             void mcpRefresh.trigger()
-            sendJson(res, 202, { ok: true, accepted: 'mcp-refresh' })
+            sendJson(res, 202, { ok: true, accepted: 'mcp-refresh', target: mcpRefresh.inspect() })
           },
         }))
       }

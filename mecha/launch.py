@@ -1070,7 +1070,8 @@ def build_aggregate_wiring(*, sites: Sequence[Site], supervisor: Supervisor,
             headers={"content-type": "application/json"},)
         try:
             with urllib.request.urlopen(req, timeout=1.0) as resp:
-                print(f"[aggregate] DSH 刷新路由返回 HTTP {resp.status}", flush=True)
+                body = resp.read().decode("utf-8", errors="replace")
+                print(f"[aggregate] DSH 刷新路由返回 HTTP {resp.status}：{body}", flush=True)
             return True
         except (urllib.error.URLError, OSError) as exc:
             raise RuntimeError(f"DSH 主动刷新路由不可用：{exc}") from exc
