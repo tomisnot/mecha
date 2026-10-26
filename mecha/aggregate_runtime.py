@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import re
 import threading
+import time
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Protocol
@@ -414,6 +415,42 @@ class AggregateRuntime:
             return f"{base}:{port}/mcp"
         return f"http://127.0.0.1:{port}/mcp"
 
+    # ---- opt-in long-task bridge ----
+
+    def _task_call(self, payload: Mapping[str, object], *, cancel: bool = False) -> dict:
+        service = str(payload.get("service") or "").strip()
+        tool = str(payload.get("cancel_tool" if cancel else "status_tool") or "").strip()
+        task_id = str(payload.get("task_id") or "").strip()
+        field = str(payload.get("task_id_field") or "job_id")
+        if not service or not tool or not task_id:
+            raise MechaError("长任务桥请求缺少 service/tool/task_id", kind="bad_task_bridge_request")
+        args = {field: task_id}
+        wait_field = payload.get("wait_field")
+        if not cancel and isinstance(wait_field, str) and wait_field.strip():
+            args[wait_field] = payload.get("wait_value", "terminal")
+        return self.agg.registry().execute(f"{service.lower()}_{tool}", args)
+
+    def task_wait(self, payload: Mapping[str, object], *, timeout_s: float = 600.0) -> dict:
+        """等待项目显式声明的长任务终态；普通工具不会进入这里。"""
+        terminal = {str(x) for x in (payload.get("terminal_states") or ())}
+        deadline = time.monotonic() + max(1.0, float(timeout_s))
+        while True:
+            result = self._task_call(payload)
+            if result.get("is_error"):
+                return result
+            value = result.get("value", result)
+            state = value.get(str(payload.get("state_field") or "state")) if isinstance(value, Mapping) else None
+            if state is not None and str(state) in terminal:
+                return result
+            if time.monotonic() >= deadline:
+                return {"is_error": False, "value": {"state": "running", "timeout": True}}
+            time.sleep(1.0)
+
+    def task_cancel(self, payload: Mapping[str, object]) -> dict:
+        if not payload.get("cancel_tool"):
+            return {"is_error": True, "error": {"kind": "task_not_cancellable", "message": "项目未声明取消工具"}}
+        return self._task_call(payload, cancel=True)
+
     def probe_authority(self, spec: object) -> dict | None:
         """读**一个软件**的当前写权（给聚合面的 `read_write_authority` 用）。
 
@@ -489,5 +526,9 @@ def make_prepare_hook(runtime: AggregateRuntime, site: Site,
                 hint="顺序必须是 svc* → aggregator → dsh（StartupPlan.ordered 已保证）",
             )
         overlay = runtime.prepare_dsh(site, port)
-        return with_overlay_patch(spec, overlay)
+        out = with_overlay_patch(spec, overlay)
+        from dataclasses import replace
+        env = dict(out.env)
+        env["MECHA_TASK_BRIDGE_FILE"] = str(Path.cwd() / "_mecha_runtime" / ".page-port")
+        return replace(out, env=env)
     return hook

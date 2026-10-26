@@ -36,7 +36,7 @@ import json
 import os
 import socket
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -508,6 +508,16 @@ class LaunchController:
             st["aggregate_publish_error"] = str(
                 getattr(self.agg_runtime, "last_publish_error", "") or "")
         return st
+
+    def task_wait(self, payload: Mapping[str, object]) -> dict:
+        if self.agg_runtime is None:
+            raise MechaError("聚合任务桥尚未装配", kind="task_bridge_unavailable")
+        return self.agg_runtime.task_wait(payload)
+
+    def task_cancel(self, payload: Mapping[str, object]) -> dict:
+        if self.agg_runtime is None:
+            raise MechaError("聚合任务桥尚未装配", kind="task_bridge_unavailable")
+        return self.agg_runtime.task_cancel(payload)
 
     def dsh_spec(self) -> "DSHSpec | None":
         """⭐ 那**一个**共用 dsh 的声明（合并后）—— 供面板**始终**列出它一行（§7）。

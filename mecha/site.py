@@ -295,6 +295,8 @@ class Service:
     monitor: MonitorSpec | None = None
     default_on: bool = True
     env: Mapping[str, str] = field(default_factory=dict)
+    #: 项目明确选择接入 DSH 后台任务桥的工具声明；空值表示本服务不启用。
+    long_tasks: tuple["TaskSpec", ...] = ()
 
     def __post_init__(self) -> None:
         # ⚠ 这里原本用 None 再补默认值（避免把 LOCKED 抄第二遍）；但 dataclass 的默认值
@@ -411,6 +413,30 @@ class Service:
         #: （最坏的一类假绿），所以不许飘到运行期。
         if self.monitor is not None:
             self.monitor.validate()
+        for task in self.long_tasks:
+            task.validate()
+
+
+@dataclass(frozen=True)
+class TaskSpec:
+    """一个项目自愿交给 DSH job 桥接的长任务工具。"""
+
+    submit_tool: str
+    status_tool: str
+    cancel_tool: str | None = None
+    task_id_field: str = "job_id"
+    label_field: str = "command"
+    state_field: str = "state"
+    terminal_states: tuple[str, ...] = ("done", "failed", "cancelled", "completed", "killed")
+    wait_field: str | None = "wait"
+    wait_value: str = "terminal"
+
+    def validate(self) -> None:
+        for field_name in ("submit_tool", "status_tool", "task_id_field", "label_field", "state_field"):
+            if not getattr(self, field_name).strip():
+                raise MechaError(f"TaskSpec.{field_name} 不能为空", kind="bad_task_spec")
+        if not self.terminal_states:
+            raise MechaError("TaskSpec.terminal_states 不能为空", kind="bad_task_spec")
 
 
 #: ⭐ **那一个共用 dsh 的 child id**（全生态一个；框架的约定，不是项目的字段）。

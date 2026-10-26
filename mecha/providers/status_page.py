@@ -493,7 +493,19 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:                             # noqa: N802
         path = urlsplit(self.path).path
-        form = parse_qs(self._body())
+        raw_body = self._body()
+        if path in ("/mecha/task/wait", "/mecha/task/cancel"):
+            try:
+                payload = json.loads(raw_body or "{}")
+                result = (self.controller.task_wait(payload) if path.endswith("/wait")
+                          else self.controller.task_cancel(payload))
+                return self._send(200, json.dumps(result, ensure_ascii=False).encode("utf-8"),
+                                  "application/json; charset=utf-8")
+            except Exception as exc:                       # noqa: BLE001
+                return self._send(500, json.dumps({"is_error": True, "error": str(exc)},
+                                                  ensure_ascii=False).encode("utf-8"),
+                                  "application/json; charset=utf-8")
+        form = parse_qs(raw_body)
         try:
             if path == "/start":
                 enabled = [s for s, v in self.controller.intent().items() if v]

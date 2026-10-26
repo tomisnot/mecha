@@ -59,6 +59,7 @@ PANEL_SERVICES_ENV = "MECHA_PANEL_SERVICES"
 #: ⚠ 为什么必须是**绝对**路径：dsh 的 `cwd` 只有一个（§1.1.1 的已知限制）
 #: ⇒ 相对路径在 dsh 进程里会按**它的** cwd 解析，那是另一个项目的地盘。
 PANEL_PORT_FILES_ENV = "MECHA_PANEL_PORT_FILES"
+TASK_SPECS_ENV = "MECHA_TASK_SPECS"
 
 #: 框架自己的 patch 与它带上的插件（都在资产目录里，**磁盘上只有一份**）。
 ASSET_DIR_NAME = "dsh-panel"
@@ -180,12 +181,28 @@ def panel_env(services: Sequence[Service]) -> dict[str, str]:
     ⚠ 用 ``ensure_ascii=False``：标题/文案是中文，转义成 ``\\uXXXX`` 会让日志/``--dump-config``
     里那行**人读不了**（它本来是用来排错的）。
     """
+    task_specs = []
+    for svc in services:
+        for task in getattr(svc, "long_tasks", ()):
+            task_specs.append({
+                "tool": f"{svc.id.lower()}_{task.submit_tool}",
+                "service": svc.id,
+                "status_tool": task.status_tool,
+                "cancel_tool": task.cancel_tool,
+                "task_id_field": task.task_id_field,
+                "label_field": task.label_field,
+                "state_field": task.state_field,
+                "terminal_states": list(task.terminal_states),
+                "wait_field": task.wait_field,
+                "wait_value": task.wait_value,
+            })
     return {
         PANEL_ROUTE_ENV: PANEL_SERVICES_ROUTE,
         PANEL_SERVICES_ENV: json.dumps(panel_payload(services),
                                        ensure_ascii=False, separators=(",", ":")),
         PANEL_PORT_FILES_ENV: json.dumps(panel_port_files(services),
                                          ensure_ascii=False, separators=(",", ":")),
+        TASK_SPECS_ENV: json.dumps(task_specs, ensure_ascii=False, separators=(",", ":")),
     }
 
 

@@ -68,6 +68,8 @@ export const SERVICES_ENV = 'MECHA_PANEL_SERVICES'
 export const PORT_FILES_ENV = 'MECHA_PANEL_PORT_FILES'
 export const MCP_REFRESH_ROUTE = '/mecha/mcp/refresh'
 const AGGREGATE_MCP_ENTRY_ID = 'mcp-mecha'
+const TASK_FILE_ENV = 'MECHA_TASK_BRIDGE_FILE'
+const TASK_SPECS_ENV = 'MECHA_TASK_SPECS'
 
 /**
  * 读并校验那份参数（**缺失/坏 ⇒ 抛**）。
@@ -309,6 +311,76 @@ function startMcpRefresh(ctx) {
   } }
 }
 
+function readTaskSpecs() {
+  try {
+    const rows = JSON.parse(process.env[TASK_SPECS_ENV] ?? '[]')
+    return new Map((Array.isArray(rows) ? rows : []).map(row => [String(row.tool), row]))
+  } catch { return new Map() }
+}
+
+function taskBridgeUrl(path) {
+  const file = String(process.env[TASK_FILE_ENV] ?? '').trim()
+  if (!file) throw new Error('mecha 任务桥未配置 page-port 文件')
+  const port = readFileSync(file, 'utf8').trim()
+  if (!/^\d+$/.test(port)) throw new Error('mecha page-port 无效')
+  return `http://127.0.0.1:${port}${path}`
+}
+
+async function taskBridgeCall(path, payload, signal) {
+  const response = await fetch(taskBridgeUrl(path), {
+    method: 'POST', signal,
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  const body = await response.json()
+  if (!response.ok || body?.is_error) throw new Error(body?.error?.message ?? `mecha task bridge HTTP ${response.status}`)
+  return body
+}
+
+function startTaskBridge(ctx) {
+  const specs = readTaskSpecs()
+  if (!specs.size || typeof ctx.on !== 'function') return () => {}
+  const jobs = ctx.get?.('jobs') ?? ctx.jobs
+  if (!jobs?.start) return () => {}
+  const listener = ctx.on('tools/post-execute', async (exec, result, next) => {
+    const decision = await next()
+    const spec = specs.get(String(exec.name))
+    if (!spec || result?.isError || !result?.value || !exec.agent) return decision
+    const value = result.value?.structuredContent ?? result.value
+    const taskId = value?.[spec.task_id_field]
+    if (typeof taskId !== 'string' && typeof taskId !== 'number') return decision
+    const label = String(value?.[spec.label_field] ?? `${exec.name} ${taskId}`)
+    const payload = { ...spec, task_id: String(taskId) }
+    try {
+      const jobId = jobs.start({
+        kind: 'mecha', label, owner: exec.agent.id,
+        toolCall: { callId: exec.callId, rootCallId: exec.rootCallId },
+        run: (job) => {
+          const abort = new AbortController()
+          const done = taskBridgeCall('/mecha/task/wait', payload, abort.signal)
+            .then((body) => {
+              const terminal = body?.value ?? body
+              const state = String(terminal?.[spec.state_field] ?? '')
+              const status = state === 'cancelled' || state === 'killed' ? 'killed'
+                : spec.terminal_states.includes(state) && state !== 'failed' ? 'completed' : 'failed'
+              return { status, detail: JSON.stringify(terminal), result: JSON.stringify(terminal) }
+            })
+            .catch((error) => ({ status: 'failed', detail: String(error) }))
+          return { cancel: (reason) => {
+            abort.abort(reason)
+            void taskBridgeCall('/mecha/task/cancel', payload).catch(() => {})
+          }, done }
+        },
+      })
+      ctx.logger?.info?.(`[mecha-panel] 已把 ${exec.name} 的任务 ${taskId} 接入 DSH job ${jobId}`)
+    } catch (error) {
+      ctx.logger?.warn?.(`[mecha-panel] 长任务桥接失败：${error.message}`)
+    }
+    return decision
+  })
+  return () => listener?.()
+}
+
 /**
  * 挂载：注册那**一个**同源只读路由（那份参数）+ ⭐ **每个服务一条地址路由**。
  *
@@ -394,12 +466,14 @@ export async function apply(ctx) {
     }
   }
   const mcpRefresh = startMcpRefresh(ctx)
+  const stopTaskBridge = startTaskBridge(ctx)
   if (typeof ctx.effect === 'function') {
     return await ctx.effect(() => {
       const stopRoutes = mount()
       return () => {
         stopRoutes?.()
         mcpRefresh?.stop()
+        stopTaskBridge?.()
       }
     }, 'mecha-panel-host: panel routes and aggregate MCP refresh')
   }
