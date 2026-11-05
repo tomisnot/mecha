@@ -33,6 +33,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from mecha.codex_adapter.config import paths_for  # noqa: E402
 from mecha.errors import MechaError  # noqa: E402
 from mecha.host_adapter import HostWiring  # noqa: E402
 from mecha.launch import LaunchController, build_children  # noqa: E402
@@ -142,6 +143,13 @@ def check_pre_start_switch(tmp: Path) -> None:
     out = ctl.set_host_kind("codex")
     _check("② 启动前切 codex：不动任何进程",
            out["ok"] and not sup.started and not sup.stopped, f"{out}")
+    codex_paths = paths_for(tmp)
+    _check("② ⭐ 切 codex 时把\"能不能起来\"的前提备好了（端口 / ws token / 登录态）",
+           codex_paths.ws_token.is_file()
+           and codex_paths.app_server_port.is_file()
+           and codex_paths.ui_port.is_file(),
+           f"token={codex_paths.ws_token.is_file()} "
+           f"port={codex_paths.app_server_port.is_file()}")
     _check("② 适配器与自省同步指向 codex",
            ctl.host_kind.value == "codex" and ctl.host_info()["kind"] == "codex"
            and ctl.host_info()["managed"] is True)

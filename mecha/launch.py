@@ -625,13 +625,28 @@ class LaunchController:
             steps.append({"step": "重挂工具表刷新口", "ok": False,
                           "error": f"{type(exc).__name__}: {exc}"})
 
-        # 4) 写新宿主自己的配置
+        # 4a) ⭐ 备好"能不能起来"的前提：端口 / ws token / 登录态
+        #: ⚠ 这一步原先漏了（只在 main 的 prepare_host 里做）⇒ 从 dsh 拨到 codex 时
+        #: app-server 拿着不存在的 token 文件起来，立刻报
+        #: "failed to read websocket auth secret …ws-token" 然后退出（用户实测）。
+        try:
+            self._prepare_host_start(plan)
+            steps.append({"step": f"准备 {value.value} 的启动前提", "ok": True})
+        except MechaError as exc:
+            steps.append({"step": f"准备 {value.value} 的启动前提", "ok": False,
+                          "error": exc.message})
+            self._last_error = f"换宿主失败：{value.value} 的启动前提备不好：{exc.message}"
+            self._save_status()
+            return {"ok": False, "kind": value.value,
+                    "error": self._last_error, "steps": steps}
+
+        # 4b) 写新宿主自己的配置
         try:
             if self._aggregate_port > 0:
                 self.host_preparation = self.host_adapter.prepare(plan)
-            steps.append({"step": f"准备 {value.value} 的接入配置", "ok": True})
+            steps.append({"step": f"写 {value.value} 的接入配置", "ok": True})
         except MechaError as exc:
-            steps.append({"step": f"准备 {value.value} 的接入配置", "ok": False,
+            steps.append({"step": f"写 {value.value} 的接入配置", "ok": False,
                           "error": exc.message})
             self._last_error = f"换宿主后写配置失败：{exc.message}"
             self._save_status()
@@ -657,6 +672,22 @@ class LaunchController:
         return {"ok": all(s["ok"] for s in steps), "kind": value.value,
                 "changed": True, "steps": steps}
 
+    def _prepare_host_start(self, plan: HostPlan) -> None:
+        """确保托管的宿主"能不能起来"的前提：端口 / ws token / 登录态（幂等）。
+
+        ⚠ **不只启动时要调**：从 dsh 拨到 codex 也必须调 —— 那条路径只写配置不备端口，
+        app-server 会拿着不存在的 token 文件起来然后立刻退出（实测报错：
+        ``failed to read websocket auth secret …ws-token: 系统找不到指定的文件``）。
+        """
+        prepare_start = getattr(self.host_adapter, "prepare_start", None)
+        if prepare_start is None:
+            return
+        self.host_start_facts = dict(prepare_start(plan) or {})
+        auth = str(self.host_start_facts.get("auth") or "")
+        if auth == "missing":
+            print("[codex] ⚠ 找不到 ~/.codex/auth.json：界面与 app-server 会要求登录",
+                  flush=True)
+
     def prepare_host(self, *, aggregate_port: int, aggregate_url: str = "") -> object:
         """聚合端点就绪后调用；结果保存在控制器，供状态页与收尾读取。
 
@@ -671,13 +702,7 @@ class LaunchController:
         plan = self.host_plan(aggregate_port=self._aggregate_port,
                               aggregate_url=self._aggregate_url)
         self.host_adapter.validate(plan)
-        prepare_start = getattr(self.host_adapter, "prepare_start", None)
-        if prepare_start is not None:
-            self.host_start_facts = prepare_start(plan)
-            auth = str((self.host_start_facts or {}).get("auth") or "")
-            if auth == "missing":
-                print("[codex] ⚠ 找不到 ~/.codex/auth.json：界面与 app-server 会要求登录",
-                      flush=True)
+        self._prepare_host_start(plan)
         self.host_preparation = self.host_adapter.prepare(plan)
         return self.host_preparation
 
@@ -825,6 +850,19 @@ class LaunchController:
         if host_id in self.super.state_ids():
             return {"ok": True, "id": kind, "kind": kind, "enabled": True,
                     "action": "open", "applied": "already", "steps": []}
+        #: 兜底：`codex-home` 被删过、或上一次准备失败时，这里补一次前提
+        #: （端口 / token / 登录态）；幂等，dsh 没有 `prepare_start` 就跳过。
+        try:
+            self._prepare_host_start(self.host_plan(
+                aggregate_port=self._aggregate_port,
+                aggregate_url=self._aggregate_url))
+        except MechaError as exc:
+            self._last_error = f"{kind} 的启动前提备不好：{exc.message}"
+            self._save_status()
+            return {"ok": False, "id": kind, "kind": kind, "enabled": True,
+                    "action": "open", "error": self._last_error,
+                    "steps": [{"step": f"准备 {kind} 的启动前提", "ok": False,
+                               "error": exc.message}]}
         child = self.dsh_child()
         if child is None:
             self._last_error = f"{kind} 声明合并失败 ⇒ 面板没法起它"
@@ -1104,6 +1142,12 @@ class LaunchController:
         if self._started:
             return {"ok": False, "error": "已经启动过了（本步不支持重启整站）"}
         try:
+            #: ⭐ 兜底：真启动前再确认一次宿主的启动前提（端口 / token / 登录态）。
+            #: 幂等；dsh 没有 `prepare_start` 就跳过。放在 `plan_startup` 之前，
+            #: 因为 `build_children → host_adapter.child()` 要读端口文件。
+            self._prepare_host_start(self.host_plan(
+                aggregate_port=self._aggregate_port,
+                aggregate_url=self._aggregate_url))
             plan = plan_startup(self.sites, enabled, self._known_pids(), self.host_kind)   # ⭐ 全部站点
             if plan.stale:
                 self.super.clean_stale(plan.stale)      # 清掉的会进 state().cleaned
