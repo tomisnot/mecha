@@ -15,8 +15,12 @@ sys.path.insert(0, str(ROOT))
 
 from mecha.aggregate_runtime import overlay_text  # noqa: E402
 from mecha.codex_adapter import (CodexHostAdapter, config_text,  # noqa: E402
-                                 parse_post_tool_use, permission_response_json)
+                                 parse_post_tool_use, permission_response_json,
+                                 read_records)
+from mecha.codex_adapter.hook_entry import (handle_permission_request,  # noqa: E402
+                                             handle_post_tool_use)
 from mecha.codex_adapter.host import paths_for  # noqa: E402
+from mecha.codex_adapter.tasks import ledger_path  # noqa: E402
 from mecha.dsh_adapter.runtime import overlay_text as dsh_overlay_text  # noqa: E402
 from mecha.dsh_adapter.runtime import with_overlay_patch  # noqa: E402
 from mecha.host_adapter import AIHostKind, make_host_plan, select_host_adapter  # noqa: E402
@@ -104,12 +108,19 @@ def check_codex_prepare() -> None:
                prep.config_path == paths.config
                and paths.config.is_file()
                and str(paths.home) in prep.command)
+        text = paths.config.read_text(encoding="utf-8")
         _check("配置包含 MCP server、AGENTS 与启动说明",
-               "[mcp_servers.mecha]" in paths.config.read_text(encoding="utf-8")
+               "[mcp_servers.mecha]" in text
                and paths.agents.is_file() and paths.start.is_file())
         _check("启动说明使用 CODEX_HOME，不修改全局配置",
                "CODEX_HOME=" in paths.start.read_text(encoding="utf-8")
                and "~/.codex" not in paths.start.read_text(encoding="utf-8"))
+        _check("配置生成 PostToolUse 与 PermissionRequest Hook",
+               "[[hooks.PostToolUse]]" in text
+               and "[[hooks.PermissionRequest]]" in text
+               and "mecha.codex_adapter.hook_entry" in text)
+        _check("Hook 指向隔离任务账",
+               "codex-home" in text and "tasks.jsonl" in text)
         refreshed = adapter.refresh_catalog(plan, 7)
         _check("工具表刷新写 revision 并明确要求重连",
                refreshed.reconnect_required
@@ -117,7 +128,26 @@ def check_codex_prepare() -> None:
         caps = adapter.capabilities(plan)
         _check("外部宿主能力声明不伪造 managed child",
                caps["external"] is True and caps["managed"] is False
-               and caps["child_id"] is None)
+               and caps["child_id"] is None
+               and caps["task_ledger"] == str(ledger_path(Path(td))))
+        handle_post_tool_use({
+            "hook_event_name": "PostToolUse",
+            "session_id": "s", "turn_id": "t",
+            "tool_name": "mcp__mecha__demo_submit",
+            "tool_use_id": "u", "tool_input": {},
+            "tool_response": {"value": {"text": '{"job_id": "job-1"}'}},
+        }, ledger_path(Path(td)))
+        handle_permission_request({
+            "hook_event_name": "PermissionRequest",
+            "session_id": "s", "turn_id": "t",
+            "tool_name": "mcp__mecha__demo_write", "tool_input": {},
+        }, ledger_path(Path(td)))
+        records = read_records(ledger_path(Path(td)))
+        _check("PostToolUse 把 job_id 写入任务账",
+               any(r.get("kind") == "task.submitted" and r.get("task_id") == "job-1"
+                   for r in records))
+        _check("PermissionRequest 只审计，不伪造 decision",
+               any(r.get("kind") == "permission.requested" for r in records))
 
 
 def check_hooks_and_compat() -> None:

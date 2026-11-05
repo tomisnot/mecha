@@ -10,7 +10,9 @@
 
 已完成第二阶段：新增宿主无关的 `/monitor` 页面，直接读取各软件 Cockpit 的 `/history`，区分“未声明 / 读不到 / 零事件 / 有事件”四态，不依赖 dsh 面板资产。
 
-尚未开始：dsh 面板 TS/TSX 资产目录迁移、Codex PostToolUse/PermissionRequest 实际接线、managed App Server 客户端。
+已完成第三阶段：Codex `prepare()` 生成 `PostToolUse` 与 `PermissionRequest` Hook；`hook_entry` 把任务提交回执写入隔离的 `tasks.jsonl`，`/monitor` 显示这本账；`PermissionRequest` 只审计、不输出 decision，保留 Codex 原有 OS 审批流程，领域写权仍归 mecha Gate。
+
+尚未开始：dsh 面板 TS/TSX 资产目录迁移、managed App Server 客户端。实际 Codex 版本上的 Hook 加载仍需真机验收；本阶段已验证配置形状、入口转换与任务账闭环。
 
 ## 1. 施工结论
 

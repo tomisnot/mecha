@@ -60,6 +60,7 @@ import json
 import socket
 import threading
 import webbrowser
+from pathlib import Path
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Protocol
@@ -492,7 +493,14 @@ class _Handler(BaseHTTPRequestHandler):
                               .encode("utf-8"), "application/json; charset=utf-8")
         if path == "/monitor":
             from ..monitor_page import render_monitor_page
-            return self._html(200, render_monitor_page(self.controller.services()))
+            try:
+                info = self.controller.host_info()  # type: ignore[attr-defined]
+            except Exception:                       # noqa: BLE001 - 旧替身无宿主信息
+                info = {}
+            ledger = info.get("task_ledger") or None
+            return self._html(200, render_monitor_page(
+                self.controller.services(),
+                task_ledger=Path(ledger) if ledger else None))
         if path == "/health":
             return self._send(200, b'{"ok":true}', "application/json; charset=utf-8")
         if path.startswith("/logs/"):

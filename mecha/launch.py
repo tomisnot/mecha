@@ -481,6 +481,7 @@ class LaunchController:
             "managed": bool(caps.get("managed", False)),
             "child_id": self.host_adapter.child_id,
             "external": bool(caps.get("external", False)),
+            "task_ledger": str(caps.get("task_ledger", "") or ""),
         }
 
     def prepare_host(self, *, aggregate_port: int, aggregate_url: str = "") -> object:

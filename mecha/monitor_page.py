@@ -12,11 +12,13 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from .portfile import read_port
 from .site import Service
 
 HISTORY_LIMIT = 100
+TASK_LIMIT = 50
 
 
 @dataclass(frozen=True)
@@ -93,13 +95,51 @@ def _render_service(row: ServiceHistory) -> str:
             + ''.join(rows) + '</tbody></table></section>')
 
 
+def _render_tasks(task_ledger: Path | None) -> str:
+    """Codex Hook 任务账的只读视图；与软件 History 分开标。"""
+    if task_ledger is None:
+        return ''
+    path = Path(task_ledger)
+    if not path.is_file():
+        return (f'<section class="svc"><div class="head"><h3>AI 任务</h3>'
+                '<span class="badge muted">尚未产生</span></div>'
+                '<p class="muted">这本账在 Hook 首次收到任务回执时创建；'
+                '文件不存在不等于任务没有运行。</p></section>')
+    rows: list[dict] = []
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+    if not rows:
+        return (f'<section class="svc"><div class="head"><h3>AI 任务</h3>'
+                '<span class="badge ok">已连接</span></div>'
+                '<p class="muted">账已创建，但还没有 Hook 记录。</p></section>')
+    body = ''.join(
+        '<tr>'
+        f'<td>{html.escape(str(r.get("ts", "")))}</td>'
+        f'<td>{html.escape(str(r.get("kind", "")))}</td>'
+        f'<td>{html.escape(str(r.get("tool", "")))}</td>'
+        f'<td>{html.escape(str(r.get("task_id", "") or "—"))}</td>'
+        '</tr>' for r in rows[-TASK_LIMIT:][::-1])
+    return ('<section class="svc"><div class="head"><h3>AI 任务（Codex Hook 账）</h3>'
+            f'<span class="badge ok">最近 {min(len(rows), TASK_LIMIT)} 条</span></div>'
+            '<p class="muted">这是外部宿主的观察账；业务终态仍以各软件 task_wait / '
+            'JobRegistry 为准。</p><table><thead><tr><th>时间</th><th>事件</th>'
+            '<th>工具</th><th>任务 id</th></tr></thead><tbody>'
+            + body + '</tbody></table></section>')
+
+
 def render_monitor_page(services: Sequence[Service], *,
-                        fetcher: Callable[[Service], ServiceHistory] = fetch_service_history
-                        ) -> str:
+                        fetcher: Callable[[Service], ServiceHistory] = fetch_service_history,
+                        task_ledger: Path | None = None) -> str:
     """生成整页 HTML；``fetcher`` 可注入，便于判据不依赖真实网络。"""
     rows = [fetcher(svc) for svc in services]
     body = ''.join(_render_service(row) for row in rows) or (
         '<p class="muted">当前没有声明任何软件。</p>')
+    body = _render_tasks(task_ledger) + body
     return (
         '<!doctype html><html lang="zh"><head><meta charset="utf-8">'
         '<title>mecha · 监控</title><style>'
@@ -126,5 +166,5 @@ def render_monitor_page(services: Sequence[Service], *,
     )
 
 
-__all__ = ["HISTORY_LIMIT", "ServiceHistory", "fetch_service_history",
-           "render_monitor_page"]
+__all__ = ["HISTORY_LIMIT", "TASK_LIMIT", "ServiceHistory",
+           "fetch_service_history", "render_monitor_page"]

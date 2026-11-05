@@ -12,6 +12,7 @@ from ..host_adapter import HostPlan, HostPreparation, HostWiring, RefreshResult
 from ..supervise import ChildSpec
 from .config import (MCP_SERVER_NAME, DEFAULT_TOOL_TIMEOUT_SEC, paths_for,
                      write_preparation)
+from .tasks import ledger_path
 
 
 class CodexHostAdapter:
@@ -84,6 +85,7 @@ class CodexHostAdapter:
         return {"label": self.name, "managed": False, "child_id": None,
                 "external": True, "config_path": str(paths.config),
                 "start_file": str(paths.start),
+                "task_ledger": str(ledger_path(plan.runtime_root)),
                 "aggregate_url": self._url(plan)}
 
     def shutdown(self, plan: HostPlan) -> None:

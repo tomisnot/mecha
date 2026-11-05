@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -62,6 +63,23 @@ def check_states() -> None:
            and "ai" in with_events)
 
 
+def check_task_ledger() -> None:
+    with tempfile_dir() as td:
+        ledger = td / "tasks.jsonl"
+        ledger.write_text(
+            json.dumps({"ts": "2026-01-01T00:00:00+00:00", "kind": "task.submitted",
+                        "tool": "demo_submit", "task_id": "job-7"}) + "\n" +
+            json.dumps({"ts": "2026-01-01T00:00:01+00:00",
+                        "kind": "permission.requested", "tool": "demo_write"}) + "\n",
+            encoding="utf-8")
+        page = render_monitor_page([], task_ledger=ledger)
+        _check("监控页显示 Hook 任务账", "AI 任务（Codex Hook 账）" in page
+               and "job-7" in page and "demo_submit" in page)
+        missing = render_monitor_page([], task_ledger=td / "none.jsonl")
+        _check("任务账尚未创建时明说不是没有运行",
+               "尚未产生" in missing and "不等于任务没有运行" in missing)
+
+
 def check_missing_port_is_not_empty() -> None:
     with tempfile_dir() as td:
         svc = Service(
@@ -92,6 +110,7 @@ def main() -> int:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     print("监控页判据：")
     check_states()
+    check_task_ledger()
     check_missing_port_is_not_empty()
     if FAILS:
         print(f"monitor_page_selfcheck: FAIL（{len(FAILS)} 条）")

@@ -8,10 +8,15 @@
 from __future__ import annotations
 
 import json
+import os
+import shlex
+import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 from ..errors import MechaError
+from .tasks import TASK_LEDGER_FILENAME
 
 MCP_SERVER_NAME = "mecha"
 CONFIG_FILENAME = "config.toml"
@@ -55,7 +60,8 @@ def config_text(*, aggregate_url: str,
                 server_name: str = MCP_SERVER_NAME,
                 tool_timeout_sec: float = DEFAULT_TOOL_TIMEOUT_SEC,
                 startup_timeout_sec: float = DEFAULT_STARTUP_TIMEOUT_SEC,
-                disabled_tools: tuple[str, ...] = DENIED_TOOLS) -> str:
+                disabled_tools: tuple[str, ...] = DENIED_TOOLS,
+                hooks: str = "") -> str:
     """生成一份 Codex 可解析的 MCP server 配置。"""
     if not aggregate_url.startswith(("http://", "https://")):
         raise MechaError("聚合端点 URL 不合法", kind="bad_codex_mcp_url",
@@ -72,6 +78,9 @@ def config_text(*, aggregate_url: str,
     ]
     if disabled_tools:
         lines.append(f"disabled_tools = {_toml_array(disabled_tools)}")
+    if hooks:
+        lines.append("")
+        lines.append(hooks.rstrip())
     return "\n".join(lines) + "\n"
 
 
@@ -92,6 +101,40 @@ def start_text(paths: CodexPaths) -> str:
     )
 
 
+def _hook_command(mode: str, ledger: Path) -> tuple[str, str]:
+    argv = [sys.executable, "-m", "mecha.codex_adapter.hook_entry", mode,
+            "--ledger", str(ledger)]
+    posix = shlex.join(argv)
+    windows = subprocess.list2cmdline(argv)
+    return posix, windows
+
+
+def hooks_text(*, ledger: Path) -> str:
+    """生成 PostToolUse 任务账与 PermissionRequest 审计 Hook。"""
+    post, post_win = _hook_command("post-tool-use", ledger)
+    perm, perm_win = _hook_command("permission-request", ledger)
+    return "\n".join([
+        "[[hooks.PostToolUse]]",
+        'matcher = "^mcp__mecha__.*"',
+        "",
+        "[[hooks.PostToolUse.hooks]]",
+        'type = "command"',
+        f"command = {_toml_string(post)}",
+        f"command_windows = {_toml_string(post_win)}",
+        "timeout = 10",
+        "",
+        "[[hooks.PermissionRequest]]",
+        'matcher = ".*"',
+        "",
+        "[[hooks.PermissionRequest.hooks]]",
+        'type = "command"',
+        f"command = {_toml_string(perm)}",
+        f"command_windows = {_toml_string(perm_win)}",
+        "timeout = 5",
+        "",
+    ])
+
+
 def write_preparation(runtime_root: Path, *, aggregate_url: str,
                       server_name: str = MCP_SERVER_NAME,
                       tool_timeout_sec: float = DEFAULT_TOOL_TIMEOUT_SEC,
@@ -100,9 +143,11 @@ def write_preparation(runtime_root: Path, *, aggregate_url: str,
     """写隔离配置并返回路径与启动命令；重复执行按当前端口覆盖。"""
     paths = paths_for(runtime_root)
     paths.home.mkdir(parents=True, exist_ok=True)
+    ledger = paths.home / TASK_LEDGER_FILENAME
     config = config_text(aggregate_url=aggregate_url, server_name=server_name,
                          tool_timeout_sec=tool_timeout_sec,
-                         startup_timeout_sec=startup_timeout_sec)
+                         startup_timeout_sec=startup_timeout_sec,
+                         hooks=hooks_text(ledger=ledger))
     paths.config.write_text(config, encoding="utf-8")
     paths.agents.write_text(agents_text(), encoding="utf-8")
     paths.start.write_text(start_text(paths), encoding="utf-8")
@@ -115,5 +160,6 @@ __all__ = [
     "AGENTS_FILENAME", "CATALOG_REVISION_FILENAME", "CONFIG_FILENAME",
     "DEFAULT_STARTUP_TIMEOUT_SEC", "DEFAULT_TOOL_TIMEOUT_SEC", "DENIED_TOOLS",
     "MCP_SERVER_NAME", "START_FILENAME", "CodexPaths", "agents_text",
-    "config_text", "paths_for", "start_text", "write_preparation",
+    "config_text", "hooks_text", "paths_for", "start_text",
+    "write_preparation",
 ]
