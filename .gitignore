@@ -26,3 +26,6 @@ _mecha_runtime/
 
 # 入口的**本机**站点根清单（机器相关 ⇒ 不入库；仓里只有 .example）
 mecha_roots.txt
+
+# Agent 的本地工作记忆与临时下载，不属于仓库资产。
+.workbuddy/

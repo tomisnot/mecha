@@ -43,12 +43,26 @@ SUITES = {
         "dsh_argv_selfcheck", "aggregate_tools_hot_sync_selfcheck",
     ),
     "assets": ("dsh_panel_selfcheck",),
+    "bridges": (
+        "bridge_host_plugin_selfcheck", "bridge_e2e_selfcheck",
+    ),
     "projects": (
         "phase5_el_selfcheck", "phase5_hub_selfcheck", "phase5_bridge_selfcheck",
     ),
     "release": ("personal_paths_selfcheck",),
 }
-SOFTWARE_SUITES = ("core", "integration", "assets", "projects")
+SOFTWARE_SUITES = ("core", "integration", "assets", "bridges", "projects")
+
+
+def _command_for(name: str) -> list[str]:
+    """按扩展名选择 runner：Python 用当前解释器，Node 检查用 node。"""
+    py = ROOT / "checks" / f"{name}.py"
+    if py.is_file():
+        return [sys.executable, "-X", "utf8", "-B", str(py)]
+    mjs = ROOT / "checks" / f"{name}.mjs"
+    if mjs.is_file():
+        return ["node", str(mjs)]
+    raise FileNotFoundError(f"找不到检查脚本：checks/{name}.py 或 checks/{name}.mjs")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -96,8 +110,7 @@ def main(argv: list[str] | None = None) -> int:
             status, output = "SKIP", "缺 EL 项目：请设置 MECHA_EL_ROOT"
         else:
             try:
-                result = subprocess.run([sys.executable, "-X", "utf8", "-B",
-                                         str(ROOT / "checks" / f"{name}.py")],
+                result = subprocess.run(_command_for(name),
                                         cwd=ROOT, env=env, capture_output=True, text=True,
                                         encoding="utf-8", errors="replace", timeout=args.timeout)
                 output = "\n".join(x.strip() for x in (result.stdout, result.stderr) if x.strip())
@@ -106,6 +119,8 @@ def main(argv: list[str] | None = None) -> int:
                           "SKIP" if lines and lines[-1].startswith("SKIP") else "PASS")
             except subprocess.TimeoutExpired:
                 status, output = "FAIL", f"超过单项预算 {args.timeout:g}s"
+            except OSError as exc:
+                status, output = "FAIL", f"检查脚本启动失败：{type(exc).__name__}: {exc}"
         counts[status] += 1
         shown = "SKIP→FAIL" if status == "SKIP" and strict else status
         last = output.splitlines()[-1] if output else "无输出"

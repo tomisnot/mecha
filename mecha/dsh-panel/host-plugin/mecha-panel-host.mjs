@@ -1,4 +1,4 @@
-/**
+﻿/**
  * **框架自己的 dsh host 插件**：把「监控面参数」从 **env** 递给**浏览器**。
  *
  * ## 为什么需要这一件（三层架构 §7.3.8 第 1 条，据实更正）
@@ -52,7 +52,7 @@
  * （漏一个文件就静默空白）；现在框架照 `MECHA_PANEL_PORT_FILES` 替项目注册
  * ⇒ **新项目连 host 半都不用写**（§7.3.8 末段登记的下一步，已落地）。
  */
-import { existsSync, readFileSync } from 'node:fs'
+import { appendFileSync, existsSync, readFileSync } from 'node:fs'
 import { basename } from 'node:path'
 
 /** 要显式声明的服务（缺它 ⇒ 本插件不激活 ⇒ 那不是我们要的语义，见硬约束 4）。 */
@@ -327,58 +327,160 @@ function taskBridgeUrl(path) {
 }
 
 async function taskBridgeCall(path, payload, signal) {
-  const response = await fetch(taskBridgeUrl(path), {
-    method: 'POST', signal,
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(payload),
-  })
-  const body = await response.json()
-  if (!response.ok || body?.is_error) throw new Error(body?.error?.message ?? `mecha task bridge HTTP ${response.status}`)
-  return body
+  // ⚠ 瞬时网络错误（launcher 正在重启/端口短暂不可达）不应把包装 job 判死：
+  //    2026-10-27 实测一次 `TypeError: fetch failed` 让 mecha job 变 failed，而训练其实还在跑。
+  const url = taskBridgeUrl(path)
+  let lastError
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    if (signal?.aborted) throw new Error('aborted')
+    try {
+      const response = await fetch(url, {
+        method: 'POST', signal,
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+      const body = await response.json()
+      if (!response.ok || body?.is_error) {
+        throw new Error(body?.error?.message ?? `mecha task bridge HTTP ${response.status}`)
+      }
+      return body
+    } catch (error) {
+      lastError = error
+      if (signal?.aborted) throw error
+      _probe(`fetch retry ${attempt + 1}: ${String(error?.message ?? error)}`)
+      await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)))
+    }
+  }
+  throw lastError
+}
+
+const PROBE = process.env.MECHA_TASK_BRIDGE_LOG || 'mecha-task-bridge-probe.log'
+function _probe(msg) {
+  // 只在排障时写盘（每次工具调用都写会产生噪音）
+  if (process.env.MECHA_TASK_BRIDGE_DEBUG !== '1') return
+  try { appendFileSync(PROBE, `${new Date().toISOString()} ${msg}\n`) } catch { /* 探针失败不影响业务 */ }
+}
+
+/**
+ * 把 MCP 回执摊平成"顶层就有字段"的对象。三种形状都见过：
+ *   ① { structuredContent: {...} }   ② { content: [{type:'text',text:'<json>'}] }
+ *   ③ { is_error, text: '<json>' }   ← 本项目（2026-10-27 探针实测）
+ * 导出它是为了**脱离 dsh 单测**（`node -e` 里直接打真回执）。
+ */
+export function coerceTaskValue(raw, field = 'job_id') {
+  // ⚠ 回执是**多层**的：{content:[{text:"{...text:\"{...}\"}"}]}。逐层摊平直到出现目标字段。
+  let value = raw
+  for (let depth = 0; depth < 5; depth += 1) {
+    if (value === null || value === undefined || typeof value !== 'object') return value
+    if (value[field] !== undefined) return value
+    if (value.structuredContent && typeof value.structuredContent === 'object') {
+      value = value.structuredContent
+      continue
+    }
+    const txt = (typeof value.text === 'string' && value.text)
+      || (Array.isArray(value.content)
+        ? value.content.map((c) => (c && typeof c.text === 'string' ? c.text : '')).join('')
+        : '')
+    if (!txt) return value
+    let parsed
+    try {
+      parsed = JSON.parse(txt)
+    } catch {
+      // Python dict 的 repr（单引号 / True / False）⇒ JSON 解析必失败，只做最小字段提取
+      const m = txt.match(new RegExp("['\"]" + field + "['\"]\\s*:\\s*['\"]([^'\"]+)"))
+      return m ? { ...value, [field]: m[1] } : value
+    }
+    if (!parsed || typeof parsed !== 'object') return value
+    value = parsed
+  }
+  return value
 }
 
 function startTaskBridge(ctx) {
   const specs = readTaskSpecs()
+  _probe(`start: specs=${specs.size} on=${typeof ctx.on} inject=${typeof ctx.inject} env=${Object.keys(process.env).filter(k=>k.startsWith('MECHA_TASK')).join(',')}`)
   if (!specs.size || typeof ctx.on !== 'function') return () => {}
-  const jobs = ctx.get?.('jobs') ?? ctx.jobs
-  if (!jobs?.start) return () => {}
-  const listener = ctx.on('tools/post-execute', async (exec, result, next) => {
+  // ⚠ 这里**不能**直接 `ctx.jobs` / `ctx.get('jobs')`：本插件顶层 `inject = []`，
+  //    dsh 的 cordis 上下文在**未声明注入**时读该属性会抛
+  //    `cannot get property "jobs" without inject`（2026-10-26 22:47 实测：
+  //    整个长任务桥在 apply() 里就抛了 ⇒ `submit_run` 之后**没有任何 DSH job**）。
+  //    正确姿势是 scoped inject（与下面 `ctx.inject(['webServer'], …)` 同一纪律）：
+  //    服务缺失时只跳过这条桥，不影响面板路由。
+  let JOB = null
+  const handler = async (exec, result, next) => {
     const decision = await next()
-    const spec = specs.get(String(exec.name))
+    if (JOB === null) return decision
+    _probe(`hook: tool=${exec.name} agent=${!!exec.agent} isError=${!!result?.isError}`)
+    // ⚠ 工具名要**容忍命名空间前缀**：dsh 暴露给模型的是 `mcp__mecha__ml_submit_run`，
+    //    而 TaskSpec 里声明的是 `ml_submit_run`（框架加的前缀只有服务名）。
+    //    直接精确匹配会静默不命中（2026-10-27 实测：hook 有行、job 没建）。
+    const bare = String(exec.name).split('__').pop()
+    const spec = specs.get(String(exec.name)) ?? specs.get(bare)
     if (!spec || result?.isError || !result?.value || !exec.agent) return decision
-    const value = result.value?.structuredContent ?? result.value
+    const value = coerceTaskValue(result.value, spec.task_id_field)
+    _probe(`hook: tool=${exec.name} matched=${!!spec} agent=${!!exec.agent} keys=${JSON.stringify(Object.keys(value || {}))} raw=${JSON.stringify(result.value).slice(0,80)}`)
     const taskId = value?.[spec.task_id_field]
     if (typeof taskId !== 'string' && typeof taskId !== 'number') return decision
     const label = String(value?.[spec.label_field] ?? `${exec.name} ${taskId}`)
     const payload = { ...spec, task_id: String(taskId) }
     try {
-      const jobId = jobs.start({
+      const jobId = JOB.start({
+        // ⚠ owner 是 **session id 字符串**（不是 Agent 对象）：
+        //    实际运行的 dsh-jobs-local:537 resolveOwner(session) 用 agents.get(session) 解析，
+        //    传对象会变成 session "[object Object]" 而被拒。
         kind: 'mecha', label, owner: exec.agent.id,
         toolCall: { callId: exec.callId, rootCallId: exec.rootCallId },
         run: (job) => {
           const abort = new AbortController()
-          const done = taskBridgeCall('/mecha/task/wait', payload, abort.signal)
-            .then((body) => {
+          // ⚠ 短轮询：一次阻塞到终态的请求会超过 undici 的 300 s headersTimeout
+          //    （实测 2026-10-27：11:26 提交、11:31:40 报 fetch failed，正好 300 s）。
+          const done = (async () => {
+            for (;;) {
+              if (abort.signal.aborted) return { status: 'killed', detail: 'cancelled by caller' }
+              const body = await taskBridgeCall('/mecha/task/wait',
+                { ...payload, timeout_s: 5 }, abort.signal)
               const terminal = body?.value ?? body
               const state = String(terminal?.[spec.state_field] ?? '')
-              const status = state === 'cancelled' || state === 'killed' ? 'killed'
-                : spec.terminal_states.includes(state) && state !== 'failed' ? 'completed' : 'failed'
-              return { status, detail: JSON.stringify(terminal), result: JSON.stringify(terminal) }
-            })
-            .catch((error) => ({ status: 'failed', detail: String(error) }))
+              if (spec.terminal_states.includes(state)) {
+                const status = state === 'cancelled' || state === 'killed' ? 'killed'
+                  : state === 'failed' ? 'failed' : 'completed'
+                return { status, detail: JSON.stringify(terminal), result: JSON.stringify(terminal) }
+              }
+              await new Promise((resolve) => setTimeout(resolve, 3000))
+            }
+          })().catch((error) => ({ status: 'failed', detail: String(error) }))
           return { cancel: (reason) => {
             abort.abort(reason)
             void taskBridgeCall('/mecha/task/cancel', payload).catch(() => {})
           }, done }
         },
       })
+      _probe(`started: wrapper-job=${jobId} for task=${taskId}`)
       ctx.logger?.info?.(`[mecha-panel] 已把 ${exec.name} 的任务 ${taskId} 接入 DSH job ${jobId}`)
     } catch (error) {
+      _probe(`start failed: ${String(error?.message ?? error)}`)
       ctx.logger?.warn?.(`[mecha-panel] 长任务桥接失败：${error.message}`)
     }
     return decision
+  }
+  let stop = () => {}
+  let registered = false
+  ctx.inject?.(['jobs'], (scoped) => {
+    const jobs = scoped?.jobs ?? scoped?.get?.('jobs')
+    _probe(`inject fired: jobs=${!!jobs?.start}`)
+    if (!jobs?.start) return undefined
+    // ⚠ 必须挂在**插件自己的 ctx** 上，不能挂在 inject 的 scoped ctx 上：
+    //    dsh 用 `ctx.waterfall(scopeTarget(this, exec.agent), 'tools/post-execute', …)` 广播，
+    //    scoped(ctx.inject 的回调参数) 只收窄了服务作用域，收不到这条事件（2026-10-27 探针实测：
+    //    `inject fired: jobs=true` 之后再也没有 hook 行）。
+    if (registered) return stop          // inject 可能触发多次：只挂一次
+    registered = true
+    JOB = jobs
+    const listener = ctx.on('tools/post-execute', handler)
+    stop = () => listener?.()
+    return stop
   })
-  return () => listener?.()
+  return () => stop()
 }
 
 /**

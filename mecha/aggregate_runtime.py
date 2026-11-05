@@ -50,6 +50,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import threading
 import time
@@ -77,6 +78,52 @@ class BackendFactory(Protocol):
     """建一个后端句柄（生产用 ``Backend.connect``；判据注入假工厂）。"""
 
     def __call__(self, url: str, *, server_name: str) -> object: ...
+
+
+def _normalize_task_result(result: object) -> dict:
+    """把聚合层的 MCP 回执摊平成"顶层就有字段"的 dict。
+
+    ⚠ 实测形状（2026-10-27，`/mecha/task/cancel` 的原样回执）：
+        {"is_error": false,
+         "value": {"is_error": false, "text": "{\"ok\": true, \"state\": \"done\", ...}"},
+         "content": [{"type": "text", "text": "{'is_error': False, 'text': '...'}"}]}
+    ⇒ 真正的业务字段在 **`value.text` 里的 JSON 字符串**；
+      `content[].text` 是 Python dict 的 repr（单引号），json.loads 会失败 —— 不能当主路。
+    """
+    if isinstance(result, Mapping):
+        value = result.get("value")
+        if isinstance(value, Mapping):
+            txt = value.get("text")
+            if isinstance(txt, str) and txt.strip():
+                try:
+                    parsed = json.loads(txt)
+                    if isinstance(parsed, Mapping):
+                        return dict(parsed)
+                except Exception:                                   # noqa: BLE001
+                    pass
+            if value:
+                return dict(value)
+        txt = result.get("text")
+        if isinstance(txt, str) and txt.strip():
+            try:
+                parsed = json.loads(txt)
+                if isinstance(parsed, Mapping):
+                    return dict(parsed)
+            except Exception:                                       # noqa: BLE001
+                pass
+        content = result.get("content")
+        if isinstance(content, (list, tuple)):
+            joined = "".join(str(c.get("text") or "") for c in content
+                             if isinstance(c, Mapping))
+            if joined.strip():
+                try:
+                    parsed = json.loads(joined)
+                    if isinstance(parsed, Mapping):
+                        return dict(parsed)
+                except Exception:                                   # noqa: BLE001
+                    pass
+        return dict(result)
+    return {"value": result}
 
 
 class AggregateRuntime:
@@ -332,11 +379,21 @@ class AggregateRuntime:
         wait_field = payload.get("wait_field")
         if not cancel and isinstance(wait_field, str) and wait_field.strip():
             args[wait_field] = payload.get("wait_value", "terminal")
-        return self.agg.registry().execute(f"{service.lower()}_{tool}", args)
+        return _normalize_task_result(
+            self.agg.registry().execute(f"{service.lower()}_{tool}", args))
 
     def task_wait(self, payload: Mapping[str, object], *, timeout_s: float = 600.0) -> dict:
-        """等待项目显式声明的长任务终态；普通工具不会进入这里。"""
+        """等待项目显式声明的长任务终态；普通工具不会进入这里。
+
+        ⚠ `payload["timeout_s"]` 可覆盖默认 600 s —— DSH 侧是**短轮询**（每次 5 s），
+        因为 Node undici 的 headersTimeout 是 300 s，一次阻塞到终态的请求超过 5 分钟
+        就会被客户端 abort（实测 2026-10-27：15 分钟的训练在第 300 s 报 fetch failed）。
+        """
         terminal = {str(x) for x in (payload.get("terminal_states") or ())}
+        try:
+            timeout_s = float(payload.get("timeout_s") or timeout_s)
+        except (TypeError, ValueError):
+            pass
         deadline = time.monotonic() + max(1.0, float(timeout_s))
         while True:
             result = self._task_call(payload)
