@@ -87,11 +87,12 @@ finally:
 python -m mecha --root ../energy-level
 python -m mecha --all --root ../energy-level --root ../ml-toolbox
 python -m mecha --dry-run --all --root ../energy-level
+python -m mecha --ai-host codex --root ../energy-level
 ```
 
 `--root` 可重复使用；`--all` 跳过项目选择页，`--dry-run` 只查看启动计划。路径请替换为实际检出的仓库目录。
 
-整站 AI 界面使用 dsh，需要其可执行命令在 PATH 中，并准备所选项目声明的插件资产。软件存活、客户端连接和写权是三个独立维度；切换写权不需要重启软件。
+默认 AI 宿主是 dsh，需要其可执行命令在 PATH 中，并准备所选项目声明的插件资产。`--ai-host codex` 采用外部 MCP 模式：mecha 不启动 dsh，只生成隔离的 `_mecha_runtime/codex-home/` 配置；软件就绪后按其中的 `codex-start.txt` 启动 Codex。`--ai-host none` 只启动软件、聚合端点和控制台。软件存活、客户端连接和写权是三个独立维度；切换写权不需要重启软件。
 
 ## 开发与验证
 

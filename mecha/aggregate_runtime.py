@@ -58,16 +58,16 @@ from pathlib import Path
 from typing import Protocol
 
 from .aggregate import AGGREGATE_SERVER_NAME, META_CLOSE, META_OPEN, Aggregator
+from .dsh_adapter.runtime import (DEFAULT_TOOL_CALL_TIMEOUT_MS,
+                                  DSH_OVERLAY_FILENAME, make_prepare_hook,
+                                  overlay_path, overlay_text, site_runtime,
+                                  with_overlay_patch, write_dsh_overlay)
 from .errors import MechaError
 from .providers.mcp_client import Backend
-from .site import DSH_CHILD_ID, Service, Site
+from .site import Service, Site
 from .software_control import SoftwareControl
 from .supervise import ChildSpec, Supervisor
 
-#: 旧实现用 10 分钟（默认 60s 会让长训练"假失败"）。⚠ **这条不许在重构里丢**。
-DEFAULT_TOOL_CALL_TIMEOUT_MS = 600_000
-#: 生成的 overlay 文件名（放项目根 ``runtime/`` 下，不入库）。
-DSH_OVERLAY_FILENAME = "dsh-aggregate.patch.yml"
 #: ``unreachable`` 后端的有界重试（次数 / 间隔秒）——见 ``_retry_unreachable``。
 UNREACHABLE_RETRIES = 5
 RETRY_DELAY_S = 6.0
@@ -77,102 +77,6 @@ class BackendFactory(Protocol):
     """建一个后端句柄（生产用 ``Backend.connect``；判据注入假工厂）。"""
 
     def __call__(self, url: str, *, server_name: str) -> object: ...
-
-
-def overlay_path(runtime_root: Path) -> Path:
-    """该站点生成的 overlay 落点（**项目根 runtime/ 下、不入库**）。"""
-    return Path(runtime_root) / DSH_OVERLAY_FILENAME
-
-
-def overlay_text(*, mcp_port: int, server_name: str,
-                 timeout_ms: int = DEFAULT_TOOL_CALL_TIMEOUT_MS,
-                 entry_id: str | None = None,
-                 header: str = "# 由 mecha 生成（每次启动按**实际端口**重写）——**不入库**。") -> str:
-    """生成 dsh 第三层 overlay 的文本（指向**聚合端点**）。
-
-    ⚠ ``- insert:`` 形态是**必须**的：裸 ``- id: …`` 会被 dsh 判
-    ``patch: entry "…" not found`` 并**静默跳过**（旧实现实测过）。
-    """
-    eid = entry_id or f"mcp-{server_name}"
-    return (
-        f"{header}\n"
-        "# 用法：dsh --profile web --patch <本文件> --port <dsh 端口>\n"
-        "# 注意：patch 条目必须用 `- insert:` 包住；裸 id 会被判「目标不存在」并跳过。\n"
-        "- insert:\n"
-        f"    - id: {eid}\n"
-        "      name: '@deepseek-ai/dsh-mcp-client'\n"
-        "      config:\n"
-        f"        serverName: {server_name}\n"
-        "        transport: streamable-http\n"
-        f"        url: http://127.0.0.1:{int(mcp_port)}/mcp\n"
-        "        failOnStartupError: true\n"
-        f"        toolCallTimeoutMs: {int(timeout_ms)}\n"
-    )
-
-
-def write_dsh_overlay(runtime_root: Path, *, mcp_port: int, server_name: str,
-                      timeout_ms: int = DEFAULT_TOOL_CALL_TIMEOUT_MS) -> Path:
-    """写 overlay（父目录按需创建）；返回写入路径。**覆盖写**（每次启动重写实际端口）。"""
-    p = overlay_path(runtime_root)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(overlay_text(mcp_port=mcp_port, server_name=server_name,
-                             timeout_ms=timeout_ms), encoding="utf-8")
-    return p
-
-
-#: ⛔ **删掉的机制（R13）：`stable_server_name(site)`** —— 它由**站点名**算聚合端点的
-#: ``serverName``。实测抓到的真 bug：用户**只勾了 GP**，dsh 里那个 MCP 客户端却叫
-#: **`ML Toolbox`**（`MECHA_SITE_ROOTS` 里 ML 排第一）⇒ 现场就是
-#: "**只选了 GP，载入的却是 ML 的 mcp**"。
-#: ⭐ 那个端点是**框架的**聚合面（同时代表**所有**站点）⇒ 名字由框架给、**与站点顺序无关**
-#: （唯一家：:data:`mecha.aggregate.AGGREGATE_SERVER_NAME`）。
-#: ⚠ **反向判断**（不许它复活）：`checks/aggregate_runtime_selfcheck.py` 里的
-#: 「**名字与站点顺序无关**」那条 —— 把 `prepare_dsh` 改回按站点名 ⇒ 当场红。
-
-
-def with_overlay_patch(child: ChildSpec, overlay: Path) -> ChildSpec:
-    """把 overlay 塞进 dsh 的 ``--patch`` 列表（**本次实际使用的 spec** 的那一份）。
-
-    ⚠ 用 ``dataclasses.replace`` 造**新** spec：``ChildSpec`` 是冻结的，
-    而且"改声明"与"改本次 spawn"是两件事（后者才是我们要的）。
-
-    ## ⛔ 这里曾经有一个**让 dsh 永远起不来**的错位（2026-10-09 实测抓到）
-
-    旧实现是 ``argv[idx + 1:idx + 1] = [overlay]``，而 ``idx`` 是最后一个 ``--patch``
-    **标志**的下标 ⇒ 插进去的是**标志与它的值之间**：
-
-    ```
-    期望：  --patch F  --patch OVERLAY  --port 3081
-    实际：  --patch OVERLAY  F  --port 3081        ← F 变成了**裸 token**
-    ```
-
-    ⚠ 而 dsh 的 CLI 规则是"**启动器选项在遇到它不认识的那个 token 为止；之后全归 app**"
-    （`apps/cli/src/args.ts` 的 `passThroughOptions` + `enablePositionalOptions`）
-    ⇒ 那个裸路径被交给 **web app** ⇒ commander 当场报
-
-    ```
-    error: too many arguments. Expected 0 arguments but got 1: <框架自己的 patch 路径>
-    ```
-
-    ⇒ ⭐ **dsh 以 exit=1 反复退出（`restarts=4`）、面板上那一行永远是 stopped、
-    "dsh 窗口不弹出"** —— 而日志里那句错的形状**看起来像 dsh 不认 `--patch`**
-    （⚠ 实测反了：`dsh web --patch X` **是合法的**，坏的是**值被顶掉**）。
-
-    ⇒ 修法：在**那个 ``--patch`` 的值之后**插入**成对的一份**（``["--patch", overlay]``）
-    —— ⚠ **不只是路径**：``--patch`` 是"标志 + 值"的成对形状，只插路径会把**前一个值**
-    或**这个路径自己**顶成一个**裸 token**（两种错位都实测过，报错措辞一模一样）。
-    """
-    import dataclasses
-    argv = list(child.argv)
-    # dsh 的 patch 是**有序**列表（旧实现就是按顺序给多个 --patch）；追加到末尾。
-    if "--patch" in argv:
-        idx = len(argv) - 1 - argv[::-1].index("--patch")   # 最后一个 --patch **标志**
-        #: ⚠ 插到它的**值之后**（`idx + 1` 是那个值），且**必须带自己的 `--patch`**。
-        at = idx + 2 if idx + 1 < len(argv) else idx + 1
-        argv[at:at] = ["--patch", str(overlay)]
-    else:
-        argv += ["--patch", str(overlay)]
-    return dataclasses.replace(child, argv=tuple(argv))
 
 
 class AggregateRuntime:
@@ -500,35 +404,3 @@ class AggregateRuntime:
         return write_dsh_overlay(site_runtime(site), mcp_port=mcp_port,
                                 server_name=AGGREGATE_SERVER_NAME,
                                 timeout_ms=self.timeout_ms)
-
-
-def site_runtime(site: Site) -> Path:
-    """站点运行期根（与 ``launch._runtime_root`` 同一处；这里只取同一个约定）。"""
-    return Path.cwd() / "_mecha_runtime"
-
-
-def make_prepare_hook(runtime: AggregateRuntime, site: Site,
-                      mcp_port_getter: Callable[[], int | None]) -> Callable:
-    """造一个 ``prepare_hooks`` 回调：**spawn dsh 之前**把 overlay 塞进它的 ``--patch``。
-
-    ⚠ 为什么用 prepare 钩子而不是在别处拼好：dsh 的 ``ChildSpec`` 是**启动期**给的，
-    而 overlay 的端口要等**聚合端点真的起来**才知道 ⇒ 只能在"**spawn 之前那一刻**"接上。
-    这正是步骤 1 留这个出口的原因（修正 1）。
-    """
-    def hook(spec: ChildSpec, child: object) -> ChildSpec | None:
-        if spec.id != DSH_CHILD_ID:
-            return None                                   # 只管 dsh
-        port = mcp_port_getter()
-        if port is None:
-            raise MechaError(
-                "聚合端点还没起来，无法给 dsh 生成 overlay",
-                kind="aggregate_port_unknown",
-                hint="顺序必须是 svc* → aggregator → dsh（StartupPlan.ordered 已保证）",
-            )
-        overlay = runtime.prepare_dsh(site, port)
-        out = with_overlay_patch(spec, overlay)
-        from dataclasses import replace
-        env = dict(out.env)
-        env["MECHA_TASK_BRIDGE_FILE"] = str(Path.cwd() / "_mecha_runtime" / ".page-port")
-        return replace(out, env=env)
-    return hook

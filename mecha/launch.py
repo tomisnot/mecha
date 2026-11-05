@@ -41,8 +41,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .authority import Mode
-from .dsh_panel import MCP_REFRESH_ROUTE, with_panel_contributions
+from .dsh_adapter import (dsh_child as _dsh_child_impl, make_prepare_hook,
+                          merge_dsh, warn_if_port_taken)
 from .errors import MechaError
+from .host_adapter import (AIHostAdapter, AIHostKind, HostPlan, HostWiring,
+                           make_host_plan, select_host_adapter)
 from .software_control import SoftwareControl
 from .site import (DSH_CHILD_ID, AutoShutdown, DSHSpec, Service, Site, Strategy)
 from .supervise import ChildSpec, StaleItem, Supervisor, pid_alive, which_or_raise
@@ -203,95 +206,28 @@ def assert_service_ids_global_unique(sites: Sequence[Site]) -> None:
             seen[key] = f"{svc.id}（{site.name}）"
 
 
-def merge_dsh(sites: Sequence[Site]) -> "tuple[ChildSpec, DSHSpec]":
-    """把各站点的 dsh 声明合并成**那一个** dsh（三层架构 §1.1.1）。⭐ 站点们**共同贡献**。
-
-    ## 为什么不是"只准一家声明"（实测踩到的）
-
-    初次实现按"只准一个站点声明 dsh"写 ⇒ 而 `site.py` 里 `dsh` **必填**、
-    三家真项目**各声明一个** ⇒ **多站点必然报错**（`有 N 个站点声明了 dsh`）。
-    ⚠ 而"只准一家"本身也是错的：**每个项目都要把自己的监控面板挂上**
-    ⇒ 一个 dsh 要能看到**所有**项目 ⇒ 插件清单必须是**并集**。
-
-    ## 规则
-
-    | 项 | 规则 |
-    |---|---|
-    | 身份（`command`/`port_preference`/`port_tries`/`stop_timeout`/`ready`） | 都给了就**必须一致**；不一致 ⇒ **响亮失败** |
-    | `cwd` | 取**第一个**声明者（站点顺序稳定） |
-    | `patches`/`plugin_artifacts`/`env` | ⭐ **取并集**（顺序 = 站点出现顺序）；⚠ `env` 同名不同值 ⇒ **响亮失败** |
-    | ⭐ **框架那一份** | **框架的 patch + 框架的插件 + 两个面板变量**（`dsh_panel.with_panel_contributions`）——**恒加上**，两个分支都加 |
-    | 一个都没声明 | 框架默认（`command=("dsh",)`、`cwd=`第一个站点的 cwd、3081/10/8.0） |
-    """
-    decls = [(s, s.dsh) for s in sites if getattr(s, "dsh", None) is not None]
-    if not decls:
-        #: ⭐ "架构直接安排好了"：项目**可以完全不管 dsh**。
-        first_svc = flat_services(sites)
-        cwd = first_svc[0].cwd if first_svc else Path.cwd()
-        #: ⚠⭐ **`dsh` 不带 profile 会立刻退出**（实测：日志里刷 `error: --profile <name> is required`
-        #: ⇒ supervisor 反复重启 ⇒ `state=unhealthy` ⇒ **用户根本看不到 dsh**）。
-        #: `dsh --help` 明写 `dsh web` = 起 web profile ⇒ 默认值必须是它。
-        dsh = DSHSpec(command=("dsh", "web"), cwd=cwd)
-        #: ⚠ 这一支也**必须**带上框架自己的面板插件：项目连 dsh 都没声明时，
-        #: 更不该轮到它去挂框架插件（§7.3.3）。
-        dsh = with_panel_contributions(dsh, sites)
-        return _dsh_child(dsh), dsh
-
-    head_site, head = decls[0]
-    #: 身份必须一致（"一个 dsh" = **只有一个身份**；静默取一家 = 我以为起的是我那种）
-    for site, d in decls[1:]:
-        for field in ("command", "port_preference", "port_tries", "stop_timeout", "ready"):
-            if getattr(d, field) != getattr(head, field):
-                raise MechaError(
-                    f"两个站点的 dsh 声明不一致：{head_site.name} 与 {site.name} "
-                    f"的 `{field}` 不同（{getattr(head, field)!r} vs {getattr(d, field)!r}）",
-                    kind="dsh_decl_conflict",
-                    hint="dsh 是**全生态一个**（§1.1.1）⇒ 各站点给的**身份字段必须一致**；"
-                         "**插件清单（patches/plugin_artifacts/env）**才是各站点各自贡献的部分",
-                )
-    patches: list[Path] = []
-    artifacts: list[Path] = []
-    env: dict[str, str] = {}
-    for site, d in decls:
-        patches += [p for p in d.patches if p not in patches]
-        artifacts += [p for p in d.plugin_artifacts if p not in artifacts]
-        for k, v in d.env.items():
-            if k in env and env[k] != v:
-                raise MechaError(
-                    f"两个站点给 dsh 的同名环境变量值不同：`{k}` "
-                    f"（{env[k]!r} vs {v!r}，来自 {site.name}）",
-                    kind="dsh_env_conflict",
-                    hint="dsh 只有一个进程 ⇒ 同名变量只能有一个值；请改成不同名，或统一取值",
-                )
-            env.setdefault(k, v)
-    merged = DSHSpec(
-        command=head.command, cwd=head.cwd,
-        patches=tuple(patches), plugin_artifacts=tuple(artifacts),
-        port_preference=head.port_preference, port_tries=head.port_tries,
-        env=env, ready=head.ready, stop_timeout=head.stop_timeout)
-    #: ⭐ **框架自己的 dsh 贡献**（监控面板插件 + 那两个变量）：由**框架的 patch** 带上
-    #: （§7.3.3 定案）⇒ 新项目**不挂**框架插件、也不手抄那份参数。
-    #: ⚠ 放最后：框架的变量与站点声明撞名要**响亮失败**（见 :func:`with_panel_contributions`）。
-    merged = with_panel_contributions(merged, sites)
-    return _dsh_child(merged), merged
-
-
 def _dsh_child(dsh: DSHSpec) -> ChildSpec:
-    """dsh 声明 → child（⚠ 名字解析走 `which_or_raise`：起不来要**响亮**）。"""
-    return ChildSpec(
-        id=DSH_CHILD_ID, argv=which_or_raise(dsh.argv()), cwd=dsh.cwd, env=dict(dsh.env),
-        ready=dsh.ready, stop_timeout=dsh.stop_timeout, data_root=None,
-    )
+    """兼容入口；实现已在 ``mecha.dsh_adapter.launch.dsh_child``。"""
+    return _dsh_child_impl(dsh)
 
 
-def build_children(sites: Sequence[Site], enabled: Sequence[str]) -> tuple[ChildSpec, ...]:
-    """把勾中的服务 + dsh 翻成 child 列表（**顺序 = 拓扑序**，dsh **永远最后**）。"""
+def _warn_if_dsh_port_taken(sites: Sequence[Site]) -> None:
+    """兼容入口；实现已在 ``mecha.dsh_adapter.launch.warn_if_port_taken``。"""
+    warn_if_port_taken(sites)
+
+
+def build_children(sites: Sequence[Site], enabled: Sequence[str],
+                   host_kind: AIHostKind | str = AIHostKind.DSH
+                   ) -> tuple[ChildSpec, ...]:
+    """把勾中的服务与宿主 child 翻成显式拓扑序；具体宿主由适配器决定。"""
     kids: list[ChildSpec] = []
-    for svc in flat_services(sites):            # ⭐ 站点出现顺序、站内声明顺序
+    for svc in flat_services(sites):
         if svc.id in enabled:
             kids.append(svc.child())
-    dsh_child, _ = merge_dsh(sites)
-    kids.append(dsh_child)                      # ⭐ dsh 最后（它要用聚合端点的地址）
+    plan = make_host_plan(host_kind, sites, _runtime_root())
+    host_child = select_host_adapter(host_kind).child(plan)
+    if host_child is not None:
+        kids.append(host_child)
     return tuple(kids)
 
 
@@ -351,17 +287,19 @@ def _listening(port: int) -> bool:
 
 
 def plan_startup(sites: Sequence[Site], enabled: Sequence[str],
-                 known_pids: dict[str, int] | None = None) -> StartupPlan:
+                 known_pids: dict[str, int] | None = None,
+                 host_kind: AIHostKind | str = AIHostKind.DSH) -> StartupPlan:
     """产出一份启动计划（顺序 + 待清理残留 + 勾选）。**不做任何副作用**。
 
     ⚠ **收全部站点**（§1.1）；``enabled`` 是**跨站点**的服务 id 集合。
+    ``host_kind`` 只决定最后一个是否有宿主 child，不把宿主细节带进计划结构。
     """
     ids = {s.id for s in flat_services(sites)}
     chosen = tuple(sid for sid in (s.id for s in flat_services(sites))
                    if sid in enabled and sid in ids)
     return StartupPlan(
         sites=tuple(sites),
-        ordered=build_children(sites, chosen),
+        ordered=build_children(sites, chosen, host_kind),
         stale=_detect_stale(sites, known_pids or {}),
         enabled=chosen,
     )
@@ -450,10 +388,15 @@ class LaunchController:
     """选择页/状态页共用的控制面（**页面只读它 + 一个 start**）。"""
 
     def __init__(self, *, sites: tuple[Site, ...], runtime: Path,
-                 supervisor: Supervisor) -> None:
+                 supervisor: Supervisor,
+                 host_kind: AIHostKind | str = AIHostKind.DSH,
+                 host_adapter: AIHostAdapter | None = None) -> None:
         self.sites = sites
         self.runtime = runtime
         self.super = supervisor
+        self.host_kind = AIHostKind(str(getattr(host_kind, "value", host_kind)))
+        self.host_adapter = host_adapter or select_host_adapter(self.host_kind)
+        self.host_preparation = None
         self._started = False
         self._enabled: tuple[str, ...] = ()
         self._last_error = ""
@@ -493,11 +436,15 @@ class LaunchController:
         #: dsh 用声明的首选端口。⚠ 这两个地址**只给人看**，不进 AI 面（控制信息不上 AI 腿）。
         from .portfile import read_port
         agg_port = read_port(self.super.log_dir.parent / AGGREGATE_PORT_FILE)
+        caps = self.host_adapter.capabilities(self.host_plan())
         spec = self.dsh_spec()
         st["ai_face"] = {
             "aggregate_url": f"http://127.0.0.1:{agg_port}/mcp" if agg_port else "",
             "dsh_url": (f"http://127.0.0.1:{int(spec.port_preference)}/"
                         if spec is not None else ""),
+            "host": self.host_adapter.name,
+            "host_label": str(caps.get("label", self.host_adapter.name)),
+            "host_config": str(caps.get("config_path", "")),
         }
         #: 聚合工具表同步属于独立事实：软件进程可以已经 ready，MCP 连接仍可能
         #: 在初始化窗口内失败。把它显式放进状态页，避免“软件活着但 AI 没工具”
@@ -519,6 +466,31 @@ class LaunchController:
             raise MechaError("聚合任务桥尚未装配", kind="task_bridge_unavailable")
         return self.agg_runtime.task_cancel(payload)
 
+    def host_plan(self, *, aggregate_port: int = 0,
+                  aggregate_url: str = "") -> HostPlan:
+        """给适配器用的启动期事实；不携带任何宿主 SDK 或 UI 概念。"""
+        return make_host_plan(self.host_kind, self.sites, self.runtime,
+                              aggregate_port=aggregate_port,
+                              aggregate_url=aggregate_url)
+
+    def host_info(self) -> dict:
+        """状态页只读这份宿主事实；外部宿主不产生可点击的存活滑块。"""
+        caps = self.host_adapter.capabilities(self.host_plan())
+        return {
+            "label": str(caps.get("label", self.host_adapter.name)),
+            "managed": bool(caps.get("managed", False)),
+            "child_id": self.host_adapter.child_id,
+            "external": bool(caps.get("external", False)),
+        }
+
+    def prepare_host(self, *, aggregate_port: int, aggregate_url: str = "") -> object:
+        """聚合端点就绪后调用；结果保存在控制器，供状态页与收尾读取。"""
+        plan = self.host_plan(aggregate_port=aggregate_port,
+                              aggregate_url=aggregate_url)
+        self.host_adapter.validate(plan)
+        self.host_preparation = self.host_adapter.prepare(plan)
+        return self.host_preparation
+
     def dsh_spec(self) -> "DSHSpec | None":
         """⭐ 那**一个**共用 dsh 的声明（合并后）—— 供面板**始终**列出它一行（§7）。
 
@@ -530,10 +502,10 @@ class LaunchController:
         那种情况 ``main()`` 会**响亮失败**，面板没必要在这里再抛一次。
         """
         try:
-            _, dsh = merge_dsh(self.sites)
+            dsh = self.host_adapter.spec(self.host_plan())
         except MechaError:
             return None
-        return dsh
+        return dsh  # type: ignore[return-value]
 
     def services(self) -> tuple[Service, ...]:
         """⭐ **全部站点的全部已声明服务**（§1.1 规则 6：面板**始终**列全部）。
@@ -580,9 +552,10 @@ class LaunchController:
         ⚠ **dsh（`DSH_CHILD_ID`）走另一支**（:meth:`set_dsh_enabled`）：它不在 `services()` 里
         —— 载体不是服务 ⇒ 不能落到下面"没有这个软件"那条上去（那正是它原先点了报错的原因）。
         """
-        #: ⭐ dsh 那一行的滑块：**关→开 = 重启 harness**（§7 定案），恒为 live、不走意图。
-        if svc_id == DSH_CHILD_ID:
-            return self.set_dsh_enabled(enabled)
+        #: ⭐ 宿主那一行的滑块：只有被托管的宿主才有 child；外部宿主不画假开关。
+        host_child_id = self.host_adapter.child_id
+        if host_child_id is not None and svc_id == host_child_id:
+            return self.set_host_enabled(enabled)
         svc = next((s for s in self.services() if s.id == svc_id), None)
         if svc is None:
             raise MechaError(
@@ -630,12 +603,11 @@ class LaunchController:
         就会**叠出第二个 ``--patch``**（overlay 写两遍）。
         """
         try:
-            child, _ = merge_dsh(self.sites)
+            return self.host_adapter.child(self.host_plan())
         except MechaError:
             return None
-        return child
 
-    def set_dsh_enabled(self, enabled: bool) -> dict:
+    def set_host_enabled(self, enabled: bool) -> dict:
         """⭐ 面板上 **dsh 那一行**的存活滑块（§7 定案：**关掉再打开 = 重启 harness**）。
 
         ## 为什么它就是"其他软件那个滑块"的同形
@@ -656,26 +628,31 @@ class LaunchController:
         3. ⚠ **起不来要响亮**：`merge_dsh` 会校验站点间 dsh 身份一致、`which_or_raise`
            会解析命令 ⇒ 失败**抛**，绝不回一句"已启动"（"静默假成功"是本工程最忌的形态）。
         """
+        host_id = self.host_adapter.child_id
+        if host_id is None:
+            return {"ok": False, "id": self.host_adapter.name,
+                    "error": f"{self.host_adapter.name} 是外部宿主，没有可操作的存活滑块"}
         child = self.dsh_child()
         if child is None:
-            self._last_error = ("dsh 声明合并失败（各站点的 dsh 身份/环境变量不一致）"
+            self._last_error = (f"{self.host_adapter.name} 声明合并失败"
                                 "⇒ 面板没法起它")
             self._save_status()
-            return {"ok": False, "id": DSH_CHILD_ID, "error": self._last_error}
+            return {"ok": False, "id": host_id, "error": self._last_error}
         try:
             if enabled:
-                #: 已停/已退出 ⇒ supervisor **重启**它（新实例）；还在跑 ⇒ 响亮拒绝
-                #: （面板的 checkbox 只在"当前是关"时才发 on=1，所以正常路径不会撞）。
                 self.super.start(child)
-            elif DSH_CHILD_ID in self.super.state_ids():
-                self.super.stop(DSH_CHILD_ID)      # 停进程、**保留 spec**（关→开才可能）
+            elif host_id in self.super.state_ids():
+                self.super.stop(host_id)
             self._save_status()
-            return {"ok": True, "id": DSH_CHILD_ID, "enabled": bool(enabled),
+            return {"ok": True, "id": host_id, "enabled": bool(enabled),
                     "applied": "live"}
         except MechaError as exc:
             self._last_error = f"{exc.kind}：{exc.message}"
             self._save_status()
-            return {"ok": False, "id": DSH_CHILD_ID, "error": self._last_error}
+            return {"ok": False, "id": host_id, "error": self._last_error}
+
+    #: 旧面板/判据仍可能按 dsh 名称调用；保留别名，行为由当前宿主适配器决定。
+    set_dsh_enabled = set_host_enabled
 
     # ---- 写权（③）：走"控制端点"那条腿（§7.1.1）----
     def write_authority_state(self, svc_id: str) -> dict:
@@ -857,7 +834,7 @@ class LaunchController:
                               "/ ai（交还给 AI）")
 
     def plan(self, enabled: Sequence[str]) -> StartupPlan:
-        return plan_startup(self.sites, enabled, self._known_pids())   # ⭐ 全部站点
+        return plan_startup(self.sites, enabled, self._known_pids(), self.host_kind)   # ⭐ 全部站点
 
     def _known_pids(self) -> dict[str, int]:
         out: dict[str, int] = {}
@@ -872,7 +849,7 @@ class LaunchController:
         if self._started:
             return {"ok": False, "error": "已经启动过了（本步不支持重启整站）"}
         try:
-            plan = plan_startup(self.sites, enabled, self._known_pids())   # ⭐ 全部站点
+            plan = plan_startup(self.sites, enabled, self._known_pids(), self.host_kind)   # ⭐ 全部站点
             if plan.stale:
                 self.super.clean_stale(plan.stale)      # 清掉的会进 state().cleaned
             #: ⭐⭐ **例行扫残留**（B，2026-10-10）：`_detect_stale` 只探"记过的 pid 还活着"
@@ -920,7 +897,8 @@ class LaunchController:
 
 
 def build_aggregate_wiring(*, sites: Sequence[Site], supervisor: Supervisor,
-                           aggregate_port: int = 0):
+                           aggregate_port: int = 0,
+                           host_adapter: AIHostAdapter | None = None):
     """把**聚合端点**接起来，返回 ``(endpoint, runtime, registry_facade)``。
 
     ⚠ **多站点（§1.1 规则 5）**：收**全部站点的全部服务**（平铺后的全集）——
@@ -946,11 +924,11 @@ def build_aggregate_wiring(*, sites: Sequence[Site], supervisor: Supervisor,
        却让"开关软件"立刻反映到服务端。
     """
     from .aggregate import AGGREGATE_SERVER_NAME, Aggregator
-    from .aggregate_runtime import (DEFAULT_TOOL_CALL_TIMEOUT_MS,
-                                    AggregateRuntime, make_prepare_hook,
-                                    site_runtime, write_dsh_overlay)
+    from .aggregate_runtime import DEFAULT_TOOL_CALL_TIMEOUT_MS, AggregateRuntime
     from .providers.mcp import McpEndpoint
     from .providers.mcp_client import Backend
+
+    host = host_adapter or select_host_adapter(AIHostKind.DSH)
 
     #: ⭐ 聚合端点/``mcp__<serverName>__`` 前缀用的名字 = **框架自己的**（§7.2）：
     #: ⚠ **不是**"第一个站点的名字"（原实现取 `sites[0].name`）—— 那是**位置**的偶然产物：
@@ -1044,126 +1022,33 @@ def build_aggregate_wiring(*, sites: Sequence[Site], supervisor: Supervisor,
 
     # ⭐ 平铺全集：**全部站点的全部服务**（§1.1 规则 5）
     all_svcs = flat_services(sites)
-    def refresh_dsh_overlay() -> None:
-        """通知 mecha 注入的 host 插件重新装载 MCP 客户端配置。
-
-        dsh 的旧连接可能在 initialize 时没有订阅 listChanged；工具表变化时
-        覆盖写同一路径，由插件通过公开 Loader API 重建 mcp-client，拿到完整表。
-        """
-        if sites:
-            write_dsh_overlay(site_runtime(sites[0]), mcp_port=mcp_port,
-                              server_name=AGGREGATE_SERVER_NAME,
-                              timeout_ms=DEFAULT_TOOL_CALL_TIMEOUT_MS)
-
-    def refresh_dsh_client() -> None:
-        """通过 DSH 自己的 mecha host 路由主动触发 MCP 客户端刷新。"""
-        import urllib.error
-        import urllib.request
-        row = next((r for r in supervisor.state().get("children", [])
-                    if r.get("id") == DSH_CHILD_ID and isinstance(r.get("port"), int)
-                    and r["port"] > 0), None)
-        port = row["port"] if row is not None else None
-        if not isinstance(port, int) or port <= 0:
-            # DSH 当前没有 ready 探针，supervisor 不会凭空填 port；启动命令已经
-            # 明确传入同一个声明端口，因此使用 DSHSpec 的启动值作为控制面地址。
-            try:
-                _, dsh_spec = merge_dsh(sites)
-                port = int(dsh_spec.port_preference)
-                print(f"[aggregate] WARN supervisor 未回读 DSH 端口，使用启动声明端口 {port}", flush=True)
-            except Exception as exc:
-                raise RuntimeError(f"无法解析 DSH 启动端口：{exc}") from exc
-        url = f"http://127.0.0.1:{port}{MCP_REFRESH_ROUTE}"
-        print(f"[aggregate] 请求 DSH 刷新 MCP 客户端：{url}", flush=True)
-        req = urllib.request.Request(
-            url,
-            data=b"{}", method="POST",
-            headers={"content-type": "application/json"},)
-        try:
-            with urllib.request.urlopen(req, timeout=1.0) as resp:
-                body = resp.read().decode("utf-8", errors="replace")
-                print(f"[aggregate] DSH 刷新路由返回 HTTP {resp.status}：{body}", flush=True)
-            # 主动验证异步重载的最终事实，不把 202 当成完成。
-            import threading
-            def verify() -> None:
-                import time
-                for attempt in range(1, 6):
-                    time.sleep(1.0)
-                    try:
-                        with urllib.request.urlopen(
-                                urllib.request.Request(url, method="GET"), timeout=1.0) as check:
-                            detail = check.read().decode("utf-8", errors="replace")
-                        print(f"[aggregate] DSH 刷新验证 #{attempt}：{detail}", flush=True)
-                        diagnostic = json.loads(detail).get("diagnostic", {})
-                        if (diagnostic.get("found")
-                                and diagnostic.get("requestedUrl") == diagnostic.get("currentUrl")):
-                            print("[aggregate] DSH 刷新验证通过：Entry 已指向当前聚合端点", flush=True)
-                            return
-                    except (urllib.error.URLError, OSError) as exc:
-                        print(f"[aggregate] DSH 刷新验证 #{attempt} 失败：{exc}", flush=True)
-                print("[aggregate] WARN DSH 刷新验证未确认 Entry 已切换", flush=True)
-            threading.Thread(target=verify, name="mecha-dsh-refresh-verify", daemon=True).start()
-            return True
-        except (urllib.error.URLError, OSError) as exc:
-            raise RuntimeError(f"DSH 主动刷新路由不可用：{exc}") from exc
-
+    runtime_root = supervisor.log_dir.parent
+    host_plan = make_host_plan(
+        host.name, sites, runtime_root, aggregate_port=int(mcp_port),
+        aggregate_url=f"http://127.0.0.1:{int(mcp_port)}/mcp")
+    wiring = HostWiring(supervisor=supervisor, aggregator=agg,
+                        endpoint=endpoint, mcp_port=int(mcp_port))
+    overlay_refresh = host.overlay_refresh(host_plan, wiring)
+    client_refresh = host.client_refresh(host_plan, wiring)
     runtime = AggregateRuntime(supervisor=supervisor,
                                services=all_svcs,
                                aggregator=agg, backend_factory=backend_factory,
-                               #: ⭐ 活工具表那一侧：每次 sync_backends 后"对账 + 广播"
                                endpoint=endpoint,
-                               client_refresh=refresh_dsh_client,
-                               overlay_refresh=refresh_dsh_overlay)
-    # ⭐ 铁律 7：进程事实**只有一个来源**（supervisor）；``known`` 交出**声明里全部** id
-    #   （否则"存在但没跑"会被误报成"压根没有这个软件"）。
+                               client_refresh=client_refresh,
+                               overlay_refresh=overlay_refresh)
+    wiring.runtime = runtime
+    # ⭐ 铁律 7：进程事实只有一个来源（supervisor）；resync_fn 是会话级失败的自愈口。
     agg.wire(state_fn=supervisor.state,
              open_fn=runtime.open_service, close_fn=runtime.close_service,
              known=[s.id for s in all_svcs],
-             # ⭐ 站点声明（供聚合面取 `how_to_open` 原话）+ 写权探针（**不缓存**、每次真问）
              specs=all_svcs,
-             authority_probe=runtime.probe_authority)
-    # ⭐ spawn dsh **之前那一刻**把 overlay 塞进它的 ``--patch``（端口此时已确定）。
-    # ⚠ 走**公开追加口**，不直接改 ``_prepare_hooks``：私有名不许外面碰
-    #   （钩子必须先拿到 supervisor 自己 ⇒ 构造参数那条路用不了 ⇒ 故给了这个方法）。
-    # ⚠ overlay 的 `serverName` 只用于给 dsh 的工具前缀 ⇒ 取第一个站点名即可
-    #   （`make_prepare_hook` 的 `site` 参数正是为这个用途）。
-    supervisor.add_prepare_hook(make_prepare_hook(
-        runtime, sites[0] if sites else None, lambda: mcp_port))
-    #: ⭐⭐ **"软件起来了/没了" ⇒ 工具表跟着变**（2026-10-10）：
-    #: ⚠ 不接这两条钩子，就**只有人手动动一下滑块**才会 attach（实测踩到 D3）——
-    #: 现象是"软件明明在跑，AI 手里却一个它的工具都没有"。
-    #: ⚠ 顺序：ready 时 attach（表里多出它的工具）→ 广播；gone 时 detach（表里变**墓碑**）
-    #: → 广播。两者都经 `sync_backends`，幂等（没变就不发通知）。
+             authority_probe=runtime.probe_authority,
+             resync_fn=runtime.sync_backends)
+    host.install(host_plan, wiring)
+    #: ready/gone 都经同一份 sync_backends；工具表刷新回调由具体宿主适配器决定。
     supervisor.add_ready_hook(lambda spec, child: runtime.sync_backends())
     supervisor.add_gone_hook(lambda spec, child: runtime.sync_backends())
     return endpoint, runtime, registry
-
-
-def _warn_if_dsh_port_taken(sites: Sequence[Site]) -> None:
-    """dsh 的首选端口已经被占时**响亮报告**（T3：不许"悄悄漂到别的端口"）。
-
-    ## 为什么要这条（2026-10-10 用户实测："极大影响使用"）
-
-    框架把**固定**的首选端口传给 dsh（`DSHSpec.argv()` 的 `--port`）。但上一次没收干净时，
-    **旧 dsh 还占着那个端口** ⇒ 新实例只能起在 3082/3083…，而人浏览器里那个 tab/书签
-    还是旧实例 ⇒ **"我在看哪一个？"**（旧的那个指向已经消失的聚合端点 ⇒ AI 工具没了）。
-    ⇒ 起之前先探一下并**说清楚**：谁占着、本次会漂到哪、怎么清（`python -m mecha --stop`
-    现在会扫残留 ✅）。⚠ 只报告、不阻塞（阻塞会把"能起来的世界"也拦住）。
-    """
-    seen: set[int] = set()
-    for site in sites:
-        spec = getattr(site, "dsh", None)
-        if spec is None:
-            continue
-        port = int(getattr(spec, "port_preference", 0) or 0)
-        if not port or port in seen:
-            continue
-        seen.add(port)
-        if _listening(port):
-            print(f"⚠ dsh 的首选端口 {port} 上**已经有人在听**（不是本次要起的那个）："
-                  f"浏览器里那个 dsh 可能是**上一轮留下的**。\n"
-                  f"  ⇒ 本次 dsh 会起在别的端口（别在旧 tab 里找 AI 面）。\n"
-                  f"  ⇒ 要清干净：`python -m mecha --stop`（它会扫残留）或关掉那一轮。",
-                  flush=True)
 
 
 def _request_stop(runtime: Path) -> int:
@@ -1254,6 +1139,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                          "**永久稳定**；被占时先清我们自己的残留，仍被占则响亮失败。"
                          "传 0 = 每次自动分配（逃生口））")
     ap.add_argument("--no-browser", action="store_true", help="不要自动开浏览器")
+    ap.add_argument("--ai-host", choices=[k.value for k in AIHostKind],
+                    default=AIHostKind.DSH.value,
+                    help="AI 宿主：dsh（默认）/ codex（外部 MCP 模式）/ none（不启宿主）")
     ap.add_argument("--dry-run", action="store_true", help="只打印计划，不 spawn")
     ap.add_argument("--stop", action="store_true",
                     help="把在跑的那个常驻 launcher **收尾停掉**（读 .page-port 请求它退出）")
@@ -1266,8 +1154,13 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     roots = [Path(r) for r in args.root] if args.root else None
     sites = load_sites(roots)
-    #: ⭐ dsh 首选端口被占时**响亮报告**（T3）—— 只报告、不阻塞；放在真起之前。
-    _warn_if_dsh_port_taken(sites)
+    host_kind = AIHostKind(args.ai_host)
+    host_adapter = select_host_adapter(host_kind)
+    base_host_plan = make_host_plan(
+        host_kind, sites, Path.cwd() / RUNTIME_DIR_NAME,
+        aggregate_port=int(getattr(args, "aggregate_port", 0) or 0))
+    host_adapter.warn(base_host_plan)
+    host_adapter.validate(base_host_plan)
 
     if args.dry_run:
         #: ⚠ **dry-run 必须在"任何副作用"之前返回**（实测抓到的真 bug）：
@@ -1277,9 +1170,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         #: ⇒ 所以这里**只读地**算计划：**不建目录、不抢单实例锁、不起任何东西**。
         #: ⚠ 连 `Supervisor(...)` 都不许构造 —— 它的 `__init__` 里也有 `log_dir.mkdir`
         #:   （第一版我在这里构造了它 ⇒ dry-run 照样建目录；**判据没抓到，是我读代码抓到的**）。
-        plan = plan_startup(sites, [s.id for s in flat_services(sites) if s.default_on])
+        plan = plan_startup(sites, [s.id for s in flat_services(sites)
+                                    if s.default_on], host_kind=host_kind)
         print(f"站点（{len(sites)} 个）："
               + "、".join(f"{s.name}[{len(s.services)}]" for s in sites))
+        print(f"AI 宿主：{host_adapter.name}（{host_kind.value}）")
         print("启动顺序：" + " → ".join(c.id for c in plan.ordered))
         print("待清理残留：" + (", ".join(i.target for i in plan.stale) or "（无）"))
         return 0
@@ -1293,18 +1188,27 @@ def main(argv: Sequence[str] | None = None) -> int:
     # ⭐ §1.1 规则 2/7：服务 id **跨站点**全局唯一（它是工具前缀）
     try:
         assert_service_ids_global_unique(sites)
-        merge_dsh(sites)               # ⭐ dsh 全生态一个：站点们共同贡献、身份必须一致
+        host_adapter.validate(base_host_plan)
     except MechaError as exc:
         print(f"✖ {exc.message}", file=sys.stderr)
         return 2
     supervisor = Supervisor(log_dir=runtime / "logs", state_path=runtime / "state.json")
-    controller = LaunchController(sites=sites, runtime=runtime, supervisor=supervisor)
+    controller = LaunchController(sites=sites, runtime=runtime,
+                                  supervisor=supervisor, host_kind=host_kind,
+                                  host_adapter=host_adapter)
 
-    # ⭐ 聚合端点：**起在任何 child 之前**（dsh 的 overlay 要指向它），收**全部站点**
+    # ⭐ 聚合端点：**起在任何 child 之前**（宿主 overlay/配置要指向它），收**全部站点**
     endpoint, agg_runtime, _ = build_aggregate_wiring(
         sites=sites, supervisor=supervisor,
-        aggregate_port=int(getattr(args, "aggregate_port", 0) or 0))
-    controller.after_start = lambda: agg_runtime.sync_backends()
+        aggregate_port=int(getattr(args, "aggregate_port", 0) or 0),
+        host_adapter=host_adapter)
+
+    def after_start() -> None:
+        agg_runtime.sync_backends()
+        controller.prepare_host(aggregate_port=int(endpoint.port or 0),
+                                aggregate_url=str(endpoint.url or ""))
+
+    controller.after_start = after_start
     controller.agg_runtime = agg_runtime   # 面板的存活滑块走它那条正规路径（含端点同步）
 
     if args.all:

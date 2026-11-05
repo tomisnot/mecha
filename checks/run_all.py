@@ -30,7 +30,7 @@ SUITES = {
         "phase6_command_surface_selfcheck", "phase7_job_contract_selfcheck",
         "phase8_artifact_contract_selfcheck", "phase9_toolhost_selfcheck",
         "phase10_monitor_contract_selfcheck", "roles_selfcheck",
-        "aggregate_selfcheck", "authority_read_selfcheck",
+        "host_adapter_selfcheck", "aggregate_selfcheck", "authority_read_selfcheck",
         "authority_shared_mode_selfcheck", "phase13_panel_decl_selfcheck",
         "portfile_selfcheck",
     ),

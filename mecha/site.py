@@ -419,7 +419,10 @@ class Service:
 
 @dataclass(frozen=True)
 class TaskSpec:
-    """一个项目自愿交给 DSH job 桥接的长任务工具。"""
+    """一个项目自愿交给 AI 宿主任务桥的长任务工具。
+
+    dsh 把它包装成 dsh job；Codex 适配器用同一份声明生成 PostToolUse 桥。
+    """
 
     submit_tool: str
     status_tool: str

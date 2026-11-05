@@ -291,20 +291,28 @@ def _service_row(svc: object, row: dict | None, intent: bool, started: bool,
         f'</div>')
 
 
-def _dsh_row(row: dict | None) -> str:
-    """dsh 那一行（§7：它是控制台的一项，**不是"起了才有"**）。
-
-    ⭐ 它的滑块与软件那个**同形**：**关掉再打开 = 重启 harness**
-    （改了 dsh 侧插件/配置 ⇒ 关开即生效；⚠ 这条由 §7 的定案钉住，
-    实现走 `LaunchController.set_dsh_enabled` → `supervisor.start/stop`，
-    **不是**"勾选意图"那一支：dsh 是载体、不在 `services()` 里）。
-    """
-    sid = DSH_CHILD_ID
+def _dsh_row(row: dict | None, info: dict | None = None) -> str:
+    """AI 宿主那一行；只有被 supervisor 托管的宿主才有真实存活滑块。"""
+    host = info or {"label": "dsh", "managed": True, "child_id": DSH_CHILD_ID,
+                    "external": False}
+    sid = str(host.get("child_id") or host.get("label") or DSH_CHILD_ID)
+    label = str(host.get("label") or "dsh")
+    managed = bool(host.get("managed"))
     running = bool((row or {}).get("pid"))
+    if not managed:
+        suffix = "外部连接" if host.get("external") else "未启用"
+        return (
+            f'<div class="row"><span></span><span class="name">{html.escape(label)}</span>'
+            f'<span class="muted">—</span>'
+            f'{_badge(str((row or {}).get("state") or "external"))}'
+            f'<span class="muted">—</span>'
+            f'<span class="brief muted">{html.escape(suffix)}：不由启动器开关</span></div>')
     return (
-        f'<div class="row"><span></span><span class="name">dsh</span>'
-        f'<span class="sw"><input type="checkbox" id="sw-{sid}"{" checked" if running else ""}'
-        f' onchange="toggle(\'{sid}\', this.checked)"><label for="sw-{sid}"></label></span>'
+        f'<div class="row"><span></span><span class="name">{html.escape(label)}</span>'
+        f'<span class="sw"><input type="checkbox" id="sw-{html.escape(sid)}"'
+        f'{" checked" if running else ""}'
+        f' onchange="toggle(\'{html.escape(sid)}\', this.checked)">'
+        f'<label for="sw-{html.escape(sid)}"></label></span>'
         f'{_badge(str((row or {}).get("state") or "stopped"))}'
         f'<span class="muted">—</span>'
         f'<span class="brief muted">它只是 AI 那条腿的载体</span></div>')
@@ -371,31 +379,31 @@ def render_page(controller: Controller) -> str:
             f'<div class="notice muted">已自动清掉 {len(cleaned)} 项陈旧残留'
             f'（<strong>无需你操作</strong>）'
             f'<span class="pending">　明细见 state.json 与 supervisor 日志</span></div>')
-    #: ⭐ **dsh 那一行始终在**（§7 定稿形态）：它**不是**"起了才有"的一项，
-    #: 而是控制台的一项（"它只是 AI 那条腿的载体"）。
-    #: ⚠ 原先只在 `rows` 里有 dsh 时才渲染 ⇒ **启动前那一行是缺的**（实测抓到）。
-    dsh_declared = False
+    #: ⭐ AI 宿主那一行始终在；名称、托管状态与 child id 由适配器给出。
     try:
-        dsh_declared = controller.dsh_spec() is not None   # type: ignore[attr-defined]
-    except Exception:                                      # noqa: BLE001 - 页面如实降级
-        dsh_declared = False
-    if rows.get(DSH_CHILD_ID) is not None or dsh_declared:
-        items.append(_dsh_row(rows.get(DSH_CHILD_ID)))
-        #: ⚠ 左栏也要有它 —— 否则两处清单不一致
-        #: （右栏 4 行、左栏 3 行），而左栏本该是运行时一览。
-        side.append('<div class="sideitem"'
-                    + (' on' if (rows.get(DSH_CHILD_ID) or {}).get("pid") else '')
-                    + '>dsh</div>')
+        host_info = dict(controller.host_info())  # type: ignore[attr-defined]
+    except Exception:                                      # noqa: BLE001 - 旧替身按 dsh 渲染
+        host_info = {"label": "dsh", "managed": True,
+                     "child_id": DSH_CHILD_ID, "external": False}
+    host_child_id = str(host_info.get("child_id") or DSH_CHILD_ID)
+    host_row = rows.get(host_child_id)
+    items.append(_dsh_row(host_row, host_info))
+    #: ⚠ 左栏也要有它 —— 否则两处清单不一致（右栏 4 行、左栏 3 行）。
+    side.append('<div class="sideitem"'
+                + (' on' if (host_row or {}).get("pid") else '')
+                + '>' + html.escape(str(host_info.get("label", "dsh"))) + '</div>')
 
     #: ⭐ **AI 那条腿的地址**（T4）：聚合端点**每次启动都变**，所以页面必须**现取**
     #: （`state()["ai_face"]` 里是控制器按端口文件读出来的），不能写死。
     #: ⚠ 只给人看 —— 控制信息不上 AI 那条腿。
     _ai = st.get("ai_face") or {}
     ai_line = ""
-    if _ai.get("aggregate_url") or _ai.get("dsh_url"):
+    if _ai.get("aggregate_url") or _ai.get("dsh_url") or _ai.get("host_config"):
+        host_label = html.escape(str(_ai.get("host_label") or _ai.get("host") or "dsh"))
+        host_addr = (_ai.get("dsh_url") or _ai.get("host_config") or "（外部配置）")
         ai_line = ('<div class="pending" style="padding:2px 8px">'
                    f'AI 面：聚合端点 {html.escape(str(_ai.get("aggregate_url") or "（未知）"))}'
-                   f'　·　dsh {html.escape(str(_ai.get("dsh_url") or "（未知）"))}'
+                   f'　·　{host_label} {html.escape(str(host_addr))}'
                    '　（⚠ 聚合地址每次启动会变；要固定用 `python -m mecha --aggregate-port <端口>`）'
                    '</div>')
 
