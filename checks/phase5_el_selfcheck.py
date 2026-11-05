@@ -90,10 +90,14 @@ def main() -> int:
               "preview_run", "run_sim", "query_levels",
               "submit_job", "read_job", "cancel_job", "run_actions",
               "set_drive", "read_waves", "reset_config"}
-    if set(names) == expect:
-        _ok(f"工具注册齐且过命名守卫：{sorted(names)}")
+    #: ⚠ 判"全在"而不是"相等"：EL 侧新增工具是合法的（如 `build_calib`），
+    #: 集合相等会把"它多了一个工具"误报成红；多出来的照实打印，便于看清单漂移。
+    if expect <= set(names):
+        extra = sorted(set(names) - expect)
+        _ok(f"工具注册齐且过命名守卫：{sorted(names)}"
+            + (f"；多出 {extra}" if extra else ""))
     else:
-        _fail(out, f"工具集不符：{names}")
+        _fail(out, f"工具集不全：缺 {sorted(expect - set(names))}；实有 {names}")
     for s in tools.schemas():
         if set(s.keys()) != {"name", "description", "parameters"}:
             _fail(out, f"工具 {s['name']} 投影泄漏字段")

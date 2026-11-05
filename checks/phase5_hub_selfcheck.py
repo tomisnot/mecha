@@ -66,10 +66,16 @@ async def drive(port: int, out: list[str]) -> None:
             # 1. list_tools：形状不降级
             tools = (await sess.list_tools()).tools
             names = {t.name for t in tools}
-            if names == EXPECTED_TOOLS:
-                _ok(f"list_tools 工具齐（含异步作业面）：{sorted(names)}")
+            #: ⚠ 判"全在"而不是"相等"：EL 侧新增工具是**合法的**（如 `build_calib`），
+            #: 用集合相等会把"它多了一个工具"误报成红。本文件开头写的就是"EXPECTED_TOOLS
+            #: 全在"；多出来的照实打印，便于人看清单漂移。
+            if EXPECTED_TOOLS <= names:
+                extra = sorted(names - EXPECTED_TOOLS)
+                _ok(f"list_tools 工具齐（含异步作业面）：{sorted(names)}"
+                    + (f"；多出 {extra}" if extra else ""))
             else:
-                _fail(out, f"工具集不符：{names}")
+                _fail(out, f"工具集不全：缺 {sorted(EXPECTED_TOOLS - names)}；"
+                           f"实有 {sorted(names)}")
             sc = next((t for t in tools if t.name == "set_config"), None)
             schema_obj = getattr(sc, "input_schema", None) or getattr(sc, "inputSchema", None)
             props = (schema_obj or {}).get("properties", {}) if sc else {}
