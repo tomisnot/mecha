@@ -112,7 +112,10 @@ SITE = Site(
 
 
 def _http(port: int, method: str, path: str, body: str = "") -> tuple[int, str]:
-    c = http.client.HTTPConnection("127.0.0.1", port, timeout=15)
+    #: ⚠ `POST /start` 是**同步等到全部 child 就绪**的：三个 child（两个 mock 软件
+    #: + dsh harness）实测 15.7s ⇒ 原来的 15s 卡在边界上，判据会**随机红**
+    #: （实测抓到的就是 `TimeoutError`）。这里按"真实启动预算"给，别用恰好够。
+    c = http.client.HTTPConnection("127.0.0.1", port, timeout=90)
     try:
         c.request(method, path, body=body,
                   headers={"Content-Type": "application/x-www-form-urlencoded"})
@@ -123,9 +126,15 @@ def _http(port: int, method: str, path: str, body: str = "") -> tuple[int, str]:
 
 
 def _wait_url(log: Path, proc: subprocess.Popen, deadline_s: float = 60.0) -> int | None:
-    """等 launcher 在日志里打出页面 URL（**读文件，不走管道** —— 沙箱下管道会 EPERM）。"""
+    """等 launcher 在日志里打出**它自己那张控制台**的 URL。
+
+    ⚠ 不能拿「日志里第一个 ``http://127.0.0.1:N/``」当答案：聚合端点就绪时会先打
+    ``[aggregate] 聚合 MCP 端点已就绪：http://127.0.0.1:3089/``（实测）。旧正则
+    抓到的是它 ⇒ ``GET /`` 回 ``Not Found``（9 字节）⇒ ②③ 连带红。⇒ 只认 launcher
+    自己那行 ``mecha：已启动 ⇒ …`` / ``mecha：等待选择 ⇒ …``。
+    """
     end = time.time() + deadline_s
-    pat = re.compile(r"http://127\.0\.0\.1:(\d+)/")
+    pat = re.compile(r"mecha：(?:已启动|等待选择)[^\n]*?⇒\s*http://127\.0\.0\.1:(\d+)/")
     while time.time() < end:
         if proc.poll() is not None:
             return None

@@ -36,6 +36,7 @@ import json
 import os
 import socket
 import sys
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -1085,15 +1086,32 @@ def _request_stop(runtime: Path) -> int:
         with urllib.request.urlopen(req, timeout=20) as resp:
             resp.read()
     except (urllib.error.URLError, OSError) as exc:
-        #: ⭐ **兜底：launcher 已经不在 ⇒ 扫残留**（2026-10-10 用户实测"AI 工具突然没了、
-        #: MCP 端口像变了"）。原因不是端口会变，而是**孩子们（含 dsh）还在跑**：
-        #: 你浏览器里那个 dsh 指向一个**已经不存在**的聚合端点 ⇒ 掉工具；而它又占着
-        #: 首选的 3081 ⇒ 新实例漂到 3082 ⇒ 人看的是旧世界。⇒ 这里把 state.json 里记过、
-        #: **现在还活着**的 child 清掉（只清我们自己记过的 pid），并如实报清掉了谁。
-        print(f"请求收尾失败（{exc}）：那个 launcher 已经不在了 ⇒ 改为**扫残留**。")
+        #: ⚠ **连接被对端关掉 ≠ launcher 还活着**：收尾路径里它会先关监听、停
+        #: children、清端口文件，最后才退出 ⇒ 客户端多半**收不到那个响应**
+        #: （实测：`--stop` 每次都报「远程主机强迫关闭了一个现有的连接」，而
+        #: launcher 日志里其实一切正常）。⇒ 判据不该是异常，而是**端口文件还在
+        #: 不在**：那是 launcher 自己写的，也只有它自己会删。
+        deadline = time.monotonic() + 15.0
+        while time.monotonic() < deadline and pf.is_file():
+            time.sleep(0.2)
         from .supervise import Supervisor
 
         sup = Supervisor(log_dir=runtime / "logs", state_path=runtime / "state.json")
+        if not pf.is_file():
+            print("launcher 已完成收尾并退出（响应前连接被它关掉，属正常收尾）。")
+            leftover = sup.sweep_leftovers()
+            for line in leftover:
+                print(f"  · {line}")
+            if leftover:
+                print(f"但它留下了 {len(leftover)} 个残留进程，已清掉。")
+                return 0
+            return 0
+        #: ⭐ **兜底：launcher 真的不在了 ⇒ 扫残留**（2026-10-10 用户实测"AI 工具突然
+        #: 没了、MCP 端口像变了"）。原因不是端口会变，而是**孩子们（含 dsh）还在跑**：
+        #: 你浏览器里那个 dsh 指向一个**已经不存在**的聚合端点 ⇒ 掉工具；而它又占着
+        #: 首选的 3081 ⇒ 新实例漂到 3082 ⇒ 人看的是旧世界。⇒ 这里把 state.json 里记过、
+        #: **现在还活着**的 child 清掉（只清我们自己记过的 pid），并如实报清掉了谁。
+        print(f"请求收尾没有得到响应（{exc}），端口文件仍在 ⇒ launcher 似乎已不在，改为扫残留。")
         cleaned = sup.sweep_leftovers()
         if cleaned:
             for line in cleaned:
