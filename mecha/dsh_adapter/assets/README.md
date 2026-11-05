@@ -1,5 +1,10 @@
 # dsh 集成**标准件**（共享资产）
 
+> **2026-11-05 目录迁移**：本资产从 `mecha/dsh-panel/` 迁入
+> `mecha/dsh_adapter/assets/`。npm 包名仍是 `@mecha/dsh-panel`；项目依赖路径需改为
+> `"@mecha/dsh-panel": "file:<mecha 仓>/mecha/dsh_adapter/assets"`。
+> 下文中的历史设计叙述保留，但实际目录以本节为准。
+
 > ## ⛔ 2026-10-10：**桥那一整套已删除**（用户裁决 = 方案 A）—— 读本文前先看这条
 >
 > **工具面只有一条腿**：**框架的聚合端点**（`mecha/aggregate.py` + `aggregate_runtime.py`，
@@ -398,7 +403,7 @@ panel-data.ts(173,53): error TS2304: Cannot find name 'ConfigWire'.
 
 ```jsonc
 // 项目的 package.json
-"dependencies": { "@mecha/dsh-panel": "file:../mecha/mecha/dsh-panel" }
+"dependencies": { "@mecha/dsh-panel": "file:../mecha/mecha/dsh_adapter/assets" }
 ```
 
 `npm install` 之后，`node_modules/@mecha/dsh-panel` 是**指向本目录的 junction**
@@ -442,7 +447,7 @@ panel-data.ts(173,53): error TS2304: Cannot find name 'ConfigWire'.
    ```
    ⚠ 它与 `tsx` 是**同一权宜之计的两半**：当初正是为了绕这个旗标才不得不装 `tsx`
    ⇒ **两样一起去掉才干净**（三家实测都中过、现已全清）。
-   ⚠ 这条**只有真在消费者位置上才复现**：本仓自己 `node --test mecha/dsh-panel/*.test.ts`
+   ⚠ 这条**只有真在消费者位置上才复现**：本仓自己 `node --test mecha/dsh_adapter/assets/*.test.ts`
    用的是相对路径、不走 junction，加了旗标照样绿——**别拿仓内绿来否证它**。
 4. ⭐⭐ **框架仓必须装它自己的 node 侧依赖**（`mecha/package.json` 的 `@modelcontextprotocol/sdk`
    / `react`）。**这是 2026-10-02 三家同时踩的坑**，机制一句话：
@@ -568,7 +573,7 @@ iframe 形态的状态输入是**另一组**（地址 + 内层可达 + 视图 + 
 ## 怎么跑判据（**零 npm 依赖**）
 
 ```powershell
-node --test mecha/dsh-panel/*.test.ts
+node --test mecha/dsh_adapter/assets/*.test.ts
 ```
 Node ≥ 22.6 **原生剥类型**，不需要 `tsx`、不需要 `npm install`（老版本加
 `--experimental-strip-types`）。测试用 `node:test` + `node:assert/strict`，只用内建模块。
@@ -656,7 +661,7 @@ Python 代码 import 它）。它随包分发的方式是 `pyproject.toml` 的 `
 那份表的唯一职责（发现副本漂移）已被"单一副本"结构性地消灭。
 
 ⚠ **每一家都要**（迁移清单）：
-1. `"@mecha/dsh-panel": "file:<mecha 仓>/mecha/dsh-panel"` 装进来；
+1. `"@mecha/dsh-panel": "file:<mecha 仓>/mecha/dsh_adapter/assets"` 装进来；
 2. tsconfig 开 **`preserveSymlinks: true`**（否则经 junction 找不到 SDK，见「迁移时必须知道的**四**件事」第 2 条）；
    ⚠ **但只开这一处**：**别给 `node` 加 `--preserve-symlinks`**（那是反面陷阱 ⇒
    `ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`；同时**删掉 `tsx`**，见第 3 条）；
@@ -691,7 +696,7 @@ Python 代码 import 它）。它随包分发的方式是 `pyproject.toml` 的 `
 （D-24：这条只有真出包才能证，读代码看不出来。）
 ⚠ ⭐ **2026-10-01 又抓到第三次同款**：`package.json` **不会**被 `*.ts` / `*.tsx` / `*.md` 匹配
 ⇒ 不加 `dsh-panel/*.json` 的话，**pip 装出来的 mecha 里没有它**，消费侧
-`npm install file:<...>/mecha/dsh-panel` **直接装不上**（方案级失败）。已加并复验。
+`npm install file:<...>/mecha/dsh_adapter/assets` **直接装不上**（方案级失败）。已加并复验。
 ⚠ 这条核对**此前的两次**：① 一次探针把**真仓目录**当草稿目录，往里写了两个入口
 文件，轮子清单当场从 7 变成 **9**；② ⭐ **`*.ts` 不匹配 `.tsx`** ⇒ 面板壳曾经**不会随包
 发货**（`package-data` 里没单列 `.tsx`）——**三次都是"另一层"抓到的**。

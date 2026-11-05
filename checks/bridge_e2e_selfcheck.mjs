@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 const mod = await import(new URL(
-  '../mecha/dsh-panel/host-plugin/mecha-panel-host.mjs', import.meta.url,
+  '../mecha/dsh_adapter/assets/host-plugin/mecha-panel-host.mjs', import.meta.url,
 ).href)
 const { apply } = mod
 

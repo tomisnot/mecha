@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 
 const mod = await import(new URL(
-  '../mecha/dsh-panel/host-plugin/mecha-panel-host.mjs', import.meta.url,
+  '../mecha/dsh_adapter/assets/host-plugin/mecha-panel-host.mjs', import.meta.url,
 ).href)
 const { coerceTaskValue } = mod
 

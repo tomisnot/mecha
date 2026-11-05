@@ -21,15 +21,15 @@ PANEL_SERVICES_ENV = "MECHA_PANEL_SERVICES"
 PANEL_PORT_FILES_ENV = "MECHA_PANEL_PORT_FILES"
 TASK_SPECS_ENV = "MECHA_TASK_SPECS"
 
-ASSET_DIR_NAME = "dsh-panel"
+ASSET_DIR_NAME = "assets"
 PATCH_FILENAME = "mecha-panel.patch.yml"
 HOST_PLUGIN_REL = "host-plugin/mecha-panel-host.mjs"
 PANEL_PLUGIN_ENTRY_ID = "mecha-panel-host"
 
 
 def asset_dir() -> Path:
-    """框架内 dsh 资产的绝对路径；资产目录暂保持在 ``mecha/dsh-panel``。"""
-    return Path(__file__).resolve().parents[1] / ASSET_DIR_NAME
+    """框架内 dsh 资产的绝对路径：``mecha/dsh_adapter/assets``。"""
+    return Path(__file__).resolve().parent / ASSET_DIR_NAME
 
 
 def framework_patch_path() -> Path:

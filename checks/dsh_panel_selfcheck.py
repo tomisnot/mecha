@@ -1,4 +1,4 @@
-"""dsh 面板参考实现（``mecha/dsh-panel/``）的守卫：跑它的**共享自测** + 自证非退化。
+"""dsh 面板资产（``mecha/dsh_adapter/assets/``）的守卫：跑共享自测 + 自证非退化。
 
 ## 为什么挂进全门禁（R10）
 
@@ -86,10 +86,12 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-PANEL_DIR = ROOT / "mecha" / "dsh-panel"
+PANEL_DIR = ROOT / "mecha" / "dsh_adapter" / "assets"
 TIMEOUT_SECONDS = 300
 
-_COUNT_RE = re.compile(r"^\u2139\s+(tests|pass|fail|skipped)\s+(\d+)\s*$", re.M)
+#: Node 在 TTY 下用 ``ℹ tests N``，非 TTY 下用 TAP 的 ``# tests N``。
+#: 两种都是真实计数，不能只认一种，否则会把“已跑完”误判成“零用例”。
+_COUNT_RE = re.compile(r"^\s*(?:\u2139|#)\s+(tests|pass|fail|skipped)\s+(\d+)\s*$", re.M)
 _FAIL_RE = re.compile(r"^\u2716\s+(.+?)\s*\(\d", re.M)
 _TS_ERROR_RE = re.compile(r"error TS\d+", re.M)
 

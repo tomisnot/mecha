@@ -115,7 +115,7 @@ python checks/run_all.py --all
 - [能力快照](docs/capabilities.md)：可按需生成的代码导览。
 - [历史文档](docs/history/)：阶段性方案、决策记录和交接材料。
 - `mecha/`：框架核心、Provider、启动与适配机制。
-- `mecha/dsh-panel/`：供项目使用的共享面板资产。
+- `mecha/dsh_adapter/assets/`：供项目使用的共享 dsh 面板资产。
 
 能力快照可用 `python scripts/gen_capability_map.py` 更新；注册表与实际接口是能力来源。
 

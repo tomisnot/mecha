@@ -12,7 +12,9 @@
 
 已完成第三阶段：Codex `prepare()` 生成 `PostToolUse` 与 `PermissionRequest` Hook；`hook_entry` 把任务提交回执写入隔离的 `tasks.jsonl`，`/monitor` 显示这本账；`PermissionRequest` 只审计、不输出 decision，保留 Codex 原有 OS 审批流程，领域写权仍归 mecha Gate。
 
-尚未开始：dsh 面板 TS/TSX 资产目录迁移、managed App Server 客户端。实际 Codex 版本上的 Hook 加载仍需真机验收；本阶段已验证配置形状、入口转换与任务账闭环。
+已完成第四阶段：dsh 面板 TS/TSX 资产整体迁入 `mecha/dsh_adapter/assets/`，package-data 已更新并用真实 wheel 核验了 `package.json`、patch、面板壳、host 插件与 `.d.mts` 均随包发出；npm 包名仍为 `@mecha/dsh-panel`，下游只改 `file:` 路径。
+
+尚未开始：managed App Server 客户端。实际 Codex 版本上的 Hook 加载仍需真机验收；本阶段已验证配置形状、入口转换、任务账闭环和资产出包。
 
 ## 1. 施工结论
 
@@ -65,7 +67,7 @@ Codex CLI / SDK / App Server
 | `mecha/aggregate_runtime.py:88-121, 567-590` | `overlay_text`、`make_prepare_hook` 和 `MECHA_TASK_BRIDGE_FILE` 是 dsh 形态 | 保留 dsh 实现，另增加宿主无关的任务桥配置出口 |
 | `mecha/dsh_panel.py` | 框架 patch、host 插件、`MECHA_PANEL_*`、`MECHA_TASK_SPECS` 全是 dsh 插件接线 | Codex 路径不复用这些 env；监控数据仍走 `cockpit` |
 | `mecha/providers/status_page.py` | 页面有固定 dsh 行和 dsh 存活滑块 | 改成按当前 `AIHostAdapter` 显示宿主行；未托管外部 Codex 时显示“外部连接”，不画假开关 |
-| `mecha/dsh-panel/host-plugin/mecha-panel-host.mjs` | dsh `tools/post-execute` 与 `jobs.start` 包装长任务 | 另写 Codex Hook 适配器，不修改 dsh 插件 |
+| `mecha/dsh_adapter/assets/host-plugin/mecha-panel-host.mjs` | dsh `tools/post-execute` 与 `jobs.start` 包装长任务 | 另写 Codex Hook 适配器，不修改 dsh 插件 |
 
 ## 4. 目标抽象
 
@@ -112,7 +114,7 @@ mecha/
     host.py                # CodexHostAdapter
 ```
 
-这条边界与“消除启动层分支”是同一件事：`launch.py` 只持有 `AIHostAdapter`，不出现 dsh 的 overlay、patch、env 或 Codex 的 TOML、Hook、SDK 细节。首版施工把 Python 逻辑迁入上述目录；现有 `mecha/dsh_panel.py` 与 `aggregate_runtime.py` 中的 dsh 函数改为兼容性再导出，`mecha/dsh-panel/` 资产路径先保留，以免一次改动牵动 package-data、面板判据和下游 `file:` 依赖。资产目录迁入 `dsh_adapter/assets/` 作为独立收口提交，不与协议接线混做。
+这条边界与“消除启动层分支”是同一件事：`launch.py` 只持有 `AIHostAdapter`，不出现 dsh 的 overlay、patch、env 或 Codex 的 TOML、Hook、SDK 细节。首版施工把 Python 逻辑迁入上述目录；现有 `mecha/dsh_panel.py` 与 `aggregate_runtime.py` 中的 dsh 函数改为兼容性再导出，`mecha/dsh_adapter/assets/` 资产路径先保留，以免一次改动牵动 package-data、面板判据和下游 `file:` 依赖。资产目录迁入 `dsh_adapter/assets/` 作为独立收口提交，不与协议接线混做。
 
 ## 5. 分阶段施工
 
@@ -161,13 +163,13 @@ startup_readiness = "connection"
 
 ### 阶段 C：宿主无关的监控面
 
-不移植 `mecha/dsh-panel/` 到 Codex。现有 `Monitor/Cockpit` 的 `/status`、`/activity`、`/history`、`/config` 已经是宿主无关的权威读面，直接复用。
+不移植 `mecha/dsh_adapter/assets/` 到 Codex。现有 `Monitor/Cockpit` 的 `/status`、`/activity`、`/history`、`/config` 已经是宿主无关的权威读面，直接复用。
 
 新增 `mecha/monitor_page.py`，由 `StatusPage` 挂出 `/monitor`：
 
 - 数据源来自 `Service.monitor` 声明，不写死项目词；
 - 保留 `address/offline/route/empty` 四档，不把读不到渲染成空表；
-- 复用 `mecha/dsh-panel/panel/panel-view.ts` 中经过单测的纯渲染逻辑，可在 Python 状态页生成等价 HTML，或将其抽成宿主无关 JS 资产；
+- 复用 `mecha/dsh_adapter/assets/panel/panel-view.ts` 中经过单测的纯渲染逻辑，可在 Python 状态页生成等价 HTML，或将其抽成宿主无关 JS 资产；
 - 控制台同时显示聚合端点、当前 AI 宿主、各软件状态和最近操作记录。
 
 这样 dsh 与 Codex 共用同一套监控后端，只有宿主插件层不同。App Server 自定义客户端只在阶段 E 需要，不作为首版前置条件。
