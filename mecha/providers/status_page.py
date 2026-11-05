@@ -221,11 +221,11 @@ def _host_notice(out: dict) -> str:
         f'{s.get("step")}：{"✅" if s.get("ok") else "❌ " + str(s.get("error", ""))}'
         for s in steps)
     if not steps:
-        return (f'<div class="notice muted">当前就是 '
+        return (f'<div class="notice muted" data-live="1">当前就是 '
                 f'<strong>{kind}</strong>（没动任何东西）。</div>')
     cls = "notice" if out.get("ok") else "notice err"
     title = f"已{verb} " if out.get("ok") else f"{verb}未完成："
-    return (f'<div class="{cls}">{title}<strong>{kind}</strong>'
+    return (f'<div class="{cls}" data-live="1">{title}<strong>{kind}</strong>'
             f'<br><span class="muted">{html.escape(detail)}</span></div>')
 
 
@@ -332,7 +332,7 @@ def _service_row(svc: object, row: dict | None, intent: bool, started: bool,
     prefix = f"{site_name} · " if site_name else ""
     tail = f'pid {(row or {}).get("pid")}' if running else "未运行"
     return (
-        f'<div class="row">'
+        f'<div class="row" data-row="{sid}">'
         # 左侧勾选**只表达"打算开"**（意图）⇒ 不可点：真正的控件是右边那个滑块
         f'<input type="checkbox"{checked} disabled title="打算开（启动前）">'
         f'<span class="name">{sid}</span>'
@@ -378,7 +378,7 @@ def _host_row(choice: dict, kind: str, row: dict | None) -> str:
     else:
         badge = _badge("external")
     return (
-        f'<div class="row">'
+        f'<div class="row" data-row="{html.escape(value)}">'
         #: 与项目行完全同形：第一格是**不可点的指示框**（项目行那边是"打算开"，
         #: 这边是"这一轮用它"）；真正的控件是右边那个滑块。
         f'<input type="checkbox"{" checked" if picked else ""} disabled '
@@ -396,6 +396,74 @@ def _host_block(choices: list[dict], kind: str, rows: dict) -> list[str]:
     items = [_host_row(c, kind, rows.get(str(c.get("kind") or "")))
              for c in choices]
     return [head, *items]
+
+
+def _side_item(dom_id: str, on: bool, label: str = "") -> str:
+    """左栏一条；`data-side` 是局部刷新的定位键（宿主那条固定叫 host）。"""
+    text = label or dom_id
+    return (f'<div class="sideitem{" on" if on else ""}" '
+            f'data-side="{html.escape(dom_id)}">{html.escape(text)}</div>')
+
+
+def _mode_notice(out: dict) -> str:
+    """写权那一步的失败回执（成功时页面不弹提示，真值自己会变）。"""
+    detail = "；".join(
+        f'{s["step"]}：{"✅" if s["ok"] else "❌ " + str(s.get("error", ""))}'
+        for s in out.get("steps", [])) or str(out.get("error", ""))
+    return (f'<div class="notice err" data-live="1">'
+            f'{html.escape(str(out.get("error", "写权操作失败")))}<br>'
+            f'<span class="muted">{html.escape(detail)}</span></div>')
+
+
+def _row_html(controller: Controller, sid: str) -> tuple[str, str]:
+    """重画**一行**（项目或宿主）+ 左栏对应那一条 —— 局部刷新用。
+
+    ⚠ 为什么要有它：整页替换会把 `#main` / `#side` 两个滚动容器**重建** ⇒
+    滚动位置归零（用户实测：滑到底下操作，一拨滑块就被弹回顶部、按钮都点错）。
+    滑块是高频、单行的操作，不该重绘整页。
+    """
+    st = controller.state()
+    rows = {str(r.get("id")): r for r in st.get("children", [])}
+    started = controller.started()
+    intent = controller.intent()
+
+    #: 宿主那两行（dsh / codex）：左边一条是"AI · 当前宿主"
+    if sid in ("dsh", "codex"):
+        try:
+            info = dict(controller.host_info())      # type: ignore[attr-defined]
+        except Exception:                            # noqa: BLE001 - 老替身
+            info = {"kind": "dsh", "label": "dsh", "managed": True, "child_id": "dsh"}
+        kind = str(info.get("kind") or "")
+        try:
+            choices = [dict(c) for c in controller.host_choices()]  # type: ignore[attr-defined]
+        except Exception:                            # noqa: BLE001
+            choices = [{"kind": "dsh", "label": "dsh", "managed": True, "note": ""}]
+        choice = next((c for c in choices if str(c.get("kind") or "") == sid), None)
+        if choice is None:
+            return "", ""
+        row = _host_row(choice, kind, rows.get(sid))
+        on = kind == sid
+        return row, _side_item("host", on, label=f"AI · {info.get('label') or sid}")
+
+    svc = next((s for s in controller.services()          # type: ignore[arg-type]
+                if str(getattr(s, "id", "")) == sid), None)
+    if svc is None:
+        return "", ""
+    try:
+        ctl_state = controller.write_authority_state(sid)
+    except Exception as exc:                             # noqa: BLE001 - 页面如实降级
+        ctl_state = {"ok": False, "why": f"控制端点状态读不到：{exc}"}
+    site_name = ""
+    _sites = getattr(controller, "sites", ()) or ()
+    if not callable(_sites):
+        for _site in _sites:
+            for _svc in (getattr(_site, "services", ()) or ()):
+                if str(getattr(_svc, "id", "")) == sid:
+                    site_name = str(getattr(_site, "name", ""))
+    row = _service_row(svc, rows.get(sid), bool(intent.get(sid)), started, ctl_state,
+                       site_name=site_name)
+    on = bool((rows.get(sid) or {}).get("pid")) or (not started and bool(intent.get(sid)))
+    return row, _side_item(sid, on)
 
 
 def render_page(controller: Controller) -> str:
@@ -439,7 +507,8 @@ def render_page(controller: Controller) -> str:
         items.append(_service_row(svc, row, bool(intent.get(sid)), started, ctl_state,
                                  site_name=site_of.get(sid, "")))
         on = bool((row or {}).get("pid")) or (not started and bool(intent.get(sid)))
-        side.append(f'<div class="sideitem{" on" if on else ""}">{html.escape(sid)}</div>')
+        side.append(f'<div class="sideitem{" on" if on else ""}" '
+                    f'data-side="{html.escape(sid)}">{html.escape(sid)}</div>')
 
     err = str(st.get("last_error") or "")
     if err:
@@ -488,7 +557,8 @@ def render_page(controller: Controller) -> str:
     side.append('<div class="sidesep"></div>')
     side.append('<div class="sideitem"'
                 + (' on' if (host_row or {}).get("pid") else '')
-                + '>AI · ' + html.escape(str(host_info.get("label", "dsh"))) + '</div>')
+                + ' data-side="host">AI · '
+                + html.escape(str(host_info.get("label", "dsh"))) + '</div>')
 
     #: ⭐ **AI 那条腿的地址**（T4）：聚合端点**每次启动都变**，所以页面必须**现取**
     #: （`state()["ai_face"]` 里是控制器按端口文件读出来的），不能写死。
@@ -533,12 +603,45 @@ def render_page(controller: Controller) -> str:
         '</footer>'
         '<script>'
         'function fold(){document.getElementById("shell").classList.toggle("collapsed")}'
-        'async function post(p,b){const r=await fetch(p,{method:"POST",body:b||""});'
-        'document.documentElement.innerHTML=await r.text();termApply()}'
-        'function toggle(id,on){post("/service", new URLSearchParams({svc:id,on:on?"1":"0"}))}'
+        #: ⭐⭐ **整页替换也要保住滚动位置**：`#main` / `#side` 是内部滚动容器，
+        #: 换 DOM 后它们是新元素 ⇒ scrollTop 归零（用户实测：滑到底下操作，一刷新
+        #: 被弹回顶部、按钮都点错）。⚠ 先取旧元素的值，换完再赋给新元素。
+        'function scrollNow(){const m=document.getElementById("main"),s=document.getElementById("side");'
+        'return [m?m.scrollTop:0,s?s.scrollTop:0]}'
+        'function scrollTo2(v){const m=document.getElementById("main"),s=document.getElementById("side");'
+        'if(m)m.scrollTop=v[0];if(s)s.scrollTop=v[1]}'
+        'async function post(p,b){const keep=scrollNow();'
+        'const r=await fetch(p,{method:"POST",body:b||""});'
+        'document.documentElement.innerHTML=await r.text();scrollTo2(keep);termApply()}'
+        #: ⭐ **局部刷新**：拨滑块/切写权只换那**一行**（带 `X-MeCha-Partial`），
+        #: 不重建整页 ⇒ 滚动、动画、焦点都还在。服务端给的是一行 HTML + 左栏一条。
+        'async function partial(p,b){const r=await fetch(p,{method:"POST",'
+        'headers:{"X-MeCha-Partial":"1"},body:b});'
+        'if(!r.ok)return null;try{return await r.json()}catch(e){return null}}'
+        'function applyPartial(d,id){if(!d)return false;'
+        'if(d.reload){location.reload();return true}'
+        'const keep=scrollNow();let hit=false;'
+        'const rows=d.rows||{};for(const k in rows){'
+        'const el=document.querySelector(\'[data-row="\'+k+\'"]\');'
+        'if(el){el.outerHTML=rows[k];hit=true}}'
+        'if(!hit)return false;'
+        'const side=document.querySelector(\'[data-side="\'+id+\'"]\');'
+        'if(d.side&&side)side.outerHTML=d.side;'
+        'if(id==="dsh"||id==="codex"){const hs=document.querySelector(\'[data-side="host"]\');'
+        'if(d.side&&hs)hs.outerHTML=d.side}'
+        'scrollTo2(keep);'
+        'if(d.notice){document.querySelectorAll("[data-live]").forEach(e=>e.remove());'
+        'const m=document.getElementById("main");'
+        'if(m)m.insertAdjacentHTML("afterbegin",d.notice)}'
+        'return true}'
+        'async function toggle(id,on){const body=new URLSearchParams({svc:id,on:on?"1":"0"});'
+        'const d=await partial("/service",body);'
+        'if(!applyPartial(d,id))await post("/service",body)}'
         'function startNow(b){b.disabled=true;b.textContent="启动中…（拉起软件要几秒）";'
         'post("/start")}'
-        'function mode(id,act){post("/mode", new URLSearchParams({svc:id,action:act}))}'
+        'async function mode(id,act){const body=new URLSearchParams({svc:id,action:act});'
+        'const d=await partial("/mode",body);'
+        'if(!applyPartial(d,id))await post("/mode",body)}'
         'function allOn(v){post("/all", new URLSearchParams({on:v?"1":"0"}))}'
         'function shutdownNow(){if(confirm("收尾退出：逆序停掉全部 child？"))post("/shutdown")}'
         'async function pollConsole(){try{const r=await fetch("/console.json",{cache:"no-store"});'
@@ -600,6 +703,10 @@ class _Handler(BaseHTTPRequestHandler):
     def _html(self, code: int, text: str) -> None:
         self._send(code, text.encode("utf-8"), "text/html; charset=utf-8")
 
+    def _json(self, code: int, payload: dict) -> None:
+        self._send(code, json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                   "application/json; charset=utf-8")
+
     def do_GET(self) -> None:                              # noqa: N802
         path = urlsplit(self.path).path
         if path == "/":
@@ -633,6 +740,9 @@ class _Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:                             # noqa: N802
         path = urlsplit(self.path).path
         raw_body = self._body()
+        #: ⭐ **局部刷新**：前端带这个头就只要"变了的那一行"，不换整页
+        #: （整页换 DOM ⇒ `#main`/`#side` 的滚动位置归零，滑到底下操作会被弹回顶部）。
+        partial = self.headers.get("X-MeCha-Partial") == "1"
         if path in ("/mecha/task/wait", "/mecha/task/cancel"):
             try:
                 payload = json.loads(raw_body or "{}")
@@ -653,27 +763,45 @@ class _Handler(BaseHTTPRequestHandler):
                 svc = (form.get("svc") or [""])[0]
                 on = (form.get("on") or ["0"])[0] == "1"
                 out = self.controller.set_service_enabled(svc, on)
-                #: ⭐ 宿主滑块的动作要**逐步回执**（它可能真停了/起了进程、写了配置）；
-                #: 软件滑块不产生 steps，走原来的整页刷新。
-                if isinstance(out, dict) and out.get("steps"):
+                #: ⭐ 宿主滑块的动作要**逐步回执**（它可能真停了/起了进程、写了配置）。
+                steps_html = (_host_notice(out)
+                              if isinstance(out, dict) and out.get("steps") else "")
+                if partial:
+                    #: ⚠ 宿主两行是**互斥**的：拨 codex 会把 dsh 也关掉 ⇒ 只回一行
+                    #: 会让另一行留在"开"的样子（这正是用户担心的"只有一个开"被打破）。
+                    ids = ["dsh", "codex"] if svc in ("dsh", "codex") else [svc]
+                    rows_out: dict[str, str] = {}
+                    side_out = ""
+                    for one in ids:
+                        one_row, one_side = _row_html(self.controller, one)
+                        if one_row:
+                            rows_out[one] = one_row
+                        side_out = side_out or one_side
+                    if not rows_out:                  # 行没了（如软件被删）⇒ 让前端整页重载
+                        return self._json(200, {"reload": True})
+                    return self._json(200, {
+                        "ok": bool((out or {}).get("ok", True)),
+                        "rows": rows_out, "side": side_out, "notice": steps_html})
+                if steps_html:
                     page = render_page(self.controller)
                     return self._html(200, page.replace(
-                        "<div id=\"main\">", f'<div id="main">{_host_notice(out)}'))
+                        "<div id=\"main\">", f'<div id="main">{steps_html}'))
             elif path == "/mode":                          # ⭐ 写权按钮（切到手动 / 交还给 AI）
                 svc = (form.get("svc") or [""])[0]
                 action = (form.get("action") or [""])[0]
                 out = self.controller.control_write_authority(svc, action)
+                if partial:
+                    row, side = _row_html(self.controller, svc)
+                    return self._json(200, {
+                        "ok": bool(out.get("ok")),
+                        "rows": {svc: row} if row else {},
+                        "side": side,
+                        "notice": "" if out.get("ok") else _mode_notice(out)})
                 if not out.get("ok"):
                     # ⚠ **如实报告哪一步成/哪一步败**（不合并成一次"看起来成功了"）
-                    detail = "；".join(
-                        f'{s["step"]}：{"✅" if s["ok"] else "❌ " + str(s.get("error", ""))}'
-                        for s in out.get("steps", [])) or str(out.get("error", ""))
                     page = render_page(self.controller)
                     return self._html(200, page.replace(
-                        "<div id=\"main\">",
-                        f'<div id="main"><div class="notice err">'
-                        f'{html.escape(str(out.get("error", "写权操作失败")))}<br>'
-                        f'<span class="muted">{html.escape(detail)}</span></div>'))
+                        "<div id=\"main\">", f'<div id="main">{_mode_notice(out)}'))
             elif path == "/host":                          # ⭐ AI 宿主：二选一（dsh / codex）
                 kind = (form.get("host") or [""])[0]
                 out = self.controller.set_host_kind(kind)   # type: ignore[attr-defined]
