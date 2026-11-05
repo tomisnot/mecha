@@ -46,12 +46,13 @@ SUITES = {
     "bridges": (
         "bridge_host_plugin_selfcheck", "bridge_e2e_selfcheck",
     ),
+    "codex": ("codex_live_selfcheck",),
     "projects": (
         "phase5_el_selfcheck", "phase5_hub_selfcheck", "phase5_bridge_selfcheck",
     ),
     "release": ("personal_paths_selfcheck",),
 }
-SOFTWARE_SUITES = ("core", "integration", "assets", "bridges", "projects")
+SOFTWARE_SUITES = ("core", "integration", "assets", "bridges", "codex", "projects")
 
 
 def _command_for(name: str) -> list[str]:
