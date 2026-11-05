@@ -150,6 +150,33 @@ def check_codex_prepare() -> None:
                any(r.get("kind") == "permission.requested" for r in records))
 
 
+def check_codex_capabilities_before_endpoint() -> None:
+    """控制台可能在聚合端点回读端口之前就渲染，`capabilities` 必须不抛。
+
+    实测来源：`--all --ai-host codex` 起步时页面 POST 渲染，`state()` 调
+    `capabilities()`，旧实现让 `MechaError` 穿过 ⇒ launcher 日志里刷出
+    「处理请求时异常」，页面 500。硬校验应只留在 `prepare()`。
+    """
+    adapter = CodexHostAdapter()
+    with tempfile.TemporaryDirectory(prefix="codex-caps-") as td:
+        plan = make_host_plan(AIHostKind.CODEX, (_site(),), Path(td))
+        try:
+            caps = adapter.capabilities(plan)
+            raised = ""
+        except Exception as exc:                            # noqa: BLE001 - 就是要看它抛不抛
+            caps, raised = {}, f"{type(exc).__name__}: {exc}"
+        _check("聚合端点未就绪时 capabilities 不抛（页面不能 500）",
+               not raised, raised)
+        _check("未就绪时 aggregate_url 如实为空，不编造地址",
+               caps.get("aggregate_url") == "", str(caps.get("aggregate_url")))
+        try:
+            adapter.prepare(plan)
+            refused = False
+        except Exception:                                   # noqa: BLE001
+            refused = True
+        _check("但真正写配置时仍然响亮拒绝（硬校验不后退）", refused)
+
+
 def check_hooks_and_compat() -> None:
     event = parse_post_tool_use({
         "hook_event_name": "PostToolUse",
@@ -180,6 +207,7 @@ def main() -> int:
     check_startup_plan()
     check_codex_config()
     check_codex_prepare()
+    check_codex_capabilities_before_endpoint()
     check_hooks_and_compat()
     if FAILS:
         print(f"host_adapter_selfcheck: FAIL（{len(FAILS)} 条）")

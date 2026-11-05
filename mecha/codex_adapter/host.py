@@ -82,11 +82,19 @@ class CodexHostAdapter:
 
     def capabilities(self, plan: HostPlan) -> Mapping[str, object]:
         paths = paths_for(plan.runtime_root)
+        #: ⚠ 这是**只读自省**，控制台随时会调它：`--all` 起步时页面可能在聚合
+        #: 端点回读端口之前就渲染，那时 URL 还不存在。dsh 适配器同样把这类失败
+        #: 吞成空值；硬抛会让页面 500（实测：launcher 日志里刷出「处理请求时
+        #: 异常」）。真正的硬校验留在 `prepare()` —— 写配置前必须知道 URL。
+        try:
+            aggregate_url = self._url(plan)
+        except MechaError:
+            aggregate_url = ""
         return {"label": self.name, "managed": False, "child_id": None,
                 "external": True, "config_path": str(paths.config),
                 "start_file": str(paths.start),
                 "task_ledger": str(ledger_path(plan.runtime_root)),
-                "aggregate_url": self._url(plan)}
+                "aggregate_url": aggregate_url}
 
     def shutdown(self, plan: HostPlan) -> None:
         return None
