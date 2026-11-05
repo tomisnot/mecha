@@ -73,6 +73,12 @@ class ReadySpec:
 
     #: 相对项目根的端口文件名（如 ``.mcp-port``）；``None`` ⇒ 不看端口文件。
     port_file: str | None = None
+    #: ⭐ **声明式固定端口**：进程自己不写端口文件、端口又由启动者指定时用它。
+    #:
+    #: ⚠ 与 ``port_file`` 的取舍：``port_file`` 是"**进程自己回读后写出来**"（dsh 与各家
+    #: 软件那种）；这里是"**启动者先定端口、再让进程去绑**"（`codex app-server --listen`）。
+    #: 两者同时给 ⇒ ``port_file`` 优先（文件更接近"进程真的报出来的"）。
+    port: int = 0
     #: 形如 ``http://127.0.0.1:{port}/health``；``{port}`` 用**回读**到的端口填。
     probe: str | None = None
     #: 对回读到的端口做 TCP 连通性探测。
@@ -380,7 +386,13 @@ class _Child:
 
         ⚠ 这一条是治 EL 那个假绿的核心：**存在且非空 ≠ 就绪**——
         264.5 小时前的残留同样"存在且非空"。
+
+        ⭐ **声明式固定端口**（``port>0`` 且没有 ``port_file``）：端口是启动者给的、
+        进程不会写任何文件 ⇒ "文件变没变"这条判据不适用，直接进入探活那一步。
         """
+        ready = self.current.ready
+        if ready is not None and not ready.port_file and int(ready.port or 0) > 0:
+            return True
         want = self._pre
         if want is None:                              # 没声明端口文件 ⇒ 不由文件判
             return True
@@ -607,7 +619,12 @@ class _Child:
 
     def _read_port_now(self) -> int | None:
         pf = self._port_file()
-        return read_port(pf) if pf is not None else None
+        if pf is None:
+            #: 声明式固定端口：进程不写文件，端口就是启动者给的那个。
+            ready = self.current.ready
+            port = int(getattr(ready, "port", 0) or 0) if ready is not None else 0
+            return port or None
+        return read_port(pf)
 
     def _probe(self, port: int | None) -> tuple[bool, str]:
         ready = self.current.ready
@@ -652,6 +669,9 @@ class _Child:
         return False, f"{url} 返回 {code}（非 2xx）"
 
     def _evidence(self, port: int | None, why: str) -> str:
+        ready = self.current.ready
+        if ready is not None and not ready.port_file and int(ready.port or 0) > 0:
+            return f"声明式固定端口 {port} + {why}"
         pre = self._pre
         changed = ("端口文件此前不存在" if pre == (None, None)
                    else f"端口文件内容/mtime 变了（旧 {pre[0]!r} → 新 {port!r}）")

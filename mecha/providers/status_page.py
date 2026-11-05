@@ -347,7 +347,8 @@ def _service_row(svc: object, row: dict | None, intent: bool, started: bool,
         f'</div>')
 
 
-def _host_row(choice: dict, kind: str, row: dict | None) -> str:
+def _host_row(choice: dict, kind: str, row: dict | None,
+              info: dict | None = None) -> str:
     """AI 宿主的一行：**与项目行同一个形状**（滑块 + 名字 + 状态 + 说明）。
 
     ⚠ 这里**没有圆点**：宿主两行的滑块**互斥**（开一个自动关另一个），
@@ -377,6 +378,15 @@ def _host_row(choice: dict, kind: str, row: dict | None) -> str:
         badge = _badge(str((row or {}).get("state") or "stopped"))
     else:
         badge = _badge("external")
+    #: ⭐ 界面入口：只有"当前宿主 + 界面真在跑"才给链接（否则点过去是个死端口）。
+    link = ""
+    if picked and info:
+        ui_url = str(info.get("ui_url") or "")
+        if ui_url and info.get("ui_running"):
+            link = (f' <a href="{html.escape(ui_url)}" target="_blank" '
+                    f'rel="noreferrer">打开界面 →</a>')
+        elif ui_url:
+            link = '<span class="pending">（界面未起）</span>'
     return (
         f'<div class="row" data-row="{html.escape(value)}">'
         #: 与项目行完全同形：第一格是**不可点的指示框**（项目行那边是"打算开"，
@@ -385,15 +395,17 @@ def _host_row(choice: dict, kind: str, row: dict | None) -> str:
         f'title="这一轮用它（真正的控件是右边的滑块）">'
         f'<span class="name">{html.escape(label)}</span>'
         f'{switch}{badge}'
-        f'<span class="brief muted">{html.escape(note)}</span>'
+        f'<span class="brief muted">{html.escape(note)}{link}</span>'
         f'</div>')
 
 
-def _host_block(choices: list[dict], kind: str, rows: dict) -> list[str]:
+def _host_block(choices: list[dict], kind: str, rows: dict,
+                info: dict | None = None) -> list[str]:
     """AI 宿主那一组：标题 + 两行滑块（**互斥**，开一个自动关另一个）。"""
     head = ('<div class="group">AI 宿主'
             '<span class="pending">开一个会关掉另一个 · 默认 dsh</span></div>')
-    items = [_host_row(c, kind, rows.get(str(c.get("kind") or "")))
+    items = [_host_row(c, kind, rows.get(str(c.get("kind") or "")),
+                       info if str(c.get("kind") or "") == kind else None)
              for c in choices]
     return [head, *items]
 
@@ -552,7 +564,7 @@ def render_page(controller: Controller) -> str:
                            "note": str(host_info.get("note") or "")})
     host_child_id = str(host_info.get("child_id") or "")
     host_row = rows.get(host_child_id) if host_child_id else None
-    items.extend(_host_block(choices, kind, rows))
+    items.extend(_host_block(choices, kind, rows, host_info))
     #: ⚠ 左栏也要有它 —— 否则两处清单不一致（右栏 4 行、左栏 3 行）。
     side.append('<div class="sidesep"></div>')
     side.append('<div class="sideitem"'

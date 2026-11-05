@@ -402,6 +402,8 @@ class LaunchController:
         self.host_kind = AIHostKind(str(getattr(host_kind, "value", host_kind)))
         self.host_adapter = host_adapter or select_host_adapter(self.host_kind)
         self.host_preparation = None
+        #: 托管宿主的"启动前提"事实（端口 / token / 登录态来源）；页面与判据读它。
+        self.host_start_facts: dict = {}
         #: ⭐ 换宿主要能重挂"工具表刷新口"与"spawn 前钩子"，所以拿着接线对象。
         #: ⚠ 由 ``main()`` 在聚合端点起好后注入（控制器不认识端点的构造）。
         self.host_wiring: HostWiring | None = None
@@ -492,6 +494,8 @@ class LaunchController:
         """状态页只读这份宿主事实；外部宿主不产生可点击的存活滑块。"""
         caps = self.host_adapter.capabilities(self.host_plan())
         managed = bool(caps.get("managed", False))
+        ui_child = getattr(self.host_adapter, "ui_child_id", None)
+        ui_url = str(caps.get("ui_url", "") or "")
         return {
             "kind": self.host_kind.value,
             "label": str(caps.get("label", self.host_adapter.name)),
@@ -499,8 +503,14 @@ class LaunchController:
             "child_id": self.host_adapter.child_id,
             "external": bool(caps.get("external", False)),
             "task_ledger": str(caps.get("task_ledger", "") or ""),
-            "note": ("由启动器托管：关掉再打开 = 重启它" if managed
-                     else "外部 MCP：只为它写隔离配置，不占子进程"),
+            #: ⭐ 浏览器界面（codex 才有）：地址给页面做链接，`ui_running` 决定给不给。
+            "ui_url": ui_url,
+            "ui_running": bool(ui_child and ui_child in self.super.state_ids()),
+            "note": (str(caps.get("note") or "")
+                     or ("由启动器托管：起 codex app-server，界面走本地代理"
+                         if self.host_kind is AIHostKind.CODEX
+                         else ("由启动器托管：关掉再打开 = 重启它" if managed
+                               else "外部 MCP：只为它写隔离配置，不占子进程"))),
         }
 
     def host_choices(self) -> list[dict]:
@@ -517,8 +527,10 @@ class LaunchController:
                 "kind": kind.value,
                 "label": adapter.name,
                 "managed": managed,
-                "note": ("由启动器托管：关掉再打开 = 重启它" if managed
-                         else "外部 MCP：只为它写隔离配置，不占子进程"),
+                "note": ("由启动器托管：起 codex app-server，界面走本地代理"
+                         if kind is AIHostKind.CODEX
+                         else ("由启动器托管：关掉再打开 = 重启它" if managed
+                               else "外部 MCP：只为它写隔离配置，不占子进程")),
             })
         return out
 
@@ -646,12 +658,26 @@ class LaunchController:
                 "changed": True, "steps": steps}
 
     def prepare_host(self, *, aggregate_port: int, aggregate_url: str = "") -> object:
-        """聚合端点就绪后调用；结果保存在控制器，供状态页与收尾读取。"""
+        """聚合端点就绪后调用；结果保存在控制器，供状态页与收尾读取。
+
+        ⚠ **必须在起任何 child 之前调**（`main` 已经这么排）：托管的 codex 一起来就会读
+        ``CODEX_HOME/config.toml`` 里的 MCP 地址，晚写一步它拿的就是上一轮的端点。
+
+        ⭐ 托管宿主还要在 spawn 前把"能不能起来"的前提准备好（端口 / ws token / 登录态），
+        这由适配器自己的 ``prepare_start`` 负责；dsh 与 none 没有这个方法 ⇒ 跳过。
+        """
         self._aggregate_port = int(aggregate_port or 0)
         self._aggregate_url = str(aggregate_url or "")
         plan = self.host_plan(aggregate_port=self._aggregate_port,
                               aggregate_url=self._aggregate_url)
         self.host_adapter.validate(plan)
+        prepare_start = getattr(self.host_adapter, "prepare_start", None)
+        if prepare_start is not None:
+            self.host_start_facts = prepare_start(plan)
+            auth = str((self.host_start_facts or {}).get("auth") or "")
+            if auth == "missing":
+                print("[codex] ⚠ 找不到 ~/.codex/auth.json：界面与 app-server 会要求登录",
+                      flush=True)
         self.host_preparation = self.host_adapter.prepare(plan)
         return self.host_preparation
 
@@ -1452,10 +1478,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         aggregate_port=int(getattr(args, "aggregate_port", 0) or 0),
         host_adapter=host_adapter)
 
-    def after_start() -> None:
-        agg_runtime.sync_backends()
+    #: ⭐ 宿主准备必须**在起任何 child 之前**：托管的 codex 一起来就读
+    #: ``CODEX_HOME/config.toml`` 里的 MCP 地址，晚一步它拿的是上一轮的端点；
+    #: 端口 / ws token / 登录态也只能在这时准备好（`prepare_start`）。
+    try:
         controller.prepare_host(aggregate_port=int(endpoint.port or 0),
                                 aggregate_url=str(endpoint.url or ""))
+    except MechaError as exc:
+        #: 宿主准备失败**不拖累软件**：软件、聚合端点、控制台照常起，页面会显示原因。
+        print(f"[host] ⚠ 宿主准备失败：{exc.message}", flush=True)
+
+    def after_start() -> None:
+        agg_runtime.sync_backends()
 
     controller.after_start = after_start
     controller.agg_runtime = agg_runtime   # 面板的存活滑块走它那条正规路径（含端点同步）

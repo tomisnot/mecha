@@ -144,10 +144,16 @@ def check_pre_start_switch(tmp: Path) -> None:
            out["ok"] and not sup.started and not sup.stopped, f"{out}")
     _check("② 适配器与自省同步指向 codex",
            ctl.host_kind.value == "codex" and ctl.host_info()["kind"] == "codex"
-           and ctl.host_info()["managed"] is False)
+           and ctl.host_info()["managed"] is True)
 
-    ids = [c.id for c in build_children(ctl.sites, ["AAA"], ctl.host_kind)]
-    _check("③ 切 codex 后启动计划里没有 dsh", "dsh" not in ids, str(ids))
+    try:
+        ids = [c.id for c in build_children(ctl.sites, ["AAA"], ctl.host_kind)]
+    except MechaError as exc:                       # 本机没装 codex ⇒ 这条测不了
+        print(f"  （跳过启动计划断言：{exc.message}）")
+        ids = None
+    if ids is not None:
+        _check("③ 切 codex 后启动计划里是 codex、不是 dsh",
+               ids == ["AAA", "codex"], str(ids))
 
     config = tmp / "codex-home" / "config.toml"
     text = config.read_text(encoding="utf-8") if config.is_file() else ""
@@ -234,8 +240,9 @@ def check_slots(tmp: Path) -> None:
            ctl.host_kind.value == "codex" and sup.stopped == ["dsh"]
            and "dsh" not in sup.alive, f"{sup.stopped} alive={sup.alive}")
     ctl.set_service_enabled("codex", False)
-    _check("⑫ 关掉外部宿主 ⇒ 回到不启用宿主，且不误停任何进程",
-           ctl.host_kind.value == "none" and sup.stopped == ["dsh"], str(sup.stopped))
+    _check("⑫ 关掉 codex ⇒ 回到不启用宿主，并停掉它的进程",
+           ctl.host_kind.value == "none" and sup.stopped == ["dsh", "codex"],
+           str(sup.stopped))
     ctl.set_service_enabled("dsh", True)
     _check("⑫ 再开 dsh ⇒ 进程回来", sup.alive == {"dsh"}, str(sup.alive))
 

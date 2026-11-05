@@ -18,6 +18,12 @@ build/
 # （本工程靠它保证版本一致 —— EL/GP 的 lock 都在仓里）。
 node_modules/
 
+# ⚠ 例外：vendor 进来的 Codex Web UI（mecha/codex_adapter/webui）自带唯一运行时依赖
+# `ws`。它是**整包拷进来的第三方产物**，必须随包发出，否则装完 wheel 也起不来。
+# 其余 node_modules 仍旧不进仓。
+!mecha/codex_adapter/webui/node_modules/
+!mecha/codex_adapter/webui/node_modules/**
+
 .trae/
 
 # 统一启动器的运行期产物（pid / 日志）：**每台机器各自生成**，不入库。

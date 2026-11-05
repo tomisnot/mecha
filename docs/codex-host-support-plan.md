@@ -18,6 +18,8 @@
 
 已完成第六阶段（控制台二选一）：启动页把 **接入的项目**（多选）与 **AI 宿主**（两行滑块，开一个自动关另一个，默认 dsh）分成两类，`--ai-host` 退化为初始值。宿主行与项目行同形（滑块 + 名字 + 状态 + 说明，**没有单选圆点**），滑块走 `/service` → `LaunchController.set_host_slot`；开另一个时内部走 `set_host_kind`：停旧宿主进程 → 换适配器并 `validate` → 重挂工具表刷新口（`AggregateRuntime.bind_host`）与 spawn 钩子（每个宿主只装一次，避免 `--patch` 叠两份）→ 重写新宿主配置 → 已启动时把新宿主进程起起来；每一步单独回执。宿主装配顺序上，`build_aggregate_wiring` 把接线对象挂到运行期（`runtime.host_wiring`），`main()` 再交给控制器，控制器因而能在任何时刻重挂而不需要重新构造端点。启动前拨滑块只记"这一轮用谁"（不 spawn），启动后才是起/停；两行都关 = 不启用宿主（`host_kind=none`）。判据：`checks/host_switch_selfcheck.py`（①②…⑫）+ `checks/endtoend_selfcheck.py` 第 ⑨ 段（真 launcher + 真页面：切 codex ⇒ dsh 停、配置写出、单选状态互斥；切回 ⇒ dsh 新 pid 回来）。
 
+已完成第七阶段（codex 托管 + 界面）：codex 从「外部 MCP 模式」升级为**托管宿主**，`CodexHostAdapter` 的 `managed=True`、`child()` 返回 `codex app-server --listen ws://127.0.0.1:<port> --ws-auth capability-token --ws-token-file <abs>`；端口由 `ensure_ports()` 先定（codex 不写端口文件，就绪判据用新增的 `ReadySpec.port` 直接探 `/readyz`），token 由 `ensure_ws_token()` 生成，登录态由 `ensure_auth()` 从 `~/.codex/auth.json` **只复制凭据**（隔离 home 否则是 Not logged in）。`prepare_host()` 提前到**起 child 之前**（app-server 一起来就读 `config.toml` 的 MCP 地址）。界面 vendor 了 `@ai-nd-co/codex-web-remote@0.2.0`（Apache-2.0，`mecha/codex_adapter/webui/`，1.2MB，唯一依赖 `ws`），用 `--upstream` **connect-only** 连我们托管的 app-server，宿主 ready 时由 ready hook 起、gone 时一起停。判据 `checks/codex_host_selfcheck.py`（①—⑥，真进程真 HTTP）。
+
 尚未开始：managed App Server 客户端。以下两条限制是验收中撞出来的事实，不是待办清单的修辞：
 
 - **Hook 任务账只在模型发起的工具回合里产生。** 源码里 `PostToolUse` 由 agent 的工具循环派发，`mcpServer/tool/call` 是客户端直连代理，不经过那层。所以 `tasks.jsonl` 的写入要用一次真实对话来验；本机到 `chatgpt.com` 的推理请求超时（与 mecha 配置无关），这一条留待可用网络或本地模型环境。

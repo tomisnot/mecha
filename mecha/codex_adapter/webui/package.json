@@ -1,0 +1,67 @@
+{
+  "name": "@ai-nd-co/codex-web-remote",
+  "version": "0.2.0",
+  "description": "One-command web remote for openai/codex app-server: bundled UI + host-side security-boundary proxy + smart auto-launch.",
+  "keywords": [
+    "codex",
+    "openai",
+    "app-server",
+    "remote",
+    "web",
+    "proxy",
+    "cli"
+  ],
+  "homepage": "https://github.com/ai-nd-co/codex-web-remote#readme",
+  "bugs": {
+    "url": "https://github.com/ai-nd-co/codex-web-remote/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ai-nd-co/codex-web-remote.git"
+  },
+  "license": "Apache-2.0",
+  "type": "module",
+  "bin": {
+    "codex-web-remote": "bin/codex-web-remote.mjs"
+  },
+  "files": [
+    "bin/",
+    "proxy/",
+    "scripts/launch-appserver.mjs",
+    "scripts/lib/",
+    "web/dist/",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": false
+  },
+  "scripts": {
+    "proxy": "node proxy/server.mjs",
+    "smoke": "node scripts/ws-smoke.mjs",
+    "appserver": "node scripts/launch-appserver.mjs",
+    "dev:up": "node scripts/dev-up.mjs",
+    "dev:down": "node scripts/dev-down.mjs",
+    "dev:restart": "node scripts/dev-down.mjs && node scripts/dev-up.mjs",
+    "test": "npm --prefix web run test",
+    "test:coverage": "npm --prefix web run test:coverage",
+    "test:e2e": "npm --prefix e2e run test",
+    "build": "npm --prefix web run build",
+    "test:e2e:playwright": "npm --prefix web run build && npm --prefix e2e run test:playwright",
+    "test:all": "npm run build && npm run test:coverage && npm run test:e2e && npm run test:e2e:playwright",
+    "prepublishOnly": "npm --prefix web ci && npm --prefix web run build && npm --prefix web run typecheck && npm run test:all",
+    "semantic-release": "semantic-release"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "ws": "^8.22.1"
+  },
+  "devDependencies": {
+    "@semantic-release/changelog": "^6.0.3",
+    "@semantic-release/git": "^10.0.1",
+    "semantic-release": "^25.0.8"
+  }
+}

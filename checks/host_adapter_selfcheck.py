@@ -19,6 +19,8 @@ from mecha.codex_adapter import (CodexHostAdapter, config_text,  # noqa: E402
                                  read_records)
 from mecha.codex_adapter.hook_entry import (handle_permission_request,  # noqa: E402
                                              handle_post_tool_use)
+from mecha.codex_adapter.config import (ensure_ports,  # noqa: E402
+                                        ensure_ws_token)
 from mecha.codex_adapter.host import paths_for  # noqa: E402
 from mecha.codex_adapter.tasks import ledger_path  # noqa: E402
 from mecha.dsh_adapter.runtime import overlay_text as dsh_overlay_text  # noqa: E402
@@ -46,6 +48,12 @@ def _site() -> Site:
     return Site(name="demo-site", services=(svc,))
 
 
+def _plan_at(root: Path, kind: str = "codex"):
+    return make_host_plan(AIHostKind(kind), (_site(),), root,
+                          aggregate_port=3089,
+                          aggregate_url="http://127.0.0.1:3089/mcp")
+
+
 def check_adapter_selection() -> None:
     plan = make_host_plan(AIHostKind.CODEX, (_site(),), Path.cwd(),
                           aggregate_port=3089,
@@ -57,22 +65,41 @@ def check_adapter_selection() -> None:
     _check("HostPlan 保留站点、服务与回读端口",
            plan.kind is AIHostKind.CODEX and plan.services[0].id == "DEMO"
            and plan.aggregate_port == 3089)
-    _check("Codex 是外部宿主，不产生 child",
-           select_host_adapter("codex").child(plan) is None
-           and select_host_adapter("codex").managed is False)
+    adapter = select_host_adapter("codex")
+    _check("Codex 是**托管**宿主（managed=True，child_id=codex）",
+           adapter.managed is True and adapter.child_id == "codex")
+    with tempfile.TemporaryDirectory(prefix="codex-child-") as td:
+        root = Path(td)
+        paths = paths_for(root)
+        paths.home.mkdir(parents=True, exist_ok=True)
+        port, ui_port = ensure_ports(paths)
+        ensure_ws_token(paths)
+        child = adapter.child(_plan_at(root))
+        _check("child() 给的是 app-server：固定端口 + /readyz 就绪判据",
+               child is not None and child.id == "codex"
+               and "--listen" in child.argv
+               and any(f"ws://127.0.0.1:{port}" == a for a in child.argv)
+               and child.ready is not None and child.ready.port == port
+               and (child.ready.probe or "").endswith("/readyz"), str(child))
+        ui = adapter.ui_child(_plan_at(root))
+        _check("界面 child：connect-only 连本机 app-server，端口是 UI 端口",
+               ui.id == "codex-ui" and "--upstream" in ui.argv
+               and any(f"ws://127.0.0.1:{port}" == a for a in ui.argv)
+               and ui.ready is not None and ui.ready.port == ui_port)
 
 
 def check_startup_plan() -> None:
     site = _site()
     codex_plan = plan_startup([site], ["DEMO"], host_kind="codex")
     none_plan = plan_startup([site], ["DEMO"], host_kind="none")
-    _check("codex 启动计划只有软件 child，没有 dsh",
-           [c.id for c in codex_plan.ordered] == ["DEMO"]
-           and all(c.id != "dsh" for c in codex_plan.ordered))
-    _check("none 启动计划同样不产生 AI 宿主 child",
+    _check("codex 启动计划是 软件 → codex（不再有 dsh）",
+           [c.id for c in codex_plan.ordered] == ["DEMO", "codex"]
+           and all(c.id != "dsh" for c in codex_plan.ordered),
+           str([c.id for c in codex_plan.ordered]))
+    _check("none 启动计划不产生 AI 宿主 child",
            [c.id for c in none_plan.ordered] == ["DEMO"])
-    _check("build_children 走适配器，不在 launch 内写宿主分支",
-           [c.id for c in build_children([site], ["DEMO"], "codex")] == ["DEMO"])
+    _check("build_children 走适配器，宿主 child 由适配器给",
+           [c.id for c in build_children([site], ["DEMO"], "codex")] == ["DEMO", "codex"])
 
 
 def check_codex_config() -> None:
@@ -102,6 +129,7 @@ def check_codex_prepare() -> None:
         plan = make_host_plan(AIHostKind.CODEX, (_site(),), Path(td),
                               aggregate_port=3089,
                               aggregate_url="http://127.0.0.1:3089/mcp")
+        adapter.prepare_start(plan)
         prep = adapter.prepare(plan)
         paths = paths_for(Path(td))
         _check("Codex 配置落在隔离 CODEX_HOME",
@@ -126,9 +154,10 @@ def check_codex_prepare() -> None:
                refreshed.reconnect_required
                and paths.catalog_revision.read_text(encoding="utf-8").strip() == "7")
         caps = adapter.capabilities(plan)
-        _check("外部宿主能力声明不伪造 managed child",
-               caps["external"] is True and caps["managed"] is False
-               and caps["child_id"] is None
+        _check("托管宿主能力声明：managed + child_id=codex + 界面地址",
+               caps["external"] is False and caps["managed"] is True
+               and caps["child_id"] == "codex"
+               and str(caps.get("ui_url", "")).startswith("http://127.0.0.1:")
                and caps["task_ledger"] == str(ledger_path(Path(td))))
         handle_post_tool_use({
             "hook_event_name": "PostToolUse",
