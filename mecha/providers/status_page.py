@@ -579,6 +579,9 @@ class StatusPage:
         #: ⭐ **停旗**：`serve_forever()` 靠它退出。
         #: ⚠ 原来那个循环**只认 Ctrl+C** ⇒ 无控制台入口下**永远退不出**（实测）。
         self._stopped = threading.Event()
+        #: ⭐ stop() 会被「/shutdown 的定时器」与「主循环 finally」两路同时调，
+        #: 摘 `_httpd` 必须是原子的，否则两路都以为自己在关同一个 server。
+        self._stop_lock = threading.Lock()
 
     def start(self) -> int:
         """起服务，返回**实际绑定端口**（回读，不用传入的偏好值）。"""
@@ -625,7 +628,9 @@ class StatusPage:
 
     @property
     def port(self) -> int | None:
-        return int(self._httpd.server_address[1]) if self._httpd else None
+        #: 同 stop() 的窗口问题：先取本地引用，别在判空和取端口之间被别人置空。
+        httpd = self._httpd
+        return int(httpd.server_address[1]) if httpd else None
 
     @property
     def url(self) -> str:
@@ -682,10 +687,16 @@ class StatusPage:
     def stop(self) -> None:
         #: ⭐ 先立旗：让 `serve_forever()` 那个循环退出（否则 launcher 不退出）。
         self._stopped.set()
-        if self._httpd is not None:
+        #: ⚠ **stop() 会被两路同时调**：`/shutdown` 用 `threading.Timer` 延后停，
+        #: 主循环退出后的 `finally` 又停一次。原来「判空 → 用属性」中间有窗口，
+        #: 另一路把 `_httpd` 置空 ⇒ `AttributeError: 'NoneType' object has no
+        #: attribute 'server_close'`（实测：每次 `--stop` 都刷一条）。⇒ 先**原子
+        #: 摘走**再关，谁摘到谁关，另一路直接返回。
+        with self._stop_lock:
+            httpd, self._httpd = self._httpd, None
+        if httpd is not None:
             try:
-                self._httpd.shutdown()
-                self._httpd.server_close()
+                httpd.shutdown()
+                httpd.server_close()
             except OSError:
                 pass
-            self._httpd = None

@@ -33,7 +33,7 @@ SUITES = {
         "host_adapter_selfcheck", "monitor_page_selfcheck",
         "aggregate_selfcheck", "authority_read_selfcheck",
         "authority_shared_mode_selfcheck", "phase13_panel_decl_selfcheck",
-        "portfile_selfcheck",
+        "portfile_selfcheck", "status_page_stop_selfcheck",
     ),
     "integration": (
         "assembly_endtoend_selfcheck", "phase11_cockpit_selfcheck",
