@@ -9,23 +9,32 @@
 │ 侧栏（可折叠）│ 接入的项目（可多选）                          │
 │  ML          │ ☑ │ Machine Learning │ [●──] │ ready │ 写权… │
 │  EL          │ ☑ │ Energy Level     │ [●──] │ ready │ 写权… │
-│ ─────────    │ AI 宿主（只能选一个，默认 dsh）               │
-│ AI · dsh     │ ◉ │ dsh   │ [●──] │ running │ 由启动器托管… │
-│              │ ○ │ codex │  —    │ 未选用  │ 外部 MCP…     │
+│ ─────────    │ AI 宿主（两行滑块互斥，默认 dsh）             │
+│ AI · dsh     │   │ dsh   │ [●──] │ running │ 由启动器托管… │
+│              │   │ codex │ [──○] │   —     │ 外部 MCP…     │
 ├──────────────┴─────────────────────────────────────────────┤
 │ 运行输出（默认只留这一条标题栏，往上拖才展开；高度记在本机）    │
 └────────────────────────────────────────────────────────────┘
 ```
 
 ⭐ **两类必须分开**（2026-11-05 用户裁决）：上面是**接入的项目**（多选，表达"打算开哪几个"），
-下面是 **AI 宿主**（单选 dsh / codex，互斥）。⚠ 宿主那一行原来混在项目表里、且种类由
-`--ai-host` 在命令行定死 ⇒ 启动阶段它是个摆设（开关决定不了什么，启动后只用来重启）。
-现在它是真的选择：`POST /host` → `LaunchController.set_host_kind`，**启动前与运行中都生效**
-（运行中会停掉旧宿主进程、换适配器、重挂刷新口、写新宿主配置、必要时把新宿主起起来）。
+下面是 **AI 宿主**（dsh / codex 两行滑块，**开一个自动关另一个**）。
 
-⭐ **四个控件分工**（§7 的表 + 宿主单选）：
+⚠ 宿主行原来混在项目表里、且种类由 `--ai-host` 在命令行定死 ⇒ 启动阶段它是个摆设
+（开关决定不了什么，启动后只用来重启）。现在**滑块就是唯一控件**（与项目行同形，
+没有单选圆点），语义分两段：
+
+| 时机 | 打开某一行 | 关掉 |
+|---|---|---|
+| 启动前 | 这一轮用它（只记选择，**不 spawn**） | 这一轮不用它 |
+| 启动后 | 起它的进程（受管）/ 写它的配置（外部） | 停它的进程 |
+
+打开**另一个**时若旧的还在跑：`set_host_kind` 会**先停旧的、再起新的**（真值只有一个
+`host_kind` ⇒ 互斥是自动的）。两行都关 = 这一轮不启用宿主（等价 `--ai-host none`）。
+
+⭐ **四个控件分工**（§7 的表 + 宿主滑块）：
 - **存活滑块** ⇒ 动 ①（起/停软件）；
-- **宿主圆点** ⇒ 换 AI 宿主（dsh / codex，互斥）——⚠ **不动软件、不动写权**；
+- **宿主滑块** ⇒ 换 AI 宿主（dsh / codex，互斥）——⚠ **不动软件、不动写权**；
 - **写权按钮** ⇒ 动 ③（切 AI/手动）——⭐ **走控制端点那条腿**（§7.1.1），
   **切到手动 = 两次调用、按顺序、分开报告**（`set_write_authority("human")` →
   `open_manual_surface()`）：⚠ 合并成一次会让"写权切了但窗口没开"看起来像成功；
@@ -153,7 +162,6 @@ header,footer{flex:0 0 auto}
 .group{display:flex;gap:10px;align-items:baseline;padding:14px 2px 6px;color:#8b93a1;
        font-size:12px;font-weight:600;border-bottom:1px solid #242a35}
 .sidesep{border-top:1px solid #242a35;margin:6px 0}
-.hostpick{cursor:pointer}
 .row{display:grid;grid-template-columns:24px 170px 92px 88px 1fr;gap:10px;align-items:center;
      padding:8px 2px;border-bottom:1px solid #1b2029}   /* ⚠ 只有分隔线，**不套卡片框** */
 .brief{grid-column:2 / span 4;color:#8b93a1;font-size:12px;margin:-4px 0 2px}
@@ -200,21 +208,24 @@ def _badge(state: str) -> str:
 
 
 def _host_notice(out: dict) -> str:
-    """换宿主的结果：**每一步单独报**（与写权那一套同形，不合并成"看起来成功了"）。
+    """宿主动作的结果：**每一步单独报**（与写权那一套同形，不合并成"看起来成功了"）。
 
-    ⚠ 换宿主会真的停/起一个进程，也会真的写一份配置 ⇒ 只回一句"已切换"是撒谎：
+    ⚠ 拨宿主滑块会真的停/起一个进程，也会真的写一份配置 ⇒ 只回一句"已切换"是撒谎：
     人需要知道是哪一步没成（停旧的 / 起新的 / 写配置）。
     """
     steps = out.get("steps") or []
+    act = str(out.get("action") or "switch")
+    verb = {"open": "启用", "close": "关闭", "switch": "切到"}.get(act, "切换")
+    kind = html.escape(str(out.get("kind") or out.get("id") or ""))
     detail = "；".join(
         f'{s.get("step")}：{"✅" if s.get("ok") else "❌ " + str(s.get("error", ""))}'
         for s in steps)
     if not steps:
         return (f'<div class="notice muted">当前就是 '
-                f'<strong>{html.escape(str(out.get("kind") or ""))}</strong>（没动任何东西）。</div>')
+                f'<strong>{kind}</strong>（没动任何东西）。</div>')
     cls = "notice" if out.get("ok") else "notice err"
-    title = ("已切到 " if out.get("ok") else "切换未完成：")
-    return (f'<div class="{cls}">{title}<strong>{html.escape(str(out.get("kind") or ""))}</strong>'
+    title = f"已{verb} " if out.get("ok") else f"{verb}未完成："
+    return (f'<div class="{cls}">{title}<strong>{kind}</strong>'
             f'<br><span class="muted">{html.escape(detail)}</span></div>')
 
 
@@ -337,19 +348,16 @@ def _service_row(svc: object, row: dict | None, intent: bool, started: bool,
 
 
 def _host_row(choice: dict, kind: str, row: dict | None) -> str:
-    """AI 宿主的一行：**单选圆点** +（选中且受管才有的）存活滑块。
+    """AI 宿主的一行：**与项目行同一个形状**（滑块 + 名字 + 状态 + 说明）。
 
-    ⚠ 与项目行**同形但不同类**：项目是"打算开哪几个"（多选），宿主是
-    "这一轮用哪一个"（单选、互斥）。两者混在同一张表里正是要改掉的形态 ——
-    用户原话："启动界面这二者只能选一个，与上面的接入项目分隔开，两类"。
+    ⚠ 这里**没有圆点**：宿主两行的滑块**互斥**（开一个自动关另一个），
+    圆点与滑块表达同一件事，画两遍只会让人以为要分两步点。
+    用户原话："不需要那个选择圆点了，格式也与上面几个接入项目一致了"。
 
-    三档形态：
-
-    | 情形 | 圆点 | 滑块 | 徽标 |
-    |---|---|---|---|
-    | 未选中的那一个 | 空 | `—` | `未选用` |
-    | 选中 + 受管（dsh） | 实 | 有（关→开 = 重启它） | 真状态 |
-    | 选中 + 外部（codex） | 实 | `—` | `外部连接` |
+    | 情形 | 滑块 | 徽标 |
+    |---|---|---|
+    | 这一轮用它（`host_kind` 是它） | 开 | 进程状态 / 外部连接 |
+    | 没用它 | 关 | `—` |
     """
     value = str(choice.get("kind") or "")
     label = str(choice.get("label") or value)
@@ -357,38 +365,37 @@ def _host_row(choice: dict, kind: str, row: dict | None) -> str:
     note = str(choice.get("note") or "")
     picked = value == kind
     running = bool((row or {}).get("pid")) if picked else False
-    radio = (f'<input type="radio" name="host" value="{html.escape(value)}"'
-             f'{" checked" if picked else ""}'
-             f' onchange="pickHost(\'{html.escape(value)}\')">')
+    sid = html.escape(str((row or {}).get("id") or label))
+    #: ⭐ 两行都有滑块（含外部宿主）：开它就是"这一轮用它"。
+    switch = (f'<span class="sw"><input type="checkbox" id="sw-{sid}"'
+              f'{" checked" if picked else ""}'
+              f' onchange="toggle(\'{sid}\', this.checked)">'
+              f'<label for="sw-{sid}"></label></span>')
     if not picked:
-        switch, badge = '<span class="muted">—</span>', '<span class="badge">未选用</span>'
+        badge = '<span class="muted">—</span>'
     elif managed:
-        sid = html.escape(str((row or {}).get("id") or choice.get("child_id") or label))
-        switch = (f'<span class="sw"><input type="checkbox" id="sw-{sid}"'
-                  f'{" checked" if running else ""}'
-                  f' onchange="toggle(\'{sid}\', this.checked)">'
-                  f'<label for="sw-{sid}"></label></span>')
         badge = _badge(str((row or {}).get("state") or "stopped"))
     else:
-        switch, badge = '<span class="muted">—</span>', _badge("external")
+        badge = _badge("external")
     return (
         f'<div class="row">'
-        f'<span class="hostpick">{radio}</span>'
-        #: 名字也可以点：只让 24px 的圆点可点太抠（人不一定会瞄准那个圈）
-        f'<span class="name hostpick" onclick="pickHost(\'{html.escape(value)}\')">'
-        f'{html.escape(label)}</span>'
+        #: 与项目行完全同形：第一格是**不可点的指示框**（项目行那边是"打算开"，
+        #: 这边是"这一轮用它"）；真正的控件是右边那个滑块。
+        f'<input type="checkbox"{" checked" if picked else ""} disabled '
+        f'title="这一轮用它（真正的控件是右边的滑块）">'
+        f'<span class="name">{html.escape(label)}</span>'
         f'{switch}{badge}'
         f'<span class="brief muted">{html.escape(note)}</span>'
         f'</div>')
 
 
-def _host_block(choices: list[dict], kind: str, row: dict | None) -> list[str]:
-    """AI 宿主那一组：标题 + 单选行（**只能选一个**）。"""
+def _host_block(choices: list[dict], kind: str, rows: dict) -> list[str]:
+    """AI 宿主那一组：标题 + 两行滑块（**互斥**，开一个自动关另一个）。"""
     head = ('<div class="group">AI 宿主'
-            '<span class="pending">只能选一个 · 默认 dsh</span></div>')
-    rows = [_host_row(c, kind, row if str(c.get("kind") or "") == kind else None)
-            for c in choices]
-    return [head, *rows]
+            '<span class="pending">开一个会关掉另一个 · 默认 dsh</span></div>')
+    items = [_host_row(c, kind, rows.get(str(c.get("kind") or "")))
+             for c in choices]
+    return [head, *items]
 
 
 def render_page(controller: Controller) -> str:
@@ -468,13 +475,15 @@ def render_page(controller: Controller) -> str:
     except Exception:                                      # noqa: BLE001 - 旧替身只认 dsh
         choices = [{"kind": "dsh", "label": "dsh", "managed": True,
                     "note": "由启动器托管：关掉再打开 = 重启它"}]
-    if not any(str(c.get("kind") or "") == kind for c in choices):
+    #: ⚠ 两个都关（`host_kind` = none）时**不要**补一行 none 出来：
+    #: 宿主区固定两行，两行都关就是"这一轮不用宿主"。
+    if kind != "none" and not any(str(c.get("kind") or "") == kind for c in choices):
         choices.insert(0, {"kind": kind, "label": str(host_info.get("label") or kind),
                            "managed": bool(host_info.get("managed")),
                            "note": str(host_info.get("note") or "")})
-    host_child_id = str(host_info.get("child_id") or DSH_CHILD_ID)
-    host_row = rows.get(host_child_id)
-    items.extend(_host_block(choices, kind, host_row))
+    host_child_id = str(host_info.get("child_id") or "")
+    host_row = rows.get(host_child_id) if host_child_id else None
+    items.extend(_host_block(choices, kind, rows))
     #: ⚠ 左栏也要有它 —— 否则两处清单不一致（右栏 4 行、左栏 3 行）。
     side.append('<div class="sidesep"></div>')
     side.append('<div class="sideitem"'
@@ -527,7 +536,6 @@ def render_page(controller: Controller) -> str:
         'async function post(p,b){const r=await fetch(p,{method:"POST",body:b||""});'
         'document.documentElement.innerHTML=await r.text();termApply()}'
         'function toggle(id,on){post("/service", new URLSearchParams({svc:id,on:on?"1":"0"}))}'
-        'function pickHost(k){post("/host", new URLSearchParams({host:k}))}'
         'function startNow(b){b.disabled=true;b.textContent="启动中…（拉起软件要几秒）";'
         'post("/start")}'
         'function mode(id,act){post("/mode", new URLSearchParams({svc:id,action:act}))}'
@@ -641,10 +649,16 @@ class _Handler(BaseHTTPRequestHandler):
             if path == "/start":
                 enabled = [s for s, v in self.controller.intent().items() if v]
                 self.controller.start(enabled)
-            elif path == "/service":                       # ⭐ 存活滑块（单个软件）
+            elif path == "/service":                       # ⭐ 存活滑块（单个软件 / 宿主行）
                 svc = (form.get("svc") or [""])[0]
                 on = (form.get("on") or ["0"])[0] == "1"
-                self.controller.set_service_enabled(svc, on)
+                out = self.controller.set_service_enabled(svc, on)
+                #: ⭐ 宿主滑块的动作要**逐步回执**（它可能真停了/起了进程、写了配置）；
+                #: 软件滑块不产生 steps，走原来的整页刷新。
+                if isinstance(out, dict) and out.get("steps"):
+                    page = render_page(self.controller)
+                    return self._html(200, page.replace(
+                        "<div id=\"main\">", f'<div id="main">{_host_notice(out)}'))
             elif path == "/mode":                          # ⭐ 写权按钮（切到手动 / 交还给 AI）
                 svc = (form.get("svc") or [""])[0]
                 action = (form.get("action") or [""])[0]

@@ -384,6 +384,10 @@ def _read_last_status(runtime: Path) -> dict:
 
 # --------------------------------------------------------------------------- 控制器
 
+#: ⭐ 面板上那两行宿主滑块的 id（就是 `AIHostKind` 的值）。它们不是"软件"，
+#: 走 `set_host_slot`（互斥），不进 `services()` 那张表。
+_HOST_SLOT_IDS = frozenset({AIHostKind.DSH.value, AIHostKind.CODEX.value})
+
 
 class LaunchController:
     """选择页/状态页共用的控制面（**页面只读它 + 一个 start**）。"""
@@ -709,13 +713,13 @@ class LaunchController:
 
         未启动整站时 ⇒ **只记意图**（不 spawn）：面板在启动前也要能表达"我打算开哪几个"。
 
-        ⚠ **dsh（`DSH_CHILD_ID`）走另一支**（:meth:`set_dsh_enabled`）：它不在 `services()` 里
-        —— 载体不是服务 ⇒ 不能落到下面"没有这个软件"那条上去（那正是它原先点了报错的原因）。
+        ⚠ **宿主那两行（dsh / codex）走另一支**（:meth:`set_host_slot`）：它们不在
+        `services()` 里 —— 载体不是服务 ⇒ 不能落到下面"没有这个软件"那条上去
+        （那正是它原先点了报错的原因）。宿主滑块**互斥**：开一个自动关另一个。
         """
-        #: ⭐ 宿主那一行的滑块：只有被托管的宿主才有 child；外部宿主不画假开关。
-        host_child_id = self.host_adapter.child_id
-        if host_child_id is not None and svc_id == host_child_id:
-            return self.set_host_enabled(enabled)
+        #: ⭐ 宿主滑块：**两行都认**（不只是当前那个）—— 用户要的是"开哪个就是哪个"。
+        if svc_id in _HOST_SLOT_IDS:
+            return self.set_host_slot(svc_id, enabled)
         svc = next((s for s in self.services() if s.id == svc_id), None)
         if svc is None:
             raise MechaError(
@@ -768,51 +772,116 @@ class LaunchController:
             return None
 
     def set_host_enabled(self, enabled: bool) -> dict:
-        """⭐ 面板上 **dsh 那一行**的存活滑块（§7 定案：**关掉再打开 = 重启 harness**）。
+        """兼容旧调用（只有"当前宿主 + 开关"两个参数）：等价于对当前宿主拨滑块。
 
-        ## 为什么它就是"其他软件那个滑块"的同形
-
-        | | 软件滑块 | dsh 滑块 |
-        |---|---|---|
-        | 谁执行 | `supervisor.start/stop`（**唯一进程控制面**） | ⭐ **同一条路** |
-        | 关→开 | 新进程（= 热更新的结构前提） | ⭐ **新进程**（改了 dsh 侧插件/配置 ⇒ 关开即生效） |
-        | 失败 | 响亮（`MechaError` ⇒ 面板如实报） | ⭐ 同 |
-
-        ## 三点与软件滑块**不同**（都不是随手，各对着一条纪律）
-
-        1. ⚠ **不走"勾选意图"**：意图是"**打算开哪几个服务**"的集合，而 dsh 是**载体**、
-           不在 ``services()`` 里 ⇒ 它**恒为 live**：点开就真起、点关就真停，
-           **即使整站还没启动**（§1 的三个生命周期：①软件存活与②客户端连接是两件事；
-           需求 11 也要求"滑块随时可动"）。
-        2. ⚠ **每次现算 child**（:meth:`dsh_child`）：见那里"别叠 overlay"的说明。
-        3. ⚠ **起不来要响亮**：`merge_dsh` 会校验站点间 dsh 身份一致、`which_or_raise`
-           会解析命令 ⇒ 失败**抛**，绝不回一句"已启动"（"静默假成功"是本工程最忌的形态）。
+        ⚠ 新代码用 :meth:`set_host_slot`：宿主有两行，得知道拨的是**哪一行**。
         """
-        host_id = self.host_adapter.child_id
-        if host_id is None:
-            return {"ok": False, "id": self.host_adapter.name,
-                    "error": f"{self.host_adapter.name} 是外部宿主，没有可操作的存活滑块"}
-        child = self.dsh_child()
-        if child is None:
-            self._last_error = (f"{self.host_adapter.name} 声明合并失败"
-                                "⇒ 面板没法起它")
-            self._save_status()
-            return {"ok": False, "id": host_id, "error": self._last_error}
-        try:
-            if enabled:
-                self.super.start(child)
-            elif host_id in self.super.state_ids():
-                self.super.stop(host_id)
-            self._save_status()
-            return {"ok": True, "id": host_id, "enabled": bool(enabled),
-                    "applied": "live"}
-        except MechaError as exc:
-            self._last_error = f"{exc.kind}：{exc.message}"
-            self._save_status()
-            return {"ok": False, "id": host_id, "error": self._last_error}
+        kind = (self.host_kind if self.host_kind is not AIHostKind.NONE
+                else AIHostKind.DSH)
+        return self.set_host_slot(kind, enabled)
 
     #: 旧面板/判据仍可能按 dsh 名称调用；保留别名，行为由当前宿主适配器决定。
     set_dsh_enabled = set_host_enabled
+
+    def _open_current_host(self) -> dict:
+        """把**当前**宿主拉起来（外部宿主没有进程，只算"已启用"）。"""
+        kind = self.host_kind.value
+        #: ⭐ 启动前滑块只表达"这一轮用谁"，**不 spawn**（与软件滑块同形：
+        #: 启动前的勾选只是意图）。启动之后同一个动作才是"起进程"。
+        if not self._started:
+            return {"ok": True, "id": kind, "kind": kind, "enabled": True,
+                    "action": "open", "applied": "intent",
+                    "steps": [{"step": f"这一轮用 {kind}", "ok": True}]}
+        host_id = self.host_adapter.child_id
+        if host_id is None:
+            return {"ok": True, "id": kind, "kind": kind, "enabled": True,
+                    "action": "open", "applied": "external", "steps": []}
+        if host_id in self.super.state_ids():
+            return {"ok": True, "id": kind, "kind": kind, "enabled": True,
+                    "action": "open", "applied": "already", "steps": []}
+        child = self.dsh_child()
+        if child is None:
+            self._last_error = f"{kind} 声明合并失败 ⇒ 面板没法起它"
+            self._save_status()
+            return {"ok": False, "id": kind, "kind": kind, "enabled": True,
+                    "action": "open", "error": self._last_error,
+                    "steps": [{"step": f"起 {host_id}", "ok": False,
+                               "error": self._last_error}]}
+        try:
+            self.super.start(child)
+        except MechaError as exc:
+            self._last_error = f"{exc.kind}：{exc.message}"
+            self._save_status()
+            return {"ok": False, "id": kind, "kind": kind, "enabled": True,
+                    "action": "open", "error": self._last_error,
+                    "steps": [{"step": f"起 {host_id}", "ok": False,
+                               "error": exc.message}]}
+        self._last_error = ""
+        self._save_status()
+        return {"ok": True, "id": kind, "kind": kind, "enabled": True,
+                "action": "open", "applied": "live",
+                "steps": [{"step": f"起 {host_id}", "ok": True}]}
+
+    def _close_host(self) -> dict:
+        """关掉当前宿主：停它的进程（若有），这一轮改成"不用宿主"。"""
+        old_kind = self.host_kind.value
+        steps: list[dict] = []
+        host_id = self.host_adapter.child_id
+        if host_id is not None and host_id in self.super.state_ids():
+            try:
+                self.super.stop(host_id)
+                steps.append({"step": f"停掉 {host_id}", "ok": True})
+            except MechaError as exc:
+                steps.append({"step": f"停掉 {host_id}", "ok": False,
+                              "error": exc.message})
+                self._last_error = f"关宿主失败：停不掉 {host_id}：{exc.message}"
+                self._save_status()
+                return {"ok": False, "id": old_kind, "kind": old_kind,
+                        "enabled": True, "action": "close",
+                        "error": self._last_error, "steps": steps}
+        #: ⭐ 两个滑块都关 ⇒ **这一轮不用宿主**（等价 `--ai-host none`）：
+        #: 软件、聚合端点、控制台照常，只是没有 AI 那条腿的客户端。
+        self.host_kind = AIHostKind.NONE
+        self.host_adapter = select_host_adapter(AIHostKind.NONE)
+        self.host_preparation = None
+        self._rebind_host(self.host_plan(aggregate_port=self._aggregate_port,
+                                        aggregate_url=self._aggregate_url))
+        steps.append({"step": "这一轮不启用 AI 宿主", "ok": True})
+        self._last_error = ""
+        self._save_status()
+        return {"ok": True, "id": old_kind, "kind": old_kind, "enabled": False,
+                "action": "close", "applied": "none", "steps": steps}
+
+    def set_host_slot(self, kind: AIHostKind | str, enabled: bool) -> dict:
+        """⭐ **宿主行的滑块**（面板上唯一的宿主控件，两行互斥）。
+
+        | 时机 | 打开 | 关闭 |
+        |---|---|---|
+        | 启动前 | 这一轮用它（只记选择，**不 spawn**） | 这一轮不用它 |
+        | 启动后 | 把它起起来（受管）/ 写它的配置（外部） | 停掉它的进程 |
+
+        ⭐ **互斥**：真值只有一个 ``host_kind`` ⇒ "开一个"必然让另一个变成关；
+        打开**另一个**时若旧的还在跑，走 :meth:`set_host_kind`：**先停旧的、再起新的**。
+        ⚠ 两个都关是合法状态（= 这一轮不启用宿主，等价 ``--ai-host none``）。
+        """
+        value = AIHostKind(str(getattr(kind, "value", kind)))
+        if value is AIHostKind.NONE:
+            return {"ok": False, "id": "none", "kind": "none",
+                    "error": "没有这一档：关掉两行就等于不启用宿主",
+                    "steps": []}
+        if not enabled:
+            if self.host_kind is not value:
+                return {"ok": True, "id": value.value, "kind": value.value,
+                        "enabled": False, "action": "close", "applied": "noop",
+                        "steps": []}
+            return self._close_host()
+        if self.host_kind is value:
+            return self._open_current_host()
+        #: 开另一个：`set_host_kind` 已经包含"先停旧的、换适配器、写配置、起新的"。
+        out = self.set_host_kind(value)
+        out.setdefault("action", "open")
+        out.setdefault("kind", value.value)
+        return out
 
     # ---- 写权（③）：走"控制端点"那条腿（§7.1.1）----
     def write_authority_state(self, svc_id: str) -> dict:

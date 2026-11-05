@@ -200,6 +200,46 @@ def check_switch_from_codex(tmp: Path) -> None:
            str(len(sup.prepare_hooks)))
 
 
+def check_slots(tmp: Path) -> None:
+    """两行**滑块**（面板上唯一的宿主控件）：互斥，且启动前后语义不同。
+
+    | 时机 | 打开 | 关闭 |
+    |---|---|---|
+    | 启动前 | 只记"这一轮用它"，**不 spawn** | 这一轮不用它 |
+    | 启动后 | 起它的进程（受管） | 停它的进程 |
+
+    ⚠ 用户裁决：**不要圆点**，格式与项目行一致；开一个自动关另一个。
+    """
+    ctl, sup, _agg = _controller(tmp)
+    out = ctl.set_service_enabled("codex", True)
+    _check("⑫ 启动前开 codex：只记选择，不 spawn",
+           out["ok"] and ctl.host_kind.value == "codex" and not sup.started,
+           f"{out} started={sup.started}")
+    _check("⑫ 启动前互斥：开 codex 后 dsh 不再是当前宿主",
+           ctl.host_info()["kind"] == "codex")
+    out2 = ctl.set_service_enabled("dsh", True)
+    _check("⑫ 再开 dsh：直接换过来（互斥），仍然不 spawn",
+           out2["ok"] and ctl.host_kind.value == "dsh" and not sup.started,
+           f"{out2} started={sup.started}")
+    out3 = ctl.set_service_enabled("dsh", False)
+    _check("⑫ 关掉当前宿主 ⇒ 这一轮不启用宿主（等价 --ai-host none）",
+           out3["ok"] and ctl.host_kind.value == "none", str(out3))
+
+    ctl._started = True
+    ctl.set_service_enabled("dsh", True)
+    _check("⑫ 启动后开 dsh ⇒ 真起进程",
+           sup.started.count("dsh") == 1 and sup.alive == {"dsh"}, str(sup.started))
+    ctl.set_service_enabled("codex", True)
+    _check("⑫ 启动后开 codex ⇒ 先停 dsh，再切过去",
+           ctl.host_kind.value == "codex" and sup.stopped == ["dsh"]
+           and "dsh" not in sup.alive, f"{sup.stopped} alive={sup.alive}")
+    ctl.set_service_enabled("codex", False)
+    _check("⑫ 关掉外部宿主 ⇒ 回到不启用宿主，且不误停任何进程",
+           ctl.host_kind.value == "none" and sup.stopped == ["dsh"], str(sup.stopped))
+    ctl.set_service_enabled("dsh", True)
+    _check("⑫ 再开 dsh ⇒ 进程回来", sup.alive == {"dsh"}, str(sup.alive))
+
+
 def check_refusals(tmp: Path) -> None:
     ctl, sup, _agg = _controller(tmp)
     ctl._started = True
@@ -224,7 +264,7 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="mecha-host-switch-") as td:
         root = Path(td)
         for name, fn in (("pre", check_pre_start_switch), ("live", check_live_switch),
-                         ("fromcodex", check_switch_from_codex),
+                         ("fromcodex", check_switch_from_codex), ("slots", check_slots),
                          ("refuse", check_refusals)):
             sub = root / name
             sub.mkdir()

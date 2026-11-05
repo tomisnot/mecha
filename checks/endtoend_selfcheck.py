@@ -204,14 +204,15 @@ def check_end_to_end_two_sites() -> None:
             _check("③ ⭐ 页面在**启动前**就列出 dsh 一行（它是控制台的一项，不是'起了才有'）",
                    re.search(r'class="name[^"]*"[^>]*>dsh<', html) is not None,
                    "启动前的页面里没有 dsh 行")
-            #: ⭐ 两类分开：上面是"接入的项目"（可多选），下面是"AI 宿主"（只能选一个）。
+            #: ⭐ 两类分开：上面是"接入的项目"（可多选），下面是"AI 宿主"（两行滑块互斥）。
             #: ⚠ 原形态把 dsh 混在项目表里、且宿主种类由命令行定死 ⇒ 启动阶段是摆设。
-            radio_count = html.count('name="host"')
-            _check("③ ⭐ 宿主区与项目区分开，且是**二选一**、默认 dsh",
+            #: ⚠ 宿主行的形状与项目行一致：**只有滑块**，没有单选圆点。
+            _check("③ ⭐ 宿主区与项目区分开：两行都是滑块，默认 dsh 开、codex 关",
                    "接入的项目" in html and "AI 宿主" in html
-                   and radio_count == 2
-                   and re.search(r'value="dsh" checked', html) is not None,
-                   f"radio={radio_count}")
+                   and 'id="sw-dsh" checked' in html
+                   and 'id="sw-codex" checked' not in html
+                   and 'name="host"' not in html,
+                   "宿主区的滑块状态不对（或还留着单选圆点）")
             #: ⭐ 调试终端：默认只留标题条（28px），标题条本身就是把手。
             _check("③ ⭐ 终端默认收起，且标题条可拖（高度记在本机）",
                    'id="term"' in html and 'id="term-head"' in html
@@ -292,24 +293,29 @@ def check_end_to_end_two_sites() -> None:
             #: ⇒ 启动阶段它是个摆设。现在它是**单选**，而且要真的动东西：
             #: 停旧宿主进程、换适配器、写新宿主配置、必要时把新宿主起起来。
             #: 🔬 红证：把 `set_host_kind` 里第 1 步（停旧宿主）删掉 ⇒ 下面第 2 条必红。
-            code, page = _http(port, "POST", "/host", "host=codex")
-            _check("⑨ 页面切宿主有逐步回执（不是只改了个字段）",
-                   code == 200 and "已切到" in page and "停掉 dsh" in page,
+            # ---- ⑨ ⭐ 宿主两行滑块互斥：开 codex ⇒ dsh 停、配置写出；再开 dsh ⇒ 换回来
+            #: ⚠ 原来宿主由 `--ai-host` 在命令行定死，页面那一行只用于"启动后重启"
+            #: ⇒ 启动阶段它是个摆设。现在**两行滑块**：开一个自动关另一个，
+            #: 而且真的动东西——停旧宿主进程、换适配器、写新宿主配置、把新宿主起起来。
+            #: 🔬 红证：把 `set_host_kind` 里第 1 步（停旧宿主）删掉 ⇒ 下面第 2 条必红。
+            code, page = _http(port, "POST", "/service", "svc=codex&on=1")
+            _check("⑨ 拨宿主滑块有逐步回执（不是只改了个字段）",
+                   code == 200 and "已启用" in page and "停掉 dsh" in page,
                    f"code={code} 片段={page[:160]!r}")
-            _check("⑨ ⭐ 切到 codex 后 dsh **真的停了**",
+            _check("⑨ ⭐ 开 codex 后 dsh **真的停了**",
                    pid_of("dsh") is None, f"pid={pid_of('dsh')}")
             cfg = td / "_mecha_runtime" / "codex-home" / "config.toml"
             text = cfg.read_text(encoding="utf-8") if cfg.is_file() else ""
             _check("⑨ ⭐ 写出了指向本次聚合端点的 Codex 配置",
                    cfg.is_file() and "[mcp_servers.mecha]" in text
                    and "url = \"http://127.0.0.1:" in text, f"exists={cfg.is_file()}")
-            _check("⑨ 页面上 codex 变成被选中的那一个（二选一是互斥的）",
-                   re.search(r'value="codex" checked', page) is not None
-                   and re.search(r'value="dsh" checked', page) is None,
-                   "单选状态不对")
-            _http(port, "POST", "/host", "host=dsh")
+            _check("⑨ ⭐ 两行滑块互斥：codex 开、dsh 自动关",
+                   'id="sw-codex" checked' in page
+                   and 'id="sw-dsh" checked' not in page,
+                   "两个滑块的开合不对")
+            _http(port, "POST", "/service", "svc=dsh&on=1")
             d3 = pid_of("dsh")
-            _check("⑨ ⭐ 切回 dsh ⇒ **进程起回来了**（新 pid）",
+            _check("⑨ ⭐ 再开 dsh ⇒ **进程起回来了**（新 pid），codex 自动关",
                    d3 is not None and d3 != d2, f"旧={d2} 新={d3}")
     finally:
         if proc is not None and proc.poll() is None:
