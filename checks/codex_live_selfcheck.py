@@ -1,11 +1,19 @@
-"""真实 Codex 链路：App Server 读取隔离配置并发现 mecha 工具。
+"""真实 Codex 链路：App Server 读取隔离配置、发现并调用 mecha 工具。
 
 不调用模型，因此不需要 OpenAI 网络；它验证的是 Codex 自己的 MCP 发现与
 tool catalog，而不是 mecha 内部替身。没有 Codex 可执行文件时输出 SKIP。
+
+默认自建一个只挂 ``demo_echo`` 的聚合端点，与真实部署无关。要对着一份已经在
+跑的 mecha 运行时复核（例如 ``python -m mecha --ai-host codex`` 之后），用
+``--aggregate-url`` 指过去，并用 ``--tool`` 挑一个真实工具：
+
+    python checks/codex_live_selfcheck.py \
+        --aggregate-url http://127.0.0.1:3089/mcp --tool el_read_config
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import logging
 import os
@@ -66,11 +74,11 @@ def _open_thread(proc: subprocess.Popen, lines: queue.Queue, cwd: Path) -> str:
 
 
 def _call_tool(proc: subprocess.Popen, lines: queue.Queue,
-               thread_id: str, text: str) -> str:
+               thread_id: str, tool: str, arguments: dict) -> str:
     """让 Codex 自己经 rmcp 客户端调用 mecha 端点，把回执文本拼回来。"""
     _send(proc, {"id": 3, "method": "mcpServer/tool/call", "params": {
-        "threadId": thread_id, "server": "mecha", "tool": "demo_echo",
-        "arguments": {"text": text}}})
+        "threadId": thread_id, "server": "mecha", "tool": tool,
+        "arguments": arguments}})
     response = _await_id(lines, 3, timeout=120.0)
     if response.get("error"):
         raise RuntimeError(f"mcpServer/tool/call 失败：{response['error']}")
@@ -119,7 +127,8 @@ def _doctor_accepts(codex: str, env: dict, cwd: Path) -> None:
               f"streamable_http={details.get('streamable_http servers')}")
 
 
-def check_live() -> int:
+def check_live(aggregate_url: str = "", tool_name: str = "",
+               arguments: dict | None = None) -> int:
     codex = _codex()
     if not codex:
         print("SKIP: 缺 Codex CLI（本项是真实宿主验收，不是框架失败）")
@@ -132,22 +141,30 @@ def check_live() -> int:
         print(f"SKIP: 缺 MCP extra（{exc}）")
         return 0
 
-    registry = ToolRegistry()
-    registry.register(define_tool(
-        name="demo_echo", description="Echo a short text.",
-        parameters={"text": {"type": "string"}},
-        output_schema={"type": "object", "required": ["ok", "echo"]},
-        execute=lambda **kw: {"ok": True, "echo": str(kw.get("text", ""))},
-    ))
-    endpoint = McpEndpoint(registry, server_name="mecha", instructions="live check")
-    endpoint.start()
+    endpoint = None
+    if aggregate_url:
+        url = aggregate_url
+        wanted = tool_name or "demo_echo"
+        print(f"对着已在跑的聚合端点复核：{url}（工具 {wanted}）")
+    else:
+        registry = ToolRegistry()
+        registry.register(define_tool(
+            name="demo_echo", description="Echo a short text.",
+            parameters={"text": {"type": "string"}},
+            output_schema={"type": "object", "required": ["ok", "echo"]},
+            execute=lambda **kw: {"ok": True, "echo": str(kw.get("text", ""))},
+        ))
+        endpoint = McpEndpoint(registry, server_name="mecha", instructions="live check")
+        endpoint.start()
+        url = endpoint.url
+        wanted = tool_name or "demo_echo"
     proc: subprocess.Popen | None = None
     #: ⚠ 不用 TemporaryDirectory 自动递归清理：Codex 会在 CODEX_HOME 里留下
     #: sqlite 文件，Windows 上递归删除既可能遇锁，也可能因非常规文件递归失控。
     #: 判据只负责真实发现，临时目录交给系统清理。
     td = Path(tempfile.mkdtemp(prefix="mecha-codex-live-"))
     try:
-        paths, _command = write_preparation(td, aggregate_url=endpoint.url)
+        paths, _command = write_preparation(td, aggregate_url=url)
         text = paths.config.read_text(encoding="utf-8")
         assert "[mcp_servers.mecha]" in text
         assert "[[hooks.PostToolUse]]" in text
@@ -178,15 +195,23 @@ def check_live() -> int:
         mecha = next((row for row in rows if row.get("name") == "mecha"), None)
         assert mecha is not None, f"mecha server not discovered: {rows}"
         tools = mecha.get("tools") or {}
-        assert "demo_echo" in tools, f"demo_echo not discovered: {sorted(tools)}"
-        print(f"真实 Codex 已发现 mecha MCP：tools={sorted(tools)}")
+        assert wanted in tools, f"{wanted} not discovered: {sorted(tools)}"
+        print(f"真实 Codex 已发现 mecha MCP：{len(tools)} 个工具，"
+              f"含 {wanted}")
 
         thread_id = _open_thread(proc, lines, td)
         print(f"真实 Codex 已开出会话：thread={thread_id[:12]}…")
         marker = f"mecha-live-{int(time.time())}"
-        receipt = _call_tool(proc, lines, thread_id, marker)
-        assert marker in receipt, f"工具回执里没有标记 {marker!r}：{receipt[:300]}"
-        print(f"真实 Codex 已调用 mecha 工具：demo_echo -> {receipt[:120]}")
+        #: 只有「自建替身」这一路才塞进随机标记并回读它：那证明请求真的穿过了
+        #: Codex 的 rmcp 客户端到达 mecha，而不是读到了缓存回执。对着真实工具
+        #: 复核时不改它的入参，只要求回执非空且未被标记为出错。
+        echo_probe = arguments is None and wanted == "demo_echo"
+        payload = {"text": marker} if echo_probe else dict(arguments or {})
+        receipt = _call_tool(proc, lines, thread_id, wanted, payload)
+        if echo_probe:
+            assert marker in receipt, (
+                f"工具回执里没有标记 {marker!r}：{receipt[:300]}")
+        print(f"真实 Codex 已调用 mecha 工具：{wanted} -> {receipt[:200]}")
         _doctor_accepts(codex, env, td)
         print("codex_live_selfcheck: PASS")
         return 0
@@ -207,7 +232,28 @@ def check_live() -> int:
                     proc.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     proc.kill()
-        endpoint.stop()
+        if endpoint is not None:
+            endpoint.stop()
+
+
+def _cli() -> tuple[str, str, dict | None]:
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--aggregate-url", default="",
+                    help="对着一份已在跑的 mecha 聚合端点复核，默认自建替身")
+    ap.add_argument("--tool", default="", help="要调用的工具名，默认 demo_echo")
+    ap.add_argument("--arguments", default="",
+                    help="工具入参 JSON，默认 {'text': 本次随机标记}")
+    args = ap.parse_args()
+    if args.arguments:
+        try:
+            payload = json.loads(args.arguments)
+        except ValueError as exc:
+            raise SystemExit(f"--arguments 不是合法 JSON：{exc}")
+        if not isinstance(payload, dict):
+            raise SystemExit("--arguments 必须是 JSON 对象")
+    else:
+        payload = None
+    return args.aggregate_url, args.tool, payload
 
 
 def main() -> int:
@@ -221,7 +267,7 @@ def main() -> int:
                  "asyncio"):
         logging.getLogger(name).setLevel(logging.CRITICAL)
     try:
-        return check_live()
+        return check_live(*_cli())
     except Exception as exc:  # noqa: BLE001 - 真实验收必须给出具体失败
         import traceback
         traceback.print_exc()

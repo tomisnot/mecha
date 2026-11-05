@@ -23,6 +23,13 @@ python checks/run_all.py --suite release               # 发布前个人路径�
 资产套件需要 Node 和 TypeScript；`MECHA_TSC_ROOT` 指向含 `node_modules` 的目录。
 项目套件需要 `MECHA_EL_ROOT` 指向 EL 仓。
 真 dsh 启动单独运行 `python checks/dsh_argv_selfcheck.py --live`，需要 dsh 与 `MECHA_SITE_ROOTS`；普通集成不启动真实宿主。
+Codex 套件需要 PATH 里有 `codex`；它自建一个只挂 `demo_echo` 的聚合端点做替身。要对着一份已经在跑的运行时复核，把地址和工具名指过去：
+
+```powershell
+python checks/codex_live_selfcheck.py --aggregate-url http://127.0.0.1:3089/mcp --tool el_read_config
+```
+
+这一路不改真实工具入参，只要求回执非空且未被标记为出错；随后 `codex doctor --json` 会用 Codex 自己的解析器复核本次生成的隔离 `CODEX_HOME`（含 Hooks 段）。
 
 结构测试保住重要关系，结果测试保住可观察承诺。已有测试已覆盖的机制不用在每个调用方重测。
 红证或故障注入按风险使用，不要求每条测试配套。
