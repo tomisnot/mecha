@@ -16,6 +16,8 @@
 
 已完成第五阶段（真机验收）：在 `codex-cli 0.162.1` 上让 Codex 自己跑通了整条链路，而不是只检查我们生成的字符串。`checks/codex_live_selfcheck.py` 依次做三件事：App Server 初始化后由 `mcpServerStatus/list` 读出 mecha 端点与工具表；开一个 ephemeral 会话，用 `mcpServer/tool/call` 真的把工具打进聚合端点并回读本次随机标记；最后让 `codex doctor --json` 用自己的解析器裁决这份 `config.toml`（含 `[[hooks.PostToolUse]]` 段）是否可接受。对着一份用 `python -m mecha --ai-host codex` 起的真实运行时复核时，Codex 看到 20 个 EL 工具并成功调用 `el_read_config`；`codex doctor` 报 `config.toml parse=ok`、`mcp servers=1`、`streamable_http=1`。
 
+已完成第六阶段（控制台二选一）：启动页把 **接入的项目**（多选）与 **AI 宿主**（单选 dsh / codex，默认 dsh）分成两类，`--ai-host` 退化为初始值。`POST /host` → `LaunchController.set_host_kind`，**启动前与运行中都生效**：停旧宿主进程 → 换适配器并 `validate` → 重挂工具表刷新口（`AggregateRuntime.bind_host`）与 spawn 钩子（每个宿主只装一次，避免 `--patch` 叠两份）→ 重写新宿主配置 → 已启动时把新宿主进程起起来；每一步单独回执。宿主装配顺序上，`build_aggregate_wiring` 把接线对象挂到运行期（`runtime.host_wiring`），`main()` 再交给控制器，控制器因而能在任何时刻重挂而不需要重新构造端点。判据：`checks/host_switch_selfcheck.py`（①②…⑩）+ `checks/endtoend_selfcheck.py` 第 ⑨ 段（真 launcher + 真页面：切 codex ⇒ dsh 停、配置写出、单选状态互斥；切回 ⇒ dsh 新 pid 回来）。
+
 尚未开始：managed App Server 客户端。以下两条限制是验收中撞出来的事实，不是待办清单的修辞：
 
 - **Hook 任务账只在模型发起的工具回合里产生。** 源码里 `PostToolUse` 由 agent 的工具循环派发，`mcpServer/tool/call` 是客户端直连代理，不经过那层。所以 `tasks.jsonl` 的写入要用一次真实对话来验；本机到 `chatgpt.com` 的推理请求超时（与 mecha 配置无关），这一条留待可用网络或本地模型环境。

@@ -34,6 +34,7 @@ SUITES = {
         "aggregate_selfcheck", "authority_read_selfcheck",
         "authority_shared_mode_selfcheck", "phase13_panel_decl_selfcheck",
         "portfile_selfcheck", "status_page_stop_selfcheck",
+        "host_switch_selfcheck",
     ),
     "integration": (
         "assembly_endtoend_selfcheck", "phase11_cockpit_selfcheck",

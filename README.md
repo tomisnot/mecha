@@ -92,7 +92,7 @@ python -m mecha --ai-host codex --root ../energy-level
 
 `--root` 可重复使用；`--all` 跳过项目选择页，`--dry-run` 只查看启动计划。路径请替换为实际检出的仓库目录。
 
-默认 AI 宿主是 dsh，需要其可执行命令在 PATH 中，并准备所选项目声明的插件资产。`--ai-host codex` 采用外部 MCP 模式：mecha 不启动 dsh，只生成隔离的 `_mecha_runtime/codex-home/` 配置；软件就绪后按其中的 `codex-start.txt` 启动 Codex。`--ai-host none` 只启动软件、聚合端点和控制台。软件存活、客户端连接和写权是三个独立维度；切换写权不需要重启软件。控制台右上角的「监控」进入宿主无关的 `/monitor`，直接读取各软件 Cockpit 的只读历史。`--ai-host codex` 还会生成 `PostToolUse`/`PermissionRequest` Hooks：前者把任务提交回执写入 `codex-home/tasks.jsonl`，后者只做审计并保留 Codex 原有审批流程。
+默认 AI 宿主是 dsh，需要其可执行命令在 PATH 中，并准备所选项目声明的插件资产。`--ai-host codex` 采用外部 MCP 模式：mecha 不启动 dsh，只生成隔离的 `_mecha_runtime/codex-home/` 配置；软件就绪后按其中的 `codex-start.txt` 启动 Codex。`--ai-host none` 只启动软件、聚合端点和控制台。`--ai-host` 只决定**初始值**：控制台的「AI 宿主」区是单选（dsh / codex，互斥、默认 dsh），启动前与运行中都能改——运行中切换会停掉旧宿主进程、换适配器、重写新宿主的接入配置，必要时把新宿主起起来，并逐步回执每一步成败。软件存活、客户端连接和写权是三个独立维度；切换写权不需要重启软件。控制台右上角的「监控」进入宿主无关的 `/monitor`，直接读取各软件 Cockpit 的只读历史。`--ai-host codex` 还会生成 `PostToolUse`/`PermissionRequest` Hooks：前者把任务提交回执写入 `codex-home/tasks.jsonl`，后者只做审计并保留 Codex 原有审批流程。页面底部的「运行输出」默认收起成一条标题栏，往上拖才展开，高度记在本机浏览器里。
 
 ## 开发与验证
 

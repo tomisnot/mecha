@@ -6,17 +6,26 @@
 ┌────────────────────────────────────────────────────────────┐
 │ mecha · 控制台                              [◀ 收起]        │
 ├──────────────┬─────────────────────────────────────────────┤
-│ 侧栏（可折叠）│ ☑ │ Machine Learning │ [●──] │ ready │ 写权… │
-│  ML          │   │ 传统机器学习 / 神经网络 / 自动调参          │
+│ 侧栏（可折叠）│ 接入的项目（可多选）                          │
+│  ML          │ ☑ │ Machine Learning │ [●──] │ ready │ 写权… │
 │  EL          │ ☑ │ Energy Level     │ [●──] │ ready │ 写权… │
-│  GP          │ ☐ │ Get Paper        │ [──○] │ stopped│  —   │
+│ ─────────    │ AI 宿主（只能选一个，默认 dsh）               │
+│ AI · dsh     │ ◉ │ dsh   │ [●──] │ running │ 由启动器托管… │
+│              │ ○ │ codex │  —    │ 未选用  │ 外部 MCP…     │
 ├──────────────┴─────────────────────────────────────────────┤
-│ [全部启用] [全部停用] [启动 ▸] [收尾退出]                     │
+│ 运行输出（默认只留这一条标题栏，往上拖才展开；高度记在本机）    │
 └────────────────────────────────────────────────────────────┘
 ```
 
-⭐ **三个控件分工**（§7 的表）：
+⭐ **两类必须分开**（2026-11-05 用户裁决）：上面是**接入的项目**（多选，表达"打算开哪几个"），
+下面是 **AI 宿主**（单选 dsh / codex，互斥）。⚠ 宿主那一行原来混在项目表里、且种类由
+`--ai-host` 在命令行定死 ⇒ 启动阶段它是个摆设（开关决定不了什么，启动后只用来重启）。
+现在它是真的选择：`POST /host` → `LaunchController.set_host_kind`，**启动前与运行中都生效**
+（运行中会停掉旧宿主进程、换适配器、重挂刷新口、写新宿主配置、必要时把新宿主起起来）。
+
+⭐ **四个控件分工**（§7 的表 + 宿主单选）：
 - **存活滑块** ⇒ 动 ①（起/停软件）；
+- **宿主圆点** ⇒ 换 AI 宿主（dsh / codex，互斥）——⚠ **不动软件、不动写权**；
 - **写权按钮** ⇒ 动 ③（切 AI/手动）——⭐ **走控制端点那条腿**（§7.1.1），
   **切到手动 = 两次调用、按顺序、分开报告**（`set_write_authority("human")` →
   `open_manual_surface()`）：⚠ 合并成一次会让"写权切了但窗口没开"看起来像成功；
@@ -32,14 +41,17 @@
 `.control-port` **只给框架**；⚠ **不许把 `:control-port` 写进任何给 AI 的文本/工具输出**。
 ⇒ 本页面**不渲染任何端口号**（连能力面端口也不渲染：端口对人不是信息，对"泄漏"却是风险面）。
 
-## ⚠ 用户给的四条布局要求（**必须遵守**，别退回旧形态）
+## ⚠ 用户给的布局要求（**必须遵守**，别退回旧形态）
 
 1. **左侧列表可折叠**，且折叠后**真的让出宽度**（不是"变窄一点"）——
    用 ``grid-template-columns`` 在 260px 与 0 之间切换，而不是缩小字体/内边距；
 2. **不要固定高度**：列表在**自己的格子里滚动**（``overflow-y:auto`` + ``min-height:0``），
    **页面本身不被撑长**；
 3. **不要卡片框**（没有 border+radius 的"卡片"容器）；
-4. **不许出现"详情"这种占一整行的标题**——每行只放控件与状态。
+4. **不许出现"详情"这种占一整行的标题**——每行只放控件与状态；
+5. ⭐ **两类分开**：接入的项目（多选）与 AI 宿主（单选）不混在一张表里；
+6. ⭐ **调试终端默认收起**，只留一条标题栏（28px）；**标题栏就是把手**，往上拖才展开，
+   高度记在本机（`localStorage`），双击折叠。
 
 ## Known Limitations and Deferred Work
 
@@ -95,6 +107,9 @@ class Controller(Protocol):
     def start(self, enabled: list) -> dict: ...
     def set_service_enabled(self, svc_id: str, enabled: bool) -> dict: ...
     def set_intent(self, svc_id: str, enabled: bool) -> None: ...
+    def host_info(self) -> dict: ...
+    def host_choices(self) -> list: ...
+    def set_host_kind(self, kind: str) -> dict: ...
     def write_authority_state(self, svc_id: str) -> dict: ...
     def control_write_authority(self, svc_id: str, action: str) -> dict: ...
     def shutdown(self) -> dict: ...
@@ -123,12 +138,22 @@ header,footer{flex:0 0 auto}
 #side{border-right:1px solid #242a35;overflow-y:auto;min-height:0}
 #shell.collapsed #side{display:none}
 #main{overflow-y:auto;min-height:0;padding:4px 18px 14px}
-.terminal{flex:0 0 230px;min-height:120px;border-top:1px solid #242a35;background:#0b0e13;
-          display:flex;flex-direction:column}
-.terminal-head{padding:6px 18px;color:#8b93a1;font-size:12px;border-bottom:1px solid #1b2029}
+.terminal{flex:0 0 auto;height:28px;min-height:28px;max-height:70vh;border-top:1px solid #242a35;
+          background:#0b0e13;display:flex;flex-direction:column;overflow:hidden}
+/*: ⭐ 标题条就是**把手**：默认只有这一条（28px），往上拖才展开 —— 用户要的是
+   "想看的时候拉出来，不想看的时候拉低"。⚠ 光标 `ns-resize` 是唯一提示，别再画边框。 */
+.terminal-head{padding:6px 18px;color:#8b93a1;font-size:12px;border-bottom:1px solid #1b2029;
+               cursor:ns-resize;user-select:none;display:flex;gap:10px;align-items:center}
+.terminal-head .grip{margin-left:auto;color:#5f6b7a}
 #console{margin:0;padding:8px 18px;overflow:auto;white-space:pre-wrap;word-break:break-word;
          color:#c9d1d9;font:12px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace;flex:1;
-         max-height:none;border:0;border-radius:0;background:#0b0e13}
+         max-height:none;border:0;border-radius:0;background:#0b0e13;display:none}
+#term.open #console{display:block}
+/*: 两类之间分开：项目（可多选）与 AI 宿主（只能选一个） */
+.group{display:flex;gap:10px;align-items:baseline;padding:14px 2px 6px;color:#8b93a1;
+       font-size:12px;font-weight:600;border-bottom:1px solid #242a35}
+.sidesep{border-top:1px solid #242a35;margin:6px 0}
+.hostpick{cursor:pointer}
 .row{display:grid;grid-template-columns:24px 170px 92px 88px 1fr;gap:10px;align-items:center;
      padding:8px 2px;border-bottom:1px solid #1b2029}   /* ⚠ 只有分隔线，**不套卡片框** */
 .brief{grid-column:2 / span 4;color:#8b93a1;font-size:12px;margin:-4px 0 2px}
@@ -172,6 +197,25 @@ a{color:#79c0ff}
 
 def _badge(state: str) -> str:
     return f'<span class="badge b-{html.escape(state)}">{html.escape(state)}</span>'
+
+
+def _host_notice(out: dict) -> str:
+    """换宿主的结果：**每一步单独报**（与写权那一套同形，不合并成"看起来成功了"）。
+
+    ⚠ 换宿主会真的停/起一个进程，也会真的写一份配置 ⇒ 只回一句"已切换"是撒谎：
+    人需要知道是哪一步没成（停旧的 / 起新的 / 写配置）。
+    """
+    steps = out.get("steps") or []
+    detail = "；".join(
+        f'{s.get("step")}：{"✅" if s.get("ok") else "❌ " + str(s.get("error", ""))}'
+        for s in steps)
+    if not steps:
+        return (f'<div class="notice muted">当前就是 '
+                f'<strong>{html.escape(str(out.get("kind") or ""))}</strong>（没动任何东西）。</div>')
+    cls = "notice" if out.get("ok") else "notice err"
+    title = ("已切到 " if out.get("ok") else "切换未完成：")
+    return (f'<div class="{cls}">{title}<strong>{html.escape(str(out.get("kind") or ""))}</strong>'
+            f'<br><span class="muted">{html.escape(detail)}</span></div>')
 
 
 def _mode_cell(svc: object, ctl_state: dict | None) -> str:
@@ -292,31 +336,59 @@ def _service_row(svc: object, row: dict | None, intent: bool, started: bool,
         f'</div>')
 
 
-def _dsh_row(row: dict | None, info: dict | None = None) -> str:
-    """AI 宿主那一行；只有被 supervisor 托管的宿主才有真实存活滑块。"""
-    host = info or {"label": "dsh", "managed": True, "child_id": DSH_CHILD_ID,
-                    "external": False}
-    sid = str(host.get("child_id") or host.get("label") or DSH_CHILD_ID)
-    label = str(host.get("label") or "dsh")
-    managed = bool(host.get("managed"))
-    running = bool((row or {}).get("pid"))
-    if not managed:
-        suffix = "外部连接" if host.get("external") else "未启用"
-        return (
-            f'<div class="row"><span></span><span class="name">{html.escape(label)}</span>'
-            f'<span class="muted">—</span>'
-            f'{_badge(str((row or {}).get("state") or "external"))}'
-            f'<span class="muted">—</span>'
-            f'<span class="brief muted">{html.escape(suffix)}：不由启动器开关</span></div>')
+def _host_row(choice: dict, kind: str, row: dict | None) -> str:
+    """AI 宿主的一行：**单选圆点** +（选中且受管才有的）存活滑块。
+
+    ⚠ 与项目行**同形但不同类**：项目是"打算开哪几个"（多选），宿主是
+    "这一轮用哪一个"（单选、互斥）。两者混在同一张表里正是要改掉的形态 ——
+    用户原话："启动界面这二者只能选一个，与上面的接入项目分隔开，两类"。
+
+    三档形态：
+
+    | 情形 | 圆点 | 滑块 | 徽标 |
+    |---|---|---|---|
+    | 未选中的那一个 | 空 | `—` | `未选用` |
+    | 选中 + 受管（dsh） | 实 | 有（关→开 = 重启它） | 真状态 |
+    | 选中 + 外部（codex） | 实 | `—` | `外部连接` |
+    """
+    value = str(choice.get("kind") or "")
+    label = str(choice.get("label") or value)
+    managed = bool(choice.get("managed"))
+    note = str(choice.get("note") or "")
+    picked = value == kind
+    running = bool((row or {}).get("pid")) if picked else False
+    radio = (f'<input type="radio" name="host" value="{html.escape(value)}"'
+             f'{" checked" if picked else ""}'
+             f' onchange="pickHost(\'{html.escape(value)}\')">')
+    if not picked:
+        switch, badge = '<span class="muted">—</span>', '<span class="badge">未选用</span>'
+    elif managed:
+        sid = html.escape(str((row or {}).get("id") or choice.get("child_id") or label))
+        switch = (f'<span class="sw"><input type="checkbox" id="sw-{sid}"'
+                  f'{" checked" if running else ""}'
+                  f' onchange="toggle(\'{sid}\', this.checked)">'
+                  f'<label for="sw-{sid}"></label></span>')
+        badge = _badge(str((row or {}).get("state") or "stopped"))
+    else:
+        switch, badge = '<span class="muted">—</span>', _badge("external")
     return (
-        f'<div class="row"><span></span><span class="name">{html.escape(label)}</span>'
-        f'<span class="sw"><input type="checkbox" id="sw-{html.escape(sid)}"'
-        f'{" checked" if running else ""}'
-        f' onchange="toggle(\'{html.escape(sid)}\', this.checked)">'
-        f'<label for="sw-{html.escape(sid)}"></label></span>'
-        f'{_badge(str((row or {}).get("state") or "stopped"))}'
-        f'<span class="muted">—</span>'
-        f'<span class="brief muted">它只是 AI 那条腿的载体</span></div>')
+        f'<div class="row">'
+        f'<span class="hostpick">{radio}</span>'
+        #: 名字也可以点：只让 24px 的圆点可点太抠（人不一定会瞄准那个圈）
+        f'<span class="name hostpick" onclick="pickHost(\'{html.escape(value)}\')">'
+        f'{html.escape(label)}</span>'
+        f'{switch}{badge}'
+        f'<span class="brief muted">{html.escape(note)}</span>'
+        f'</div>')
+
+
+def _host_block(choices: list[dict], kind: str, row: dict | None) -> list[str]:
+    """AI 宿主那一组：标题 + 单选行（**只能选一个**）。"""
+    head = ('<div class="group">AI 宿主'
+            '<span class="pending">只能选一个 · 默认 dsh</span></div>')
+    rows = [_host_row(c, kind, row if str(c.get("kind") or "") == kind else None)
+            for c in choices]
+    return [head, *rows]
 
 
 def render_page(controller: Controller) -> str:
@@ -346,6 +418,9 @@ def render_page(controller: Controller) -> str:
             site_of[str(getattr(_svc, "id", ""))] = str(getattr(_site, "name", ""))
     items: list[str] = []
     side: list[str] = []
+    #: ⭐ **两类分开的第一类**：接入的项目（可多选，勾"打算开哪几个"）。
+    items.append('<div class="group">接入的项目'
+                 '<span class="pending">可多选 · 存活滑块随时可动</span></div>')
     for svc in services:
         sid = str(getattr(svc, "id", ""))
         row = rows.get(sid)
@@ -380,19 +455,31 @@ def render_page(controller: Controller) -> str:
             f'<div class="notice muted">已自动清掉 {len(cleaned)} 项陈旧残留'
             f'（<strong>无需你操作</strong>）'
             f'<span class="pending">　明细见 state.json 与 supervisor 日志</span></div>')
-    #: ⭐ AI 宿主那一行始终在；名称、托管状态与 child id 由适配器给出。
+    #: ⭐ **两类分开的第二类**：AI 宿主。名称/托管状态/child id 由适配器给，
+    #: 可选哪两个由控制器给（控制台只提供 dsh / codex）。
     try:
         host_info = dict(controller.host_info())  # type: ignore[attr-defined]
     except Exception:                                      # noqa: BLE001 - 旧替身按 dsh 渲染
-        host_info = {"label": "dsh", "managed": True,
+        host_info = {"kind": "dsh", "label": "dsh", "managed": True,
                      "child_id": DSH_CHILD_ID, "external": False}
+    kind = str(host_info.get("kind") or host_info.get("label") or "dsh")
+    try:
+        choices = [dict(c) for c in controller.host_choices()]  # type: ignore[attr-defined]
+    except Exception:                                      # noqa: BLE001 - 旧替身只认 dsh
+        choices = [{"kind": "dsh", "label": "dsh", "managed": True,
+                    "note": "由启动器托管：关掉再打开 = 重启它"}]
+    if not any(str(c.get("kind") or "") == kind for c in choices):
+        choices.insert(0, {"kind": kind, "label": str(host_info.get("label") or kind),
+                           "managed": bool(host_info.get("managed")),
+                           "note": str(host_info.get("note") or "")})
     host_child_id = str(host_info.get("child_id") or DSH_CHILD_ID)
     host_row = rows.get(host_child_id)
-    items.append(_dsh_row(host_row, host_info))
+    items.extend(_host_block(choices, kind, host_row))
     #: ⚠ 左栏也要有它 —— 否则两处清单不一致（右栏 4 行、左栏 3 行）。
+    side.append('<div class="sidesep"></div>')
     side.append('<div class="sideitem"'
                 + (' on' if (host_row or {}).get("pid") else '')
-                + '>' + html.escape(str(host_info.get("label", "dsh"))) + '</div>')
+                + '>AI · ' + html.escape(str(host_info.get("label", "dsh"))) + '</div>')
 
     #: ⭐ **AI 那条腿的地址**（T4）：聚合端点**每次启动都变**，所以页面必须**现取**
     #: （`state()["ai_face"]` 里是控制器按端口文件读出来的），不能写死。
@@ -419,7 +506,9 @@ def render_page(controller: Controller) -> str:
         + ai_line
         + f'<div id="shell"><div id="side">{"".join(side)}</div>'
         f'<div id="main">{head}{"".join(items)}</div></div>'
-        '<section class="terminal"><div class="terminal-head">运行输出 · 每秒刷新（进程状态、最近 stdout/stderr、就绪证据和聚合同步错误）</div>'
+        '<section class="terminal" id="term">'
+        '<div class="terminal-head" id="term-head">运行输出 · 每秒刷新（进程状态、最近 stdout/stderr、就绪证据和聚合同步错误）'
+        '<span class="grip">往上拖拉出 · 双击折叠</span></div>'
         '<pre id="console">正在读取启动器状态…</pre></section>'
         '<footer><button type="button" onclick="allOn(true)">全部启用</button>'
         '<button type="button" onclick="allOn(false)">全部停用</button>'
@@ -436,8 +525,9 @@ def render_page(controller: Controller) -> str:
         '<script>'
         'function fold(){document.getElementById("shell").classList.toggle("collapsed")}'
         'async function post(p,b){const r=await fetch(p,{method:"POST",body:b||""});'
-        'document.documentElement.innerHTML=await r.text()}'
+        'document.documentElement.innerHTML=await r.text();termApply()}'
         'function toggle(id,on){post("/service", new URLSearchParams({svc:id,on:on?"1":"0"}))}'
+        'function pickHost(k){post("/host", new URLSearchParams({host:k}))}'
         'function startNow(b){b.disabled=true;b.textContent="启动中…（拉起软件要几秒）";'
         'post("/start")}'
         'function mode(id,act){post("/mode", new URLSearchParams({svc:id,action:act}))}'
@@ -460,6 +550,27 @@ def render_page(controller: Controller) -> str:
         'const follow=box.scrollHeight-box.scrollTop-box.clientHeight<40;box.textContent=lines.join("\\n")||"（暂无子进程输出）";'
         'if(follow)box.scrollTop=box.scrollHeight;}catch(e){const box=document.getElementById("console");if(box)box.textContent="[console] "+e;}}'
         'pollConsole();setInterval(pollConsole,1000);'
+        #: ⭐ 终端高度：**默认只留标题条**（28px），拖出来才展开；高度记在本机。
+        #: ⚠ 事件必须挂在 `document` 上：`post()` 会整页换 DOM（`innerHTML`），
+        #: 直接挂在元素上的监听会跟着旧节点一起消失（而脚本不会重跑）。
+        'function termSet(h){const t=document.getElementById("term");if(!t)return;'
+        'h=Math.max(28,Math.min(Math.round(window.innerHeight*0.7),Math.round(h)));'
+        't.style.height=h+"px";t.classList.toggle("open",h>40);'
+        'try{localStorage.setItem("mecha.termH",String(h))}catch(e){}}'
+        'function termApply(){let h=28;try{h=parseInt(localStorage.getItem("mecha.termH")||"28",10)}catch(e){}'
+        'termSet(isNaN(h)?28:h)}'
+        'termApply();'
+        '(function(){let drag=false,y0=0,h0=28;'
+        'document.addEventListener("pointerdown",function(e){'
+        'const hd=e.target.closest&&e.target.closest("#term-head");if(!hd)return;'
+        'drag=true;y0=e.clientY;const t=document.getElementById("term");'
+        'h0=t?t.getBoundingClientRect().height:28;e.preventDefault();});'
+        'document.addEventListener("pointermove",function(e){if(!drag)return;termSet(h0-(e.clientY-y0));});'
+        'document.addEventListener("pointerup",function(){drag=false});'
+        'document.addEventListener("dblclick",function(e){'
+        'const hd=e.target.closest&&e.target.closest("#term-head");if(!hd)return;'
+        'const t=document.getElementById("term");termSet(t&&t.classList.contains("open")?28:220);});'
+        '})();'
         '</script></body></html>')
 
 
@@ -549,6 +660,12 @@ class _Handler(BaseHTTPRequestHandler):
                         f'<div id="main"><div class="notice err">'
                         f'{html.escape(str(out.get("error", "写权操作失败")))}<br>'
                         f'<span class="muted">{html.escape(detail)}</span></div>'))
+            elif path == "/host":                          # ⭐ AI 宿主：二选一（dsh / codex）
+                kind = (form.get("host") or [""])[0]
+                out = self.controller.set_host_kind(kind)   # type: ignore[attr-defined]
+                page = render_page(self.controller)
+                return self._html(200, page.replace(
+                    "<div id=\"main\">", f'<div id="main">{_host_notice(out)}'))
             elif path == "/all":                           # 批量：只改**意图**（不 spawn）
                 on = (form.get("on") or ["1"])[0] == "1"
                 for svc in self.controller.services():     # type: ignore[union-attr]

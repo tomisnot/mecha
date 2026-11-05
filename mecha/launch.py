@@ -398,6 +398,16 @@ class LaunchController:
         self.host_kind = AIHostKind(str(getattr(host_kind, "value", host_kind)))
         self.host_adapter = host_adapter or select_host_adapter(self.host_kind)
         self.host_preparation = None
+        #: ⭐ 换宿主要能重挂"工具表刷新口"与"spawn 前钩子"，所以拿着接线对象。
+        #: ⚠ 由 ``main()`` 在聚合端点起好后注入（控制器不认识端点的构造）。
+        self.host_wiring: HostWiring | None = None
+        #: ⭐ 每个宿主**只装一次** spawn 钩子：而 supervisor 的钩子表只能追加
+        #: （``add_prepare_hook`` 没有对应的删），重复装会让 dsh 的 ``--patch``
+        #: 叠成两份 overlay。⇒ 记住装过谁。
+        self._host_installed: set[str] = set()
+        #: 聚合端点回读的地址：换宿主时要按它重新写配置（codex）与 overlay（dsh）。
+        self._aggregate_port = 0
+        self._aggregate_url = ""
         self._started = False
         self._enabled: tuple[str, ...] = ()
         self._last_error = ""
@@ -477,18 +487,166 @@ class LaunchController:
     def host_info(self) -> dict:
         """状态页只读这份宿主事实；外部宿主不产生可点击的存活滑块。"""
         caps = self.host_adapter.capabilities(self.host_plan())
+        managed = bool(caps.get("managed", False))
         return {
+            "kind": self.host_kind.value,
             "label": str(caps.get("label", self.host_adapter.name)),
-            "managed": bool(caps.get("managed", False)),
+            "managed": managed,
             "child_id": self.host_adapter.child_id,
             "external": bool(caps.get("external", False)),
             "task_ledger": str(caps.get("task_ledger", "") or ""),
+            "note": ("由启动器托管：关掉再打开 = 重启它" if managed
+                     else "外部 MCP：只为它写隔离配置，不占子进程"),
         }
+
+    def host_choices(self) -> list[dict]:
+        """控制台那两个可选项（**只能选一个**，默认 dsh）。
+
+        ⚠ ``none`` 不给控制台：它是命令行上的"只要软件、不要 AI 宿主"档位，
+        在页面上按一下就把 AI 那条腿拆了，代价与收益都不适合一个单选按钮。
+        """
+        out: list[dict] = []
+        for kind in (AIHostKind.DSH, AIHostKind.CODEX):
+            adapter = select_host_adapter(kind)
+            managed = bool(adapter.managed)
+            out.append({
+                "kind": kind.value,
+                "label": adapter.name,
+                "managed": managed,
+                "note": ("由启动器托管：关掉再打开 = 重启它" if managed
+                         else "外部 MCP：只为它写隔离配置，不占子进程"),
+            })
+        return out
+
+    def attach_wiring(self, wiring: HostWiring) -> None:
+        """接上聚合端点那套运行期对象，并记下**当前宿主**的钩子已装。"""
+        self.host_wiring = wiring
+        self._host_installed.add(self.host_adapter.name)
+
+    def _rebind_host(self, plan: HostPlan) -> None:
+        """把"工具表刷新"与"spawn 前钩子"换到当前适配器上。
+
+        ⚠ 刷新口必须重挂：它们在聚合运行时构造时就被捕获（``bind_host`` 之前），
+        不重挂就会在 codex 期间继续重写 dsh 的 overlay、并朝 dsh 发客户端刷新。
+        ⚠ 钩子**每个宿主只装一次**：supervisor 的钩子表只能追加；dsh 那个钩子
+        每次 spawn 都会**现算** overlay，所以装一次就够，重复装会让 ``--patch``
+        叠两份。
+        """
+        if self.host_wiring is None:
+            return
+        overlay = self.host_adapter.overlay_refresh(plan, self.host_wiring)
+        client = self.host_adapter.client_refresh(plan, self.host_wiring)
+        bind = getattr(self.agg_runtime, "bind_host", None)
+        if bind is not None:
+            bind(overlay_refresh=overlay, client_refresh=client)
+        if self.host_adapter.name not in self._host_installed:
+            self.host_adapter.install(plan, self.host_wiring)
+            self._host_installed.add(self.host_adapter.name)
+
+    def set_host_kind(self, kind: AIHostKind | str) -> dict:
+        """⭐ 换 AI 宿主（**启动前与运行中都可**，dsh ⇄ codex）。
+
+        顺序与"切写权"那一套同形：**每一步单独报告**，不合并成"看起来成功了"。
+
+        | 步 | 做什么 | 失败怎么办 |
+        |---|---|---|
+        | 1 | 停掉旧宿主**进程**（外部宿主没有进程，跳过） | 停不掉就**不换**（否则两个宿主同时连着） |
+        | 2 | 换适配器 + ``validate`` | 校验失败 ⇒ **回滚**到旧宿主 |
+        | 3 | 重挂刷新口、装 spawn 钩子（每个宿主只装一次） | 失败如实报，但不阻止换 |
+        | 4 | 写新宿主自己的接入配置（codex 的隔离 ``CODEX_HOME``；dsh 只是说明） | 失败 ⇒ 停在"已换但没配置"，如实报 |
+        | 5 | 若整站已启动：把新宿主的受管进程**起起来** | 起不来 ⇒ 保持"已换、起不来"，如实报（不回滚：进程状态已变，回滚只会更假） |
+
+        ⚠ **不动任何软件**：宿主管的是 AI 那条腿，换它不改软件存活、不改写权
+        （与"停 dsh 不影响软件"同一条纪律）。
+        """
+        value = AIHostKind(str(getattr(kind, "value", kind)))
+        if value is AIHostKind.NONE:
+            return {"ok": False, "kind": self.host_kind.value, "steps": [],
+                    "error": "控制台只提供 dsh / codex 两个宿主；none 只作命令行档位"}
+        if value is self.host_kind:
+            return {"ok": True, "kind": value.value, "changed": False, "steps": []}
+
+        steps: list[dict] = []
+        old_kind, old_adapter = self.host_kind, self.host_adapter
+
+        # 1) 停旧宿主的进程（只有受管宿主有）
+        old_child = old_adapter.child_id
+        if old_child is not None and old_child in self.super.state_ids():
+            try:
+                self.super.stop(old_child)
+                steps.append({"step": f"停掉 {old_kind.value}", "ok": True})
+            except MechaError as exc:
+                self._last_error = f"换宿主失败：停不掉 {old_kind.value}：{exc.message}"
+                steps.append({"step": f"停掉 {old_kind.value}", "ok": False,
+                              "error": exc.message})
+                self._save_status()
+                return {"ok": False, "kind": old_kind.value,
+                        "error": self._last_error, "steps": steps}
+
+        # 2) 换适配器并校验
+        self.host_kind = value
+        self.host_adapter = select_host_adapter(value)
+        self.host_preparation = None
+        plan = self.host_plan(aggregate_port=self._aggregate_port,
+                              aggregate_url=self._aggregate_url)
+        try:
+            self.host_adapter.validate(plan)
+            steps.append({"step": f"切到 {value.value} 适配器", "ok": True})
+        except MechaError as exc:
+            self.host_kind, self.host_adapter = old_kind, old_adapter
+            self._last_error = f"换宿主失败：{value.value} 声明不可用：{exc.message}"
+            steps.append({"step": f"切到 {value.value} 适配器", "ok": False,
+                          "error": exc.message})
+            self._save_status()
+            return {"ok": False, "kind": old_kind.value,
+                    "error": self._last_error, "steps": steps}
+
+        # 3) 重挂刷新口 + 钩子
+        try:
+            self._rebind_host(plan)
+            steps.append({"step": "重挂工具表刷新口", "ok": True})
+        except Exception as exc:                       # noqa: BLE001 - 如实报，不中断
+            steps.append({"step": "重挂工具表刷新口", "ok": False,
+                          "error": f"{type(exc).__name__}: {exc}"})
+
+        # 4) 写新宿主自己的配置
+        try:
+            if self._aggregate_port > 0:
+                self.host_preparation = self.host_adapter.prepare(plan)
+            steps.append({"step": f"准备 {value.value} 的接入配置", "ok": True})
+        except MechaError as exc:
+            steps.append({"step": f"准备 {value.value} 的接入配置", "ok": False,
+                          "error": exc.message})
+            self._last_error = f"换宿主后写配置失败：{exc.message}"
+            self._save_status()
+            return {"ok": False, "kind": value.value,
+                    "error": self._last_error, "steps": steps}
+
+        # 5) 整站已启动 ⇒ 把新宿主的进程拉起来（受管才有）
+        if self._started:
+            child = self.host_adapter.child(plan)
+            if child is not None:
+                try:
+                    self.super.start(child)
+                    steps.append({"step": f"起 {value.value}", "ok": True})
+                except MechaError as exc:
+                    steps.append({"step": f"起 {value.value}", "ok": False,
+                                  "error": exc.message})
+                    self._last_error = (f"已切到 {value.value}，但它起不来：{exc.message}")
+                    self._save_status()
+                    return {"ok": False, "kind": value.value,
+                            "error": self._last_error, "steps": steps}
+        self._last_error = ""
+        self._save_status()
+        return {"ok": all(s["ok"] for s in steps), "kind": value.value,
+                "changed": True, "steps": steps}
 
     def prepare_host(self, *, aggregate_port: int, aggregate_url: str = "") -> object:
         """聚合端点就绪后调用；结果保存在控制器，供状态页与收尾读取。"""
-        plan = self.host_plan(aggregate_port=aggregate_port,
-                              aggregate_url=aggregate_url)
+        self._aggregate_port = int(aggregate_port or 0)
+        self._aggregate_url = str(aggregate_url or "")
+        plan = self.host_plan(aggregate_port=self._aggregate_port,
+                              aggregate_url=self._aggregate_url)
         self.host_adapter.validate(plan)
         self.host_preparation = self.host_adapter.prepare(plan)
         return self.host_preparation
@@ -1047,6 +1205,9 @@ def build_aggregate_wiring(*, sites: Sequence[Site], supervisor: Supervisor,
              authority_probe=runtime.probe_authority,
              resync_fn=runtime.sync_backends)
     host.install(host_plan, wiring)
+    #: ⭐ 把接线对象**交给运行期保管**：控制台换宿主时要重挂刷新口与钩子，
+    #: 而那些东西构造在这里、只在 main() 里出现一次（见 `attach_wiring`）。
+    runtime.host_wiring = wiring
     #: ready/gone 都经同一份 sync_backends；工具表刷新回调由具体宿主适配器决定。
     supervisor.add_ready_hook(lambda spec, child: runtime.sync_backends())
     supervisor.add_gone_hook(lambda spec, child: runtime.sync_backends())
@@ -1229,6 +1390,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     controller.after_start = after_start
     controller.agg_runtime = agg_runtime   # 面板的存活滑块走它那条正规路径（含端点同步）
+    #: ⭐ 换宿主（控制台上的单选）要能重挂刷新口与 spawn 钩子 ⇒ 接线对象交给控制器。
+    wiring = getattr(agg_runtime, "host_wiring", None)
+    if wiring is not None:
+        controller.attach_wiring(wiring)
 
     if args.all:
         enabled = [s.id for s in flat_services(sites) if s.default_on]

@@ -181,6 +181,22 @@ class AggregateRuntime:
                         #: 只看"挂过的"会把前者误报成后者。
                         known=tuple(self._services))
 
+    # ---- 宿主（dsh / codex）----
+    def bind_host(self, *, overlay_refresh: Callable[[], object] | None,
+                  client_refresh: Callable[[], object] | None) -> None:
+        """换宿主时**重挂**这两个刷新口（外部宿主两个都是 ``None``）。
+
+        ⚠ 为什么要这个口子：这两个回调在构造时就被捕获进运行期，而"用哪个宿主"
+        现在可以由控制台在**启动前或运行中**改（``LaunchController.set_host_kind``）。
+        不重挂的话会继续按**上一个**宿主的方式刷新：
+        dsh 的 overlay 在切到 codex 之后仍被重写、codex 期间又发 dsh 的客户端刷新。
+
+        ⚠ 只换引用、不动后端连接：工具表本身与宿主无关（后端是各软件），
+        宿主换的是"怎么通知那条客户端"。
+        """
+        self._overlay_refresh = overlay_refresh
+        self._client_refresh = client_refresh
+
     # ---- 进程控制面（接元工具）----
     def open_service(self, svc_id: str) -> None:
         """起该 svc 的 child（**用声明里那份 ChildSpec**）。id 未知 ⇒ 响亮失败。"""
