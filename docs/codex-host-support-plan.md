@@ -8,7 +8,9 @@
 
 已完成第一阶段：新增 `mecha/host_adapter.py`，dsh Python 逻辑迁入 `mecha/dsh_adapter/`，旧 `dsh_panel.py` 与 `aggregate_runtime.py` 的 dsh 名字保留兼容再导出；新增 `mecha/codex_adapter/` 的外部 MCP 配置、Hooks wire 转换与 `--ai-host codex|none`。dsh 默认路径的核心与受影响集成判据均保持通过。
 
-尚未开始：dsh 面板 TS/TSX 资产目录迁移、Codex PostToolUse/PermissionRequest 实际接线、宿主无关 `/monitor` 页面、managed App Server 客户端。
+已完成第二阶段：新增宿主无关的 `/monitor` 页面，直接读取各软件 Cockpit 的 `/history`，区分“未声明 / 读不到 / 零事件 / 有事件”四态，不依赖 dsh 面板资产。
+
+尚未开始：dsh 面板 TS/TSX 资产目录迁移、Codex PostToolUse/PermissionRequest 实际接线、managed App Server 客户端。
 
 ## 1. 施工结论
 

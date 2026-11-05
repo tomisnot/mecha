@@ -413,6 +413,7 @@ def render_page(controller: Controller) -> str:
         f'<header><h1>{html.escape(_TITLE)} · 控制台</h1>'
         f'<span class="muted">{html.escape(" · ".join(st.get("sites") or ["?"]))}</span>'
         '<button class="ghost" onclick="fold()">◀ 收起</button>'
+        '<a href="/monitor" style="color:#79c0ff;padding:8px 4px">监控</a>'
         '<button class="ghost" onclick="location.reload()">刷新</button></header>'
         + ai_line
         + f'<div id="shell"><div id="side">{"".join(side)}</div>'
@@ -489,6 +490,9 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/console.json":
             return self._send(200, json.dumps(self.page.console_snapshot(), ensure_ascii=False)
                               .encode("utf-8"), "application/json; charset=utf-8")
+        if path == "/monitor":
+            from ..monitor_page import render_monitor_page
+            return self._html(200, render_monitor_page(self.controller.services()))
         if path == "/health":
             return self._send(200, b'{"ok":true}', "application/json; charset=utf-8")
         if path.startswith("/logs/"):
