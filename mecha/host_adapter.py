@@ -74,6 +74,9 @@ class HostWiring:
     endpoint: Any | None = None
     controller: Any | None = None
     mcp_port: int = 0
+    #: ⭐ 宿主自带界面（codex 的 Web UI）起来后要不要自动开浏览器。
+    #: 语义与 `StatusPage` 的 `open_browser` 一致：`--no-browser` 时为 False。
+    open_browser: bool = False
 
 
 @runtime_checkable

@@ -1197,7 +1197,8 @@ class LaunchController:
 
 def build_aggregate_wiring(*, sites: Sequence[Site], supervisor: Supervisor,
                            aggregate_port: int = 0,
-                           host_adapter: AIHostAdapter | None = None):
+                           host_adapter: AIHostAdapter | None = None,
+                           open_browser: bool = False):
     """把**聚合端点**接起来，返回 ``(endpoint, runtime, registry_facade)``。
 
     ⚠ **多站点（§1.1 规则 5）**：收**全部站点的全部服务**（平铺后的全集）——
@@ -1326,7 +1327,10 @@ def build_aggregate_wiring(*, sites: Sequence[Site], supervisor: Supervisor,
         host.name, sites, runtime_root, aggregate_port=int(mcp_port),
         aggregate_url=f"http://127.0.0.1:{int(mcp_port)}/mcp")
     wiring = HostWiring(supervisor=supervisor, aggregator=agg,
-                        endpoint=endpoint, mcp_port=int(mcp_port))
+                        endpoint=endpoint, mcp_port=int(mcp_port),
+                        #: ⭐ 宿主自带界面（codex 的 Web UI）起来后是否自动开浏览器。
+                        #: 与 `--no-browser` 同义 —— 一个开关管两处，别再造第二个。
+                        open_browser=bool(open_browser))
     overlay_refresh = host.overlay_refresh(host_plan, wiring)
     client_refresh = host.client_refresh(host_plan, wiring)
     runtime = AggregateRuntime(supervisor=supervisor,
@@ -1520,7 +1524,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     endpoint, agg_runtime, _ = build_aggregate_wiring(
         sites=sites, supervisor=supervisor,
         aggregate_port=int(getattr(args, "aggregate_port", 0) or 0),
-        host_adapter=host_adapter)
+        host_adapter=host_adapter,
+        open_browser=not getattr(args, "no_browser", False))
 
     #: ⭐ 宿主准备必须**在起任何 child 之前**：托管的 codex 一起来就读
     #: ``CODEX_HOME/config.toml`` 里的 MCP 地址，晚一步它拿的是上一轮的端点；

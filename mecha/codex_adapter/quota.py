@@ -20,6 +20,7 @@ app-server 只说 WebSocket，而 mecha 核心是零依赖 Python ⇒ 用 vendor
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 from datetime import datetime
@@ -57,7 +58,11 @@ def snapshot(runtime_root: Path, *, timeout: float = 8.0) -> dict:
             [node, str(PROBE), "--url", f"ws://127.0.0.1:{port}",
              "--token-file", str(paths.ws_token)],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=timeout)
+            timeout=timeout,
+            #: ⚠ 与 `supervise._spawn_flags()` 同一条纪律：**不开窗**。
+            #: 从 pythonw 起 node 会新建一个控制台窗口再关掉（用户看到"闪一下"）。
+            creationflags=(subprocess.CREATE_NO_WINDOW
+                           if os.name == "nt" else 0))
     except subprocess.TimeoutExpired:
         return {"ok": False, "why": "读取超时（app-server 没回应）"}
     except OSError as exc:

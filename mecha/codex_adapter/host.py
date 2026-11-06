@@ -33,6 +33,7 @@
 
 from __future__ import annotations
 
+import webbrowser
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
@@ -171,6 +172,16 @@ class CodexHostAdapter:
             except MechaError as exc:
                 #: 界面起不来**不该把宿主拖红**：AI 那条腿仍然是通的。
                 print(f"[codex] 界面起不来（宿主照常可用）：{exc.message}", flush=True)
+                return
+            #: ⭐ 照 dsh 的做法（`StatusPage.start` 里那三行）：界面起来就开浏览器，
+            #: 打不开不算失败（用户还能从控制台的链接点进去）。
+            if wiring.open_browser:
+                ui_port = read_port(paths_for(plan.runtime_root).ui_port) or 0
+                if ui_port:
+                    try:
+                        webbrowser.open(f"http://127.0.0.1:{ui_port}/")
+                    except Exception:                  # noqa: BLE001 - 开不了浏览器不是故障
+                        pass
 
         def on_gone(spec: object, child: object) -> None:
             if str(getattr(spec, "id", "")) != CODEX_CHILD_ID:

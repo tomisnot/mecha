@@ -34,6 +34,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+import mecha.codex_adapter.host as codex_host_mod  # noqa: E402
 from mecha.codex_adapter.config import paths_for  # noqa: E402
 from mecha.codex_adapter.host import CodexHostAdapter  # noqa: E402
 from mecha.codex_adapter.quota import snapshot as quota_snapshot  # noqa: E402
@@ -94,9 +95,15 @@ def main() -> int:
                facts["auth"] in ("copied", "exists", "missing"), str(facts["auth"]))
         adapter.prepare(plan)                             # 写 MCP 配置（app-server 一起来就读它）
 
+        #: ⭐ 把 `webbrowser.open` 换掉：判据要**断言它被调用**，但不能真弹一个浏览器
+        #: 打断人（`--no-browser` 走的才是真路径）。
+        opened: list[str] = []
+        codex_host_mod.webbrowser = type("FakeBrowser", (), {
+            "open": staticmethod(lambda url, *a, **k: opened.append(str(url)) or True)})
         sup = Supervisor(log_dir=runtime / "logs", state_path=runtime / "state.json")
         adapter.install(plan, HostWiring(supervisor=sup, aggregator=None,
-                                         runtime=None, mcp_port=0))
+                                         runtime=None, mcp_port=0,
+                                         open_browser=True))
         app_port = read_port(paths.app_server_port) or 0
         ui_port = read_port(paths.ui_port) or 0
         try:
@@ -114,6 +121,8 @@ def main() -> int:
             _check("⑤ 界面首页 200、代理 /proxy/healthz ok",
                    _http_ok(f"http://127.0.0.1:{ui_port}/")
                    and _http_ok(f"http://127.0.0.1:{ui_port}/proxy/healthz"))
+            _check("⑧ 界面 ready 后**自动**开了浏览器（地址就是 UI 端口）",
+                   opened == [f"http://127.0.0.1:{ui_port}/"], str(opened))
             quota = quota_snapshot(runtime)
             _check("⑦ 额度可读（只读：账号 + rate limit + 重置券）",
                    quota.get("ok") is True and str(quota.get("plan") or "") != ""
