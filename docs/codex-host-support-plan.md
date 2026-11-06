@@ -22,6 +22,8 @@
 
 已完成第八阶段（只读额度）：vendor 的 Web UI 看不到额度——它的代理是 deny-by-default 的 30 条白名单，`account/*` 一个都没放。⇒ mecha 侧新增 `mecha/codex_adapter/quota_probe.mjs`（复用 vendor 的 `ws`，不复用不改它）+ `quota.py`（只调 `account/read` 与 `account/rateLimits/read`），控制台在 codex 宿主下多一行额度：套餐、5 小时/7 天窗口剩余与重置时间、重置券；`/quota.json` 带 20s TTL（只缓存成功结果），读不到就显示"读不到 + 原因"，绝不显示上一轮的旧数字。
 
+已完成第九阶段（继承传输层，治「Reconnecting 5/5」）：codex 默认**先试 WSS**，失败 5 次才回退 HTTPS，界面上就是那个 `Reconnecting 1/5 … 5/5`。用户在 `~/.codex/config.toml` 里用 `model_provider = "openai_http"` + `supports_websockets = false` 关掉过它，但**隔离 home 的 config 是我们生成的**，不继承 ⇒ 问题复现。现在 `write_preparation` 会从用户 config 里文本级提取「顶层 `model_provider` + 对应 `[model_providers.<name>]` 表」原样写进隔离 config（跳过 `notify` 这类非传输键、也不带 `[desktop]` 等无关表），并把 `~/.codex/.env`（代理配置）复制进隔离 home。抠不到就回到默认行为。判据：`host_adapter_selfcheck` 新增 5 条（继承、顺序、不带 notify/desktop、没有则不注入）。
+
 尚未开始：managed App Server 客户端。以下两条限制是验收中撞出来的事实，不是待办清单的修辞：
 
 - **Hook 任务账只在模型发起的工具回合里产生。** 源码里 `PostToolUse` 由 agent 的工具循环派发，`mcpServer/tool/call` 是客户端直连代理，不经过那层。所以 `tasks.jsonl` 的写入要用一次真实对话来验；本机到 `chatgpt.com` 的推理请求超时（与 mecha 配置无关），这一条留待可用网络或本地模型环境。

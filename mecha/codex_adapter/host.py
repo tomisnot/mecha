@@ -42,8 +42,8 @@ from ..host_adapter import HostPlan, HostPreparation, HostWiring, RefreshResult
 from ..portfile import read_port
 from ..supervise import ChildSpec, ReadySpec, which_or_raise
 from .config import (CODEX_CHILD_ID, CODEX_UI_CHILD_ID, MCP_SERVER_NAME,
-                     DEFAULT_TOOL_TIMEOUT_SEC, ensure_auth, ensure_ports,
-                     ensure_ws_token, paths_for, write_preparation)
+                     DEFAULT_TOOL_TIMEOUT_SEC, ensure_auth, ensure_env,
+                     ensure_ports, ensure_ws_token, paths_for, write_preparation)
 from .tasks import ledger_path
 
 #: vendor 进来的界面入口（相对本文件）。缺了 ⇒ 响亮失败，别让宿主"半好"。
@@ -77,9 +77,12 @@ class CodexHostAdapter:
         paths = paths_for(plan.runtime_root)
         paths.home.mkdir(parents=True, exist_ok=True)
         auth = ensure_auth(paths)
+        #: 代理配置常放在 `~/.codex/.env`；有就带进隔离 home（没有不影响）。
+        env = ensure_env(paths)
         ensure_ws_token(paths)
         app_port, ui_port = ensure_ports(paths)
-        return {"auth": auth, "app_server_port": app_port, "ui_port": ui_port}
+        return {"auth": auth, "env": env,
+                "app_server_port": app_port, "ui_port": ui_port}
 
     # ---- 进程 ----
     def child(self, plan: HostPlan) -> ChildSpec | None:

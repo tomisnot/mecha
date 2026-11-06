@@ -15,6 +15,7 @@ sys.path.insert(0, str(ROOT))
 
 from mecha.aggregate_runtime import overlay_text  # noqa: E402
 from mecha.codex_adapter import (CodexHostAdapter, config_text,  # noqa: E402
+                                 write_preparation,
                                  parse_post_tool_use, permission_response_json,
                                  read_records)
 from mecha.codex_adapter.hook_entry import (handle_permission_request,  # noqa: E402
@@ -228,6 +229,52 @@ def check_hooks_and_compat() -> None:
            == dsh_overlay_text(mcp_port=3089, server_name="mecha"))
 
 
+def check_transport_inheritance() -> None:
+    """用户的"传输层"设置必须结婚隔离 home —— 否则"重连 5/5"会回来。
+
+    背景（实测）：codex 默认先试 WSS，失败 5 次才回退 HTTPS，界面上就是
+    `Reconnecting 1/5 … 5/5`。用户在自己的 `~/.codex/config.toml` 里用
+    `model_provider = "openai_http"` + `supports_websockets = false` 关掉了它，
+    但隔离 home 的 config 是我们生成的 ⇒ 必须**继承**这段。
+    """
+    with tempfile.TemporaryDirectory(prefix="codex-transport-") as td:
+        root = Path(td)
+        user = root / "user-config.toml"
+        user.write_text(
+            """model_provider = "openai_http"
+model = "gpt-6-astra"
+
+[model_providers.openai_http]
+name = "OpenAI HTTP"
+wire_api = "responses"
+supports_websockets = false
+notify = ["C:/some/gui.exe", "turn-ended"]
+
+[desktop]
+followUpQueueMode = "steer"
+""",
+            encoding="utf-8")
+        paths, _ = write_preparation(root / "run", aggregate_url="http://127.0.0.1:3089/mcp",
+                                     user_config=user)
+        text = paths.config.read_text(encoding="utf-8")
+        _check("继承传输层：model_provider + supports_websockets=false 都在",
+               'model_provider = "openai_http"' in text
+               and "supports_websockets = false" in text, text[:200])
+        _check("顶层键排在第一个表头之前（TOML 硬要求）",
+               text.index("model_provider") < text.index("[mcp_servers.mecha]"))
+        _check("`notify` 这种非传输设置**不**带进隔离环境", "notify" not in text)
+        _check("用户别的表（如 [desktop]）也不带", "[desktop]" not in text)
+
+        plain = root / "plain.toml"
+        plain.write_text("""model = "gpt-6-astra"
+""", encoding="utf-8")
+        paths2, _ = write_preparation(root / "run2", aggregate_url="http://127.0.0.1:3089/mcp",
+                                      user_config=plain)
+        text2 = paths2.config.read_text(encoding="utf-8")
+        _check("用户没设 model_provider ⇒ 不注入，回到默认行为",
+               "model_providers" not in text2 and "model_provider" not in text2)
+
+
 def main() -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -238,6 +285,7 @@ def main() -> int:
     check_codex_prepare()
     check_codex_capabilities_before_endpoint()
     check_hooks_and_compat()
+    check_transport_inheritance()
     if FAILS:
         print(f"host_adapter_selfcheck: FAIL（{len(FAILS)} 条）")
         return 1
