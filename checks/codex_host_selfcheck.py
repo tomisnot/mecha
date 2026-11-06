@@ -36,6 +36,7 @@ sys.path.insert(0, str(ROOT))
 
 from mecha.codex_adapter.config import paths_for  # noqa: E402
 from mecha.codex_adapter.host import CodexHostAdapter  # noqa: E402
+from mecha.codex_adapter.quota import snapshot as quota_snapshot  # noqa: E402
 from mecha.host_adapter import AIHostKind, HostWiring, make_host_plan  # noqa: E402
 from mecha.portfile import read_port  # noqa: E402
 from mecha.supervise import Supervisor  # noqa: E402
@@ -113,6 +114,10 @@ def main() -> int:
             _check("⑤ 界面首页 200、代理 /proxy/healthz ok",
                    _http_ok(f"http://127.0.0.1:{ui_port}/")
                    and _http_ok(f"http://127.0.0.1:{ui_port}/proxy/healthz"))
+            quota = quota_snapshot(runtime)
+            _check("⑦ 额度可读（只读：账号 + rate limit + 重置券）",
+                   quota.get("ok") is True and str(quota.get("plan") or "") != ""
+                   and bool(quota.get("windows")), str(quota)[:220])
             sup.stop("codex")
             time.sleep(1.0)
             state = {c["id"]: c.get("state") for c in sup.state()["children"]}

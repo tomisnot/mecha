@@ -79,6 +79,7 @@ from __future__ import annotations
 import html
 import json
 import socket
+import time
 import threading
 import webbrowser
 from pathlib import Path
@@ -410,6 +411,39 @@ def _host_block(choices: list[dict], kind: str, rows: dict,
     return [head, *items]
 
 
+#: 额度快照缓存：起一次 node 探测要几百毫秒，而页面每秒都在刷 ⇒ 20 秒内复用。
+#: ⚠ 只缓存**成功**的结果：失败不缓存，否则"读不到"会被钉住 20 秒。
+_QUOTA_TTL_S = 20.0
+_quota_cache: dict[str, tuple[float, dict]] = {}
+
+
+def quota_snapshot(controller: Controller) -> dict:
+    """只读额度（账号 / rate limit / 重置券）；**读不到就说原因**，不返回旧值。
+
+    ⚠ 为什么放在页面这层：vendor 的 Web UI 白名单里没有 `account/*`，额度只能我们读；
+    而读它要起 node（`quota_probe.mjs`）⇒ 用 TTL 缓存摊掉开销。
+    """
+    runtime = getattr(controller, "runtime", None)
+    if runtime is None:
+        return {"ok": False, "why": "控制器没有运行目录"}
+    try:
+        info = dict(controller.host_info())          # type: ignore[attr-defined]
+    except Exception:                                # noqa: BLE001 - 老替身
+        info = {}
+    if str(info.get("kind") or "") != "codex":
+        return {"ok": False, "why": "当前宿主不是 codex（dsh 没有额度概念）"}
+    key = str(runtime)
+    now = time.monotonic()
+    hit = _quota_cache.get(key)
+    if hit and now - hit[0] < _QUOTA_TTL_S:
+        return hit[1]
+    from ..codex_adapter.quota import snapshot as _snapshot
+    data = _snapshot(Path(runtime))
+    if data.get("ok"):
+        _quota_cache[key] = (now, data)
+    return data
+
+
 def _side_item(dom_id: str, on: bool, label: str = "") -> str:
     """左栏一条；`data-side` 是局部刷新的定位键（宿主那条固定叫 host）。"""
     text = label or dom_id
@@ -565,6 +599,10 @@ def render_page(controller: Controller) -> str:
     host_child_id = str(host_info.get("child_id") or "")
     host_row = rows.get(host_child_id) if host_child_id else None
     items.extend(_host_block(choices, kind, rows, host_info))
+    #: ⭐ 额度：只有 codex 才有这块（dsh 没有额度概念）。内容由 `/quota.json` 异步填，
+    #: 不拖慢整页渲染（起 node 要几百毫秒）。
+    if kind == "codex":
+        items.append('<div class="quota" id="quota">额度：读取中…</div>')
     #: ⚠ 左栏也要有它 —— 否则两处清单不一致（右栏 4 行、左栏 3 行）。
     side.append('<div class="sidesep"></div>')
     side.append('<div class="sideitem"'
@@ -624,7 +662,8 @@ def render_page(controller: Controller) -> str:
         'if(m)m.scrollTop=v[0];if(s)s.scrollTop=v[1]}'
         'async function post(p,b){const keep=scrollNow();'
         'const r=await fetch(p,{method:"POST",body:b||""});'
-        'document.documentElement.innerHTML=await r.text();scrollTo2(keep);termApply()}'
+        'document.documentElement.innerHTML=await r.text();scrollTo2(keep);termApply();'
+        'if(typeof pollQuota==="function")pollQuota()}'
         #: ⭐ **局部刷新**：拨滑块/切写权只换那**一行**（带 `X-MeCha-Partial`），
         #: 不重建整页 ⇒ 滚动、动画、焦点都还在。服务端给的是一行 HTML + 左栏一条。
         'async function partial(p,b){const r=await fetch(p,{method:"POST",'
@@ -673,6 +712,21 @@ def render_page(controller: Controller) -> str:
         'const follow=box.scrollHeight-box.scrollTop-box.clientHeight<40;box.textContent=lines.join("\\n")||"（暂无子进程输出）";'
         'if(follow)box.scrollTop=box.scrollHeight;}catch(e){const box=document.getElementById("console");if(box)box.textContent="[console] "+e;}}'
         'pollConsole();setInterval(pollConsole,1000);'
+        #: ⭐ 额度（只读）：服务端带 20s 缓存，这里 60s 拉一次；换 DOM 后 `post()` 会再拉。
+        #: ⚠ 用 DOM API 拼（`textContent`），不用 innerHTML —— 省掉一整层转义，
+        #: 也不可能把服务端字符串当 HTML 注入。
+        'async function pollQuota(){const box=document.getElementById("quota");if(!box)return;'
+        'const put=(txt,bold,warn)=>{const s=document.createElement("span");s.textContent=txt;'
+        'if(bold)s.style.fontWeight="600";if(warn)s.style.color="#d29922";box.appendChild(s)};'
+        'try{const r=await fetch("/quota.json",{cache:"no-store"});const d=await r.json();'
+        'box.textContent="";'
+        'if(!d.ok){put("额度：读不到（"+(d.why||"未知原因")+"）");return}'
+        'put("额度 · ");put(d.plan||"",true);'
+        '(d.windows||[]).forEach(w=>{put(" · ");'
+        'put(w.label+" 剩 "+w.leftPercent+"%（"+w.resetsAt+" 重置）",false,w.leftPercent<=20)});'
+        'if(d.resetCredits){put(" · ");put("重置券 "+d.resetCredits+" 张（"+d.resetExpires+" 过期）")}'
+        '}catch(e){box.textContent="额度：读不到（"+e+"）"}}'
+        'pollQuota();setInterval(pollQuota,60000);'
         #: ⭐ 终端高度：**默认只留标题条**（28px），拖出来才展开；高度记在本机。
         #: ⚠ 事件必须挂在 `document` 上：`post()` 会整页换 DOM（`innerHTML`），
         #: 直接挂在元素上的监听会跟着旧节点一起消失（而脚本不会重跑）。
@@ -726,6 +780,8 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/state.json":
             return self._send(200, json.dumps(self.controller.state(), ensure_ascii=False)
                               .encode("utf-8"), "application/json; charset=utf-8")
+        if path == "/quota.json":
+            return self._json(200, quota_snapshot(self.controller))
         if path == "/console.json":
             return self._send(200, json.dumps(self.page.console_snapshot(), ensure_ascii=False)
                               .encode("utf-8"), "application/json; charset=utf-8")

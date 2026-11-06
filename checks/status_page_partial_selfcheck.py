@@ -125,6 +125,11 @@ def check_partial(tmp: Path) -> None:
                and 'id="sw-codex" checked' in rows.get("codex", ""),
                "两行的开合不对")
 
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/quota.json", timeout=10) as resp:
+            quota = json.loads(resp.read().decode("utf-8"))
+        _check("⑥ 当前宿主不是 codex ⇒ 额度如实说\"读不到 + 原因\"",
+               quota.get("ok") is False and bool(quota.get("why")), str(quota)[:120])
+
         ctype, body = _post(port, "/service", "svc=AAA&on=1", partial=False)
         _check("④ 不带局部头 ⇒ 仍是整页 HTML（不破坏老客户端）",
                "text/html" in ctype and b"<html" in body.lower(), ctype)
@@ -137,6 +142,12 @@ def check_script_marks(tmp: Path) -> None:
     html = render_page(ctl)
     _check("⑤ 每行带 data-row 定位键", html.count('data-row="') >= 3,
            html.count('data-row="'))
+    dsh_html = render_page(ctl)
+    ctl.host = "codex"
+    codex_html = render_page(ctl)
+    _check("⑤ 额度占位只在 codex 宿主时出现，且带轮询脚本",
+           'id="quota"' not in dsh_html and 'id="quota"' in codex_html
+           and "pollQuota" in codex_html)
     _check("⑤ 整页替换的兜底路径会恢复滚动",
            "scrollNow" in html and "scrollTo2" in html
            and "scrollTo2(keep)" in html)
