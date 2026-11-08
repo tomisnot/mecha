@@ -154,6 +154,15 @@ class AggregateRuntime:
         self._endpoint = endpoint
         #: 上一次同步工具表的失败（**不吞**：那是"AI 看不到工具"那一类故障）。
         self.last_publish_error: str | None = None
+        #: 工具表变化后的通知/刷新要**等本次工具调用返回后**再做。
+        #: 否则 close/open_software 会在自己的调用里触发 DSH 重新注册工具，
+        #: 把正在执行的调用/连接一起打断（真机：close_software 回 Connection closed）。
+        self._side_effect_timer: threading.Timer | None = None
+        self._side_effect_lock = threading.Lock()
+        #: 元工具 open/close 正在执行时，ready/gone hook 也会触发 sync；
+        #: 这些同步不能在调用返回前通知 DSH，否则又会中途 dispose 当前工具。
+        self._meta_busy = 0
+        self._pending_side_effects = False
         #: `unreachable` 后端的有界重试计数（见 :meth:`_retry_unreachable`）。
         self._retry_count = 0
         #: 后端进程已经 ready、但 MCP 端点尚未接受连接时的待连接集合。
@@ -201,8 +210,18 @@ class AggregateRuntime:
     def open_service(self, svc_id: str) -> None:
         """起该 svc 的 child（**用声明里那份 ChildSpec**）。id 未知 ⇒ 响亮失败。"""
         svc = self._require(svc_id)
-        self.super.start(svc.child())
-        self.sync_backends()
+        with self._side_effect_lock:
+            self._meta_busy += 1
+        try:
+            self.super.start(svc.child())
+            self.sync_backends()
+        finally:
+            with self._side_effect_lock:
+                self._meta_busy -= 1
+                pending = self._pending_side_effects and self._meta_busy == 0
+                self._pending_side_effects = False
+            if pending:
+                self._schedule_side_effects()
 
     def close_service(self, svc_id: str) -> None:
         """停该 svc 的 child（**停进程，不删声明**）。id 未知 ⇒ 响亮失败。
@@ -211,11 +230,21 @@ class AggregateRuntime:
         "已关闭 + 怎么重开"，而不是等超时。
         """
         self._require(svc_id)
-        self._detach_if_attached(svc_id)
-        cid = self._child_id(svc_id)
-        if cid in self.super.state_ids():
-            self.super.stop(cid)
-        self.sync_backends()
+        with self._side_effect_lock:
+            self._meta_busy += 1
+        try:
+            self._detach_if_attached(svc_id)
+            cid = self._child_id(svc_id)
+            if cid in self.super.state_ids():
+                self.super.stop(cid)
+            self.sync_backends()
+        finally:
+            with self._side_effect_lock:
+                self._meta_busy -= 1
+                pending = self._pending_side_effects and self._meta_busy == 0
+                self._pending_side_effects = False
+            if pending:
+                self._schedule_side_effects()
 
     def _require(self, svc_id: str) -> Service:
         svc = self._services.get(svc_id)
@@ -323,43 +352,94 @@ class AggregateRuntime:
             print(f"[aggregate] WARN resync failed: {type(exc).__name__}: {exc}")
 
     def publish_tools(self) -> None:
-        """把活工具表对齐到 ``Aggregator`` 的当前 registry，并在变化时广播。
+        """把活工具表对齐到 ``Aggregator`` 的当前 registry。
 
-        ⚠ 失败**不吞**（记进 ``last_publish_error`` 并打到日志）：工具表没对齐 =
-        "AI 看不到软件工具"那一类故障，静默会让人以为一切正常。
+        表本身**同步**更新（工具调用必须立刻看到新 registry），但通知 DSH /
+        重写 overlay 这类副作用**延后到本次工具调用返回之后**：
+        close/open_software 自己会改表，若在调用处理过程中让 DSH 刷新工具表，
+        DSH 会 dispose 正在执行的那个工具定义，连接被关闭（真机复现：
+        ``close_software`` 返回 ``Connection closed``，随后整张 mecha 表消失）。
         """
         endpoint = self._endpoint
         if endpoint is None:
             return
         try:
-            changed = endpoint.publish_tools(self.agg.registry())
+            before = {str(s["name"]) for s in self.agg.registry().schemas()}
+            changed = endpoint.publish_tools(self.agg.registry(), notify=False)
+            after = {str(s["name"]) for s in self.agg.registry().schemas()}
+            names_changed = before != after
             self.last_publish_error = None
             if changed:
-                print(f"[aggregate] 工具表发生变化：后端={sorted(self.agg.attached())}，开始通知 DSH 刷新", flush=True)
-                if self._overlay_refresh is not None:
-                    try:
-                        self._overlay_refresh()
-                        print("[aggregate] 聚合 overlay 已重写", flush=True)
-                    except Exception as exc:                 # noqa: BLE001
-                        self.last_publish_error = (
-                            f"overlay refresh: {type(exc).__name__}: {exc}")
-                        print(f"[aggregate] WARN dsh overlay refresh failed: "
-                              f"{self.last_publish_error}")
-                if self._client_refresh is not None:
-                    try:
-                        sent = self._client_refresh()
-                        if sent is False:
-                            print("[aggregate] WARN DSH 主动刷新未发送：客户端当前不可达", flush=True)
+                #: 开/关已有软件只改墓碑描述，**名字集合不变**。这种情况不能通知
+                #: DSH 刷新：DSH 会 dispose 正在执行的 open/close 工具，连接会断。
+                #: 只有真的新增/删除工具名时才需要让客户端重新注册。
+                if names_changed:
+                    print(f"[aggregate] 工具名集合变化：后端={sorted(self.agg.attached())}，"
+                          "通知/刷新延后到本次调用之后", flush=True)
+                    #: 走 supervisor 那张"给人看的清单"（状态页读得到），别自己另开一本账。
+                    self.super.cleaned.append(
+                        f"工具表已更新（后端：{sorted(self.agg.attached())}）")
+                    with self._side_effect_lock:
+                        if self._meta_busy:
+                            self._pending_side_effects = True
+                            schedule = False
                         else:
-                            print("[aggregate] DSH 主动刷新请求已发送", flush=True)
-                    except Exception as exc:                 # noqa: BLE001
-                        print(f"[aggregate] WARN DSH 主动刷新失败：{type(exc).__name__}: {exc}", flush=True)
-                #: ⚠ 走 supervisor 那张"给人看的清单"（状态页读得到），别自己另开一本账。
-                self.super.cleaned.append(
-                    f"工具表已更新（后端：{sorted(self.agg.attached())}）")
+                            schedule = True
+                    if schedule:
+                        self._schedule_side_effects()
+                else:
+                    print(f"[aggregate] 工具描述变化：后端={sorted(self.agg.attached())}，"
+                          "名字集合未变；保留 DSH 连接，不触发重注册", flush=True)
         except Exception as exc:                      # noqa: BLE001 - 记下来，别中断启停
             self.last_publish_error = f"{type(exc).__name__}: {exc}"
             print(f"[aggregate] ⚠ 工具表同步失败：{self.last_publish_error}")
+
+    def _schedule_side_effects(self) -> None:
+        """Debounce notification/overlay refresh until after the current call."""
+        with self._side_effect_lock:
+            if self._meta_busy:
+                self._pending_side_effects = True
+                return
+            if self._side_effect_timer is not None:
+                self._side_effect_timer.cancel()
+            timer = threading.Timer(1.0, self._flush_side_effects)
+            timer.daemon = True
+            self._side_effect_timer = timer
+            timer.start()
+
+    def _flush_side_effects(self) -> None:
+        with self._side_effect_lock:
+            if self._meta_busy:
+                self._pending_side_effects = True
+                if self._side_effect_timer is not None:
+                    self._side_effect_timer.cancel()
+                self._side_effect_timer = None
+                return
+            self._side_effect_timer = None
+        endpoint = self._endpoint
+        if endpoint is not None:
+            try:
+                endpoint.notify_tools_changed()
+            except Exception as exc:                 # noqa: BLE001
+                self.last_publish_error = f"notify: {type(exc).__name__}: {exc}"
+                print(f"[aggregate] WARN 工具表通知失败：{self.last_publish_error}")
+        if self._overlay_refresh is not None:
+            try:
+                self._overlay_refresh()
+                print("[aggregate] 聚合 overlay 已重写", flush=True)
+            except Exception as exc:                 # noqa: BLE001
+                self.last_publish_error = f"overlay refresh: {type(exc).__name__}: {exc}"
+                print(f"[aggregate] WARN dsh overlay refresh failed: "
+                      f"{self.last_publish_error}")
+        if self._client_refresh is not None:
+            try:
+                sent = self._client_refresh()
+                if sent is False:
+                    print("[aggregate] WARN DSH 主动刷新未发送：客户端当前不可达", flush=True)
+                else:
+                    print("[aggregate] DSH 主动刷新请求已发送", flush=True)
+            except Exception as exc:                 # noqa: BLE001
+                print(f"[aggregate] WARN DSH 主动刷新失败：{type(exc).__name__}: {exc}", flush=True)
 
     def _url_for(self, svc: Service, row: Mapping[str, object]) -> str | None:
         """后端 URL：端口一律**回读**（``state()["port"]``），不猜、不用预选值。"""

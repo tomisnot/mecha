@@ -785,7 +785,7 @@ class McpEndpoint:
 
     # ---- ⭐ 工具表热同步（① 对账 + ③ 广播）----
 
-    def publish_tools(self, registry: ToolRegistry) -> bool:
+    def publish_tools(self, registry: ToolRegistry, *, notify: bool = True) -> bool:
         """① 把**活工具表**对账到 ``registry``；有变化则 ③ 广播。返回"是否变了"。
 
         ⚠ **顺序不能反**：先改表、再通知——客户端收到通知会**立刻** ``tools/list``，
@@ -808,7 +808,7 @@ class McpEndpoint:
                 #: ⚠ 这里**不能**调 `_reconcile`（它是协程）：没有活连接时直接在
                 #: 当前线程改表，走同一个同步实现。
                 changed = self._reconcile_now(registry)
-        if changed:
+        if changed and notify:
             self.notify_tools_changed()
         return changed
 
@@ -872,8 +872,11 @@ class McpEndpoint:
                     asyncio.run_coroutine_threadsafe(coro, loop).result(5.0)
                 sent += 1
             except Exception as exc:                  # noqa: BLE001 - 一条连接坏了不拖垮别的
-                self._log(f"[mecha-mcp] 通知发送失败（剔除该连接）：{type(exc).__name__}: {exc}")
-                self._tracker.drop(key)
+                #: ⚠ 通知失败**不等于**会话已死。此前这里直接 drop，
+                #: 会在 close/open 这种“表刚变”的调用里把 DSH 的活连接一起踢掉，
+                #: 表现为工具调用返回 “Connection closed”、整张 mecha 表消失。
+                #: 保留连接，让客户端按自己的 refresh/reconnect 逻辑恢复。
+                self._log(f"[mecha-mcp] 通知发送失败（保留连接）：{type(exc).__name__}: {exc}")
         if sent:
             self._log(f"[mecha-mcp] 已通知 {sent} 个连接：工具表变了")
         return sent
