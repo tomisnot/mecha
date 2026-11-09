@@ -33,9 +33,9 @@
 - 判据用装配级替身（ToyEngine + 中性假命令），不依赖任何真宿主 adapter；
   真宿主的命令表与工具投影对齐归各宿主自己判据（mecha 核心不持有命令名）。
 - 不测 spec → AI 工具投影：ToolHost 契约未定（宪章 §10.2），命令不自动投影。
-- 不测 ``approval_required`` / ``cancel_supported`` 的**语义**：它们目前只是
-  声明字段，命令面不据此改变分派。``scope`` 只在宿主注入 ScopePolicy 后参与
-  分派（未注入不做过滤），其"谁能自称 human"由通道类型守卫钉住。
+- ``approval_required`` 的前置检查在本文件验证；``cancel_supported`` 的消费
+  在 Jobs 判据中验证。``scope`` 只在注入 ScopePolicy 后参与分派，
+  其操作者身份由通道类型守卫检查。
   （``wants_channel`` **不在此列**：它**参与分派**——声明后 handler 会收到本次的
   ``channel=``，见 ``check_handler_sees_channel``。）
 - 不测命令体内部实现的正确性（判据只钉契约与副作用痕迹）。

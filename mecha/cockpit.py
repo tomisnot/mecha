@@ -13,23 +13,22 @@ Monitor 是软件自己四件里与 Gate / History / Surface **并列的第一�
 **无鉴权**、默认只绑回环——「AI 不能自授权」的护栏靠 ``Authority`` 的 side 判定
 （AI 通道改不了 mode），不靠端点鉴权，也不靠 token。
 
-## 契约（冻结，逐字段照两家现有实现）
+## 只读契约
 
 ``OPTIONS *`` → ``204`` + CORS（无 body）；``GET /status`` → ``{ok, mode}``；
-``GET /activity`` → ``{ok, events, mode}``（事件 6 键，无 before/after/reason）；
-``GET /history`` → ``{ok, events, mode}``（事件含 op / before / after / reason）；
+``GET /activity`` → ``{ok, events, mode}``（轻量事件，含类型、动作和操作关联）；
+``GET /history`` → ``{ok, events, mode}``（保留 Event 的全部记录字段）；
 ``GET /config`` → ``{ok, has_schema, groups, orphans, n_keys, n_snapshot_keys}``；
 未知路径 → ``404 {"ok": false, "error": "unknown endpoint"}``；
 任意 ``POST`` → ``404 {"ok": false, "error": "read-only monitor endpoint"}``。
 路径一律先取 ``urlsplit(self.path).path`` 再**精确匹配**（查询串交给 ``parse_qs``，
 会做 URL 解码）；``since_seq`` 缺失 / 非纯数字 ⇒ ``0``，语义是 ``seq >= N``（闭区间）。
 排序是契约：``events`` 升序、``orphans`` 按名升序、``groups`` 族与前缀字典序；
-服务端**不截断、不倒序、不缓存**，``since_seq`` 是唯一裁剪。
+HTTP 响应筛选 ``since_seq`` 后取最近 ``limit`` 条，默认和上限均为 100，仍按序升序。
 
-⚠ **``before`` 必须 fold 全史、不能只 fold ``since_seq`` 窗口**：它是"同键上一条
-事件的值"（首写 ``null``），不是快照旧值。fold 与过滤必须分离——写成"只 fold 窗口"
-会让增量轮询的 ``before`` 从 ``null`` 起，面板展开行显示 ``∅ → 新值``，**静默错**
-且只有人肉看面板才会发现。判据里有一条专测它。
+``kind`` 保留账本中的 ``state`` / ``history``，动作名由 ``op`` 表达。
+``before`` 使用事件保存的前像，不按 target 推测。独立操作可能有同一个空
+target，不能因此被串成前后状态。旧记录未保存的前像保持 None。
 
 ## 数据来自哪里（seam）
 
@@ -101,7 +100,7 @@ __all__ = [
     "start_monitor_endpoint",
 ]
 
-#: 史只有 set 语义（无删除事件）⇒ ``kind`` 恒此值（两家的实现都硬编码它）。
+#: 兼容旧调用方的动作名常量；事件 kind 使用账本的 state / history。
 SET_KIND = "set"
 
 #: 核心路由（精确匹配；附加路由不得与之重名）。
@@ -113,8 +112,7 @@ _SINCE_KEY = "since_seq"
 #: ⭐ **网上只载入最近多少条**（2026-10-10 用户裁决："web 只载入、显示最近一百条，
 #: 新增的就往下顶"）。⚠ 这是**传输/显示**的上限，不是保留策略：盘上留的是
 #: `log_local.JOURNAL_KEEP`（1000）条。
-#: ⚠ 服务端**倒序取尾**（最新在前）——"往下顶"的语义由**渲染**负责（新的在上/往下推旧），
-#: 传输只负责"别把整本账倒给浏览器"。
+#: 服务端取最近记录并保持升序；最新在前的排列由界面负责。
 HISTORY_LIMIT = 100
 #: 请求里那条显式上限（面板会带上它；缺省 ⇒ :data:`HISTORY_LIMIT`）。
 _LIMIT_KEY = "limit"
@@ -169,36 +167,21 @@ def _row_name(row: object) -> str:
 
 
 def activity_records(source, since_seq: int = 0) -> list[dict]:
-    """轻量增量事件流：6 键（``kind`` / ``actor`` / ``target`` / ``value`` /
-    ``seq`` / ``call_id``），按史序升序，只含 ``seq >= since_seq``。
+    """轻量增量事件流，保留类型、动作及操作关联，含 ``seq >= since_seq``。
 
     与 ``history_records`` 的区别：不带 ``before`` / ``after`` / ``reason``
     ——面板的"最近动作"列表只需知道谁改了什么、改成什么。
     """
-    return [{"kind": SET_KIND, "actor": e.actor, "target": e.target,
-             "value": e.after, "seq": e.seq, "call_id": e.call_id}
+    return [{"kind": e.kind, "op": e.op, "actor": e.actor, "target": e.target,
+             "value": e.after, "seq": e.seq, "call_id": e.call_id,
+             "operation_id": e.operation_id, "role": e.role,
+             "undoable": e.undoable}
             for e in source.events() if e.seq >= since_seq]
 
 
 def history_records(source, since_seq: int = 0) -> list[dict]:
-    """飞行记录仪事件：按史序升序，只含 ``seq >= since_seq``。
-
-    ``before`` 由**全史 fold 重建**（同键上一条事件的值，首写 ``None``）。
-    ⚠ fold 覆盖全史、过滤只作用于 emit：两者写在一个循环里但**顺序不可换**
-    （先算 before / 更新 last，再判 seq）——见模块 docstring 的静默错警告。
-    """
-    last: dict = {}
-    out: list[dict] = []
-    for event in source.events():
-        before = last.get(event.target)
-        last[event.target] = event.after
-        if event.seq >= since_seq:
-            out.append({"seq": event.seq, "kind": SET_KIND, "actor": event.actor,
-                        "op": event.op,
-                        "target": event.target, "after": event.after,
-                        "before": before, "reason": event.reason,
-                        "call_id": event.call_id, "ts": event.ts})
-    return out
+    """忠实投影账本事件，只筛选 ``seq >= since_seq``，不重建或改写事实。"""
+    return [event.to_record() for event in source.events() if event.seq >= since_seq]
 
 
 def config_tree(source, *, schema_rows=None) -> dict:

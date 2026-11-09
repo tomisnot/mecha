@@ -33,11 +33,9 @@
 2. **有副作用的命令经 Gate 写审计事件**，键为 ``command.<name>``。审计值只放
    操作语义（命令名 / ok / 回执键 / 错误 kind / scope），**不放结果体**——大
    对象由宿主自己存，History 只留引用（总纲 §5.2②，宪章 §8）。
-3. **框架不替宿主表态**：``approval_required`` / ``cancel_supported`` 是声明
-   字段，本模块**不解释**它们的领域含义，也不据此改变分派；谁消费由宿主与
-   Consumer 决定（分类留宿主，机制进核心）。``scope`` 是唯一例外：宿主
-   ``bind_scope_policy`` 注入 ScopePolicy 后，它参与分派前的写权过滤，且
-   ``side`` 只从真正的 ``Channel`` 取（见 ``_bad_channel``）。
+3. 项目声明策略，框架执行已绑定的策略：``approval_required`` 在命令前检查
+   one-shot 审批；``scope`` 在注入 ScopePolicy 后参与分派前的检查；
+   ``cancel_supported`` 由任务接入方传给 Jobs。操作者只从 ``Channel`` 取。
 
 ``invoke`` 回执形状（与 ``ToolRegistry.execute`` 同构，宿主适配层可共用一套
 归一化）：``{"is_error": False, "value": {...}}`` 或
@@ -98,7 +96,7 @@ _NAME_RE = re.compile(r"^[a-z][a-z0-9]*(_[a-z0-9]+)*$")
 #: 库自身包名：命令名带 ``mecha_`` 前缀是把实现结构写进宿主可见文本。
 OWN_PACKAGE = "mecha"
 
-#: 命令审计事件的键前缀（Gate 键空间里的保留前缀；宿主 validator 需接受它）。
+#: 命令审计事件的动作名前缀；只记史，不进入 Gate 状态键空间或 validator。
 AUDIT_KEY_PREFIX = "command."
 
 #: 框架保留的调用元数据键：由 ``invoke`` 抽出来喂 Gate 审计，**默认不传给命令体**
@@ -393,7 +391,10 @@ class CommandRegistry:
                gate: object | None = None,
                channel: object | None = None,
                approval: object | None = None) -> dict:
-        """统一调用口：契约校验 → 命令体 → 回执契约 →（有副作用则）Gate 审计。
+        """统一调用口：通道及策略检查 → 参数校验 → 命令体 → 回执校验与审计。
+
+        有副作用的命令必须提供 gate；缺失时在执行前拒绝。省略 channel 时
+        使用 AI 侧默认通道，同一通道用于权限检查、handler 注入和审计归因。
 
         返回归一化回执（``is_error`` / ``value`` / ``error``）。
         ⚠ **归一化的范围是"域失败"**：``MechaError`` 一律转成 ``ToolFailure`` 形状、
@@ -427,10 +428,18 @@ class CommandRegistry:
         # ``mecha.gate.Channel``（构造时钉死、frozen）。只读 ``getattr(obj,
         # "side")`` 会让任意鸭子类型对象自称 human 就拿到人类 scope
         # （第三轮审查 P1-2）——那是把硬纪律 4 降级成"调用方自称"。
-        if channel is not None:
-            bad = _bad_channel(channel)
-            if bad is not None:
-                return _failure(bad)
+        if channel is None:
+            channel = _default_channel(spec.name)
+        bad = _bad_channel(channel)
+        if bad is not None:
+            return _failure(bad)
+        if spec.side_effect and gate is None:
+            return _failure(MechaError(
+                f"命令 {spec.name!r} 声明有副作用，但 invoke 未注入 gate",
+                kind="missing_gate",
+                hint="有副作用的命令必须经 Gate 检查和留审计："
+                     "invoke(..., gate=sw.gate, channel=sw.channels['ai'])",
+            ))
         if self._scope_policy is not None and spec.scope:
             side = channel.side if channel is not None else "ai"
             try:
@@ -438,12 +447,12 @@ class CommandRegistry:
             except MechaError as e:
                 return _failure(e)
         # authority 检查也必须在**任何副作用之前**（与 scope 同一纪律）。
-        # ⚠ 为什么不能只靠 `_audit` 里那次 `gate.set`：副作用**不一定发生在 Gate 里**
+        # 不能只靠执行后的 `_audit`：副作用**不一定发生在 Gate 里**
         # （域状态外置的项目：外置库/外部 API）⇒ 若检查跟在 handler 之后，就会出现
         # "**改动已经落地、只是审计失败**"= 静默越权（老项目因为副作用本来就在 Gate 里
         # 而被掩盖）。这里只**检查**；**留痕仍在原位**（理由不变：有副作用的命令哪怕
         # 回执不合契约也已经动过宿主状态，必须留痕）。
-        if spec.side_effect and gate is not None and channel is not None:
+        if spec.side_effect:
             try:
                 gate.check(channel)
             except MechaError as e:
@@ -640,7 +649,7 @@ class CommandRegistry:
         **之前** ⇒ 副作用不可能发生 ⇒ **不留痕**（两条规则互补，不是矛盾）。
 
         ``error_kind`` ＝ ``MechaError.kind``（域失败）或 ``type(exc).__name__``（编程错误）。
-        ⚠ ``gate`` 没注入时**写不了**（无痕）——那是既有的 ``missing_gate`` 语义，如实保留。
+        有副作用的命令缺少 gate 时已在 invoke 执行前拒绝。
         ⚠ 这条审计本身写不进去时，**不掩盖原失败**（原失败更响亮；留痕失败由 History
         自己的判据兜）——所以这里丢弃 ``_audit`` 的返回值是有意的。
         """

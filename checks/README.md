@@ -6,6 +6,7 @@
 python checks/run_all.py                              # 核心
 python checks/run_all.py --only authority              # 名称筛选
 python checks/run_all.py --only authority --list       # 只查看范围
+python checks/run_all.py --only operation_boundary     # 操作前检查、事件投影、断线不重放
 python checks/run_all.py --suite integration           # 进程、HTTP/MCP、启动与重连
 python checks/run_all.py --suite assets                # 面板测试与 TypeScript 类型
 python checks/run_all.py --suite bridges               # dsh 长任务桥 Node 自检

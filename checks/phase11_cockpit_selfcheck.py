@@ -3,8 +3,7 @@
 钉住冻结契约（ADR 两层传输上提），八组：
 
   A 投影正确性：真 ``assemble()`` 装配的 ``Software`` 上跑四条投影的字段与排序
-  B ``before`` 全史 fold：**致死性**——增量窗口内无前值、全史有前值时必须仍给出
-    前值（写成"只 fold 窗口"会静默错：面板展开行显示 ``∅ → 新值``）
+  B ``before`` 原样保留：增量窗口不会丢失事件保存的前像。
   C HTTP 契约：真起端点（``port=0``），逐条对齐路由 / 状态码 / 头 / 字段集
   D 附加路由：成功 / **响亮失败**（500，不是空表）/ 重名拒 / 可逆
   E 生命周期：两实例并存互不覆盖（类属性共享全局的隐患）、端口文件两条清理语义、
@@ -62,6 +61,7 @@ from mecha.cockpit import (  # noqa: E402
 from mecha.cockpit import _Handler  # noqa: E402  (判据刻意读私有面，见 Limitations)
 from mecha.errors import MechaError  # noqa: E402
 from mecha.gate import accept_all  # noqa: E402
+from mecha.history import Event  # noqa: E402
 from mecha.monitor import Claim, MonitorView  # noqa: E402
 from mecha.portfile import clear_port_file, read_port, write_port_file  # noqa: E402
 
@@ -73,9 +73,10 @@ POST_ROUNDS = 40
 POST_BODY_BYTES = 256 * 1024
 
 #: 投影字段集（契约的一部分：多一个少一个都是漂移）。
-ACTIVITY_KEYS = {"kind", "actor", "target", "value", "seq", "call_id"}
+ACTIVITY_KEYS = {"kind", "op", "actor", "target", "value", "seq", "call_id",
+                 "operation_id", "role", "undoable"}
 HISTORY_KEYS = {"seq", "kind", "actor", "op", "target", "after", "before",
-                "reason", "call_id", "ts"}
+                "reason", "call_id", "ts", "operation_id", "role", "undoable"}
 ROW_KEYS = {"name", "short", "prefix", "value", "unit", "type", "desc", "set"}
 ORPHAN_KEYS = {"name", "value", "set"}
 
@@ -205,7 +206,7 @@ def check_projection(out: list[str]) -> None:
             act = activity_records(source)
             hist = history_records(source)
             if len(act) == 3 and all(set(e) == ACTIVITY_KEYS for e in act):
-                _ok("/activity 事件恰好 6 键、全量、升序")
+                _ok("/activity 事件字段齐全、全量、升序")
             else:
                 _fail(out, f"/activity 事件字段错：{act[:1]}")
             if len(hist) == 3 and all(set(e) == HISTORY_KEYS for e in hist) \
@@ -225,10 +226,10 @@ def check_projection(out: list[str]) -> None:
 
 
 # --------------------------------------------------------------------------
-# B before 全史 fold（致死性）
+# B before 原样保留
 # --------------------------------------------------------------------------
 
-def check_before_folds_full_history(out: list[str]) -> None:
+def check_before_preserved(out: list[str]) -> None:
     with tempfile.TemporaryDirectory(prefix="cockpit-b-") as td:
         with _software(Path(td)) as sw:
             _write(sw, "k", 1)
@@ -239,15 +240,14 @@ def check_before_folds_full_history(out: list[str]) -> None:
             window = history_records(source, 2)
 
             if window == [e for e in full if e["seq"] >= 2]:
-                _ok("增量请求 == 全量请求按 seq 过滤（fold 与过滤分离）")
+                _ok("增量请求 == 全量请求按 seq 过滤")
             else:
                 _fail(out, f"增量与全量不一致：{window} vs {full}")
             second = [e for e in window if e["seq"] == 2][0]
             if second["before"] == 1:
-                _ok("⭐ 增量窗口内无前值、全史有前值 ⇒ before 仍为 1（致死性："
-                    "写成'只 fold 窗口'会得 None）")
+                _ok("增量窗口保留事件保存的 before=1")
             else:
-                _fail(out, f"before 未 fold 全史：seq=2 的 before={second['before']!r}"
+                _fail(out, f"事件前像被改写：seq=2 的 before={second['before']!r}"
                            f"（应为 1）——面板会显示 ∅ → 新值（静默错）")
             first = [e for e in full if e["seq"] == 1][0]
             if first["before"] is None:
@@ -293,7 +293,7 @@ def check_http_contract(out: list[str]) -> None:
                 if (code == 200 and set(body) == {"ok", "events", "mode"}
                         and body["mode"] == "ai"
                         and all(set(e) == ACTIVITY_KEYS for e in body["events"])):
-                    _ok("/activity → {ok, events, mode}，事件 6 键")
+                    _ok("/activity → {ok, events, mode}，事件包含关联字段")
                 else:
                     _fail(out, f"/activity 错：{code} {body}")
 
@@ -598,28 +598,15 @@ def check_summary_projection(out: list[str]) -> None:
     else:
         _fail(out, f"故障降级的 wire 形状不符：{p3}")
 
-    # ⭐ ② (1)：`before` 由**全史 fold** 重建 ⇒ `since_seq` **只过滤 emit、不影响 before**
-    #   （2026-09-26 钉住；扰动就用那个"顺序不可换"的静默错 ⇒ 必红）
-    class _FakeEvent:
-        def __getattr__(self, _name: str):        # 缺的属性一律空串（判据只用到几个）
-            return ""
-
-    class _FakeSource:
-        def events(self):
-            return [_FakeEvent(), _FakeEvent()]
-
-    def _ev(seq, key, value):
-        e = _FakeEvent()
-        e.seq, e.target, e.after, e.actor, e.reason, e.call_id = seq, key, value, "ai", "r", ""
-        return e
-
+    # 账本已裁剪时，也保留事件自己携带的前像；不能靠当前可见前缀猜测。
     class _Src:
         def events(self):
-            return [_ev(1, "k", "v1"), _ev(2, "k", "v2"), _ev(3, "other", 9)]
+            return [Event(2, "state", "set", "k", "v2", "v1"),
+                    Event(3, "state", "set", "other", 9)]
 
     recs = history_records(_Src(), since_seq=2)
     if [r["seq"] for r in recs] == [2, 3] and recs[0].get("before") == "v1":
-        _ok("`before` 由**全史 fold** 重建：`since_seq` 只过滤 emit、**不影响 before**")
+        _ok("已裁剪的账本仍保留 before：since_seq 不改写前像")
     else:
         _fail(out, f"截断输出里的 before 不对：{recs}")
 
@@ -795,7 +782,7 @@ def main() -> int:
     out: list[str] = []
     print("Phase 11 判据（cockpit 只读监控端点 + portfile）：")
     check_projection(out)
-    check_before_folds_full_history(out)
+    check_before_preserved(out)
     check_http_contract(out)
     check_extra_routes(out)
     check_lifecycle(out)

@@ -9,7 +9,7 @@
 
 ## 超时与可读失败（⚠ 三件必须分开说清）
 
-1. **连不上**（端点没人听 / 握手失败）⇒ ``BackendConnectError``；
+1. **连接失败或中途断开** ⇒ ``BackendConnectError``，本类型不证明请求尚未发送；
 2. **调用超时**（连上了但对端不回）⇒ ``BackendTimeoutError``；
 3. **协议错**（回了但不是 MCP）⇒ ``BackendProtocolError``。
 
@@ -31,7 +31,7 @@
   第二套桥（``mcp-bridge.ts`` 已经有一份自愈桥，但那是**宿主侧**的；这里再长一份
   是并行实现）。真需要性能时再评估（n=1 不预建）。
 - 不实现 ``notifications/tools/list_changed`` 的**接收**：本模块只做请求/响应面。
-- 不做重试：失败**如实上抛**（重试策略属调用方——聚合端点的语义是"如实告诉 AI 后端死了"）。
+- 不做重试：失败如实上抛。聚合端点可以恢复后端发现，但不会自动重放结果不明的调用。
 """
 
 from __future__ import annotations
@@ -60,7 +60,7 @@ class BackendError(MechaError):
 
 
 class BackendConnectError(BackendError):
-    """连不上（没人听 / 握手失败）。"""
+    """连接失败或调用中途断开；不能据此断言远端动作未执行。"""
 
 
 class BackendTimeoutError(BackendError):
@@ -230,17 +230,17 @@ class Backend:
                     f"后端 {self.server_name}（{self.url}）**这次没在 {budget:.0f}s 内回**：{cause}",
                     kind="backend_timeout",
                     hint="⚠ 超时**不等于**软件坏了（长同步调用本来就可能慢）："
-                         "它仍算在跑；要等更久就调大超时，或让那个工具改成"
+                         "本次操作可能仍在运行，也可能已完成但回执未到；先查询实际状态。"
+                         "后续长调用可调大超时，或让工具改成"
                          "**回 job_id + read_job** 的异步形态（更稳）",
                 ) from exc
             if _looks_like_disconnect(exc):
                 raise BackendConnectError(
                     f"后端 {self.server_name}（{self.url}）**断开**：{cause}",
                     kind="backend_unreachable",
-                    hint="多半是它**正在重启**（或被关）⇒ **再调一次**会自动重建会话"
-                         "（每次调用都是新会话 + 新 initialize）；"
-                         "要知道它现在在不在：query_software()；"
-                         "⚠ 端口变了也没关系（聚合层会按当前端口重新挂）",
+                    hint="后续调用会建立新会话，但本次操作可能已经执行；"
+                         "先查询任务、操作记录或实际状态，避免重复提交有副作用的动作。"
+                         "query_software() 只能确认当前连通性",
                 ) from exc
             raise BackendProtocolError(
                 f"后端 {self.server_name}（{self.url}）协议错：{cause}",

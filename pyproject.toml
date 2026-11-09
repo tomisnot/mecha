@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "mecha"
 version = "0.2.0"
-description = "这台软件的操作者无关层：写入门 / 域状态史 / 能力面 / 人类监控面"
+description = "让 AI 深度接入自管理状态软件的协作框架与宿主集成"
 requires-python = ">=3.10"
 dependencies = []
 

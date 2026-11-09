@@ -384,7 +384,7 @@ class Aggregator:
 
         | 失败 | 之前（错） | 现在 |
         |---|---|---|
-        | **会话级断开**（`BackendConnectError`：连不上 / 调到一半断了 / 端口换了） | 一律当"**软件已关闭**" ⇒ 标 DOWN + 让 AI 去 `open_software` **重开**（而它其实正在被 supervisor 自动重启）| 标 **`unreachable`** + **`resync`（按当前端口重挂 = 新会话 + 新 initialize）** + **重试一次**；还不行就如实说"这一刻连不上，多半在重启" |
+        | **会话级断开**（`BackendConnectError`：连不上 / 调到一半断了 / 端口换了） | 一律当软件已关闭，或重连后自动重放原调用 | 标 `unreachable` 并 resync；原调用报 `backend_outcome_unknown`，不自动重放 |
         | 调用超时（`BackendTimeoutError`） | 单独一档 ✅ | 不变（超时 ≠ 关闭） |
         | 真协议错（`BackendProtocolError`） | 与断开混在一起 | 保持"标 DOWN + 说清"（那是真有问题，不是重启） |
 
@@ -424,12 +424,13 @@ class Aggregator:
         except BackendTimeoutError as exc:
             raise MechaError(
                 f"软件 {svc_id} 的 {raw} 调用超时：{exc.message}。"
-                f"它可能卡住了——{META_LIST}() 看状态，必要时 {META_CLOSE}('{svc_id}') 后重开。",
+                "超时不等于执行失败或软件关闭，本次执行结果尚未确认。",
                 kind="backend_timeout",
-                hint="超时**不等于**软件关了；先看它的日志再决定要不要重开",
+                hint="先查询项目任务、操作记录或实际状态；"
+                     "有副作用的操作在确认结果或去重机制前不要直接重交",
             ) from exc
         except BackendConnectError as exc:
-            return self._retry_after_resync(svc_id, raw, args, entry, exc)
+            return self._resync_after_disconnect(svc_id, raw, entry, exc)
         except BackendError as exc:
             # ⚠ 真协议错/其它后端错：后端"用着用着坏了" ⇒ 标 DOWN（下次立刻响亮失败，不再等超时）
             entry.state = SvcState.DOWN
@@ -441,37 +442,28 @@ class Aggregator:
                 hint=f"{META_LIST}() 看当前哪些软件在跑",
             ) from exc
 
-    def _retry_after_resync(self, svc_id: str, raw: str, args: dict,
-                            entry: "_Attached", exc: BackendError) -> Mapping[str, object]:
-        """会话级断开 ⇒ **重挂（新会话）+ 重试一次**；还不行就如实报"这一刻连不上"。
+    def _resync_after_disconnect(self, svc_id: str, raw: str,
+                                 entry: "_Attached", exc: BackendError) -> Mapping[str, object]:
+        """恢复后端发现，但不重放结果不明的原调用。
 
-        ⚠ 重试**只一次**：重挂要真的重建后端连接（可能还含一次 `list_tools`），
-        无限重试会把一次工具调用变成"卡住"（那是比失败更坏的东西）。
+        BackendConnectError 同时覆盖建连失败与发送后断线；现有工具表也没有
+        可靠的幂等声明。即使重连成功，也不能推断之前的动作没有执行。
+        后续新请求仍可使用恢复的连接，当前请求由项目事实核对结果。
         """
         first_why = exc.message
         entry.state = SvcState.UNREACHABLE
         entry.why = first_why
-        resynced = False
         if self._resync_fn is not None:
             try:
                 self._resync_fn()
-                resynced = True
             except Exception as resync_exc:                   # noqa: BLE001 - 重挂失败要说清
                 first_why = f"{first_why}（重挂也失败：{type(resync_exc).__name__}: {resync_exc}）"
-        fresh = self._backends.get(svc_id)
-        if resynced and fresh is not None and fresh.state is SvcState.UP:
-            try:
-                return _run(fresh.backend.call(raw, args))     # ⭐ 真的自愈：新会话 + 新 initialize
-            except BackendError as retry_exc:
-                fresh.state = SvcState.UNREACHABLE
-                fresh.why = retry_exc.message
-                first_why = f"{first_why}；重挂后重试仍失败：{retry_exc.message}"
         raise MechaError(
-            f"软件 {svc_id} 这一刻**连不上**（{first_why}）⇒ 不能调用 {raw}。"
-            f"⚠ 它多半**正在重启**（supervisor 会把它拉起来）⇒ **过一会儿再调一次**；"
-            f"真要确认它现在在不在：{META_LIST}()（别急着 {META_OPEN}——那会跟重启抢）。",
-            kind="backend_unreachable",
-            hint="每次调用都会重建会话（含 initialize）；端口变了聚合层会按当前端口重挂",
+            f"软件 {svc_id} 的 {raw} 调用连接中断（{first_why}）。"
+            "无法确认本次操作是否已执行，未自动重放原调用。",
+            kind="backend_outcome_unknown",
+            hint=f"{META_LIST}() 可查询当前连通性，但不证明原操作结果；"
+                 "先核对项目任务、操作记录或实际状态，再决定是否重新提交",
         ) from exc
 
     # ---- 元工具 ----
